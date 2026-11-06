@@ -156,6 +156,23 @@ git -C "$TMPDIR/host.git" for-each-ref --format='%(refname)' > published.txt
 grep -qx 'refs/heads/main' published.txt
 grep -qx "$ref" published.txt
 
+# A later run under the same key, for another check of the same tree,
+# adds its note to the ref the host holds. A check the ref already has
+# a note for keeps that note: the run says so and adds nothing for it.
+held="$(git -C "$TMPDIR/host.git" rev-parse "$ref")"
+attest run --key "$TMPDIR/host" --name "$host" --command 'ok=true' \
+  --command 'also=true' --push valley > added.out
+grep -q "^held    ok: valley already holds" added.out
+grep -q "^added   1 of 2 notes to $ref" added.out
+git -C "$TMPDIR/host.git" cat-file blob "$held:ok/statement.note" > held.note
+for check in ok also; do
+  git -C "$TMPDIR/host.git" cat-file blob "$ref:$check/statement.note" > "published-$check.note"
+  verify "published-$check.note" "$TMPDIR/known_keys" > "published-$check.out"
+  grep -qx "predicate.check.name $check" "published-$check.note"
+done
+cmp held.note published-ok.note
+[ "$(git rev-parse "$ref")" = "$(git -C "$TMPDIR/host.git" rev-parse "$ref")" ]
+
 # A second party attests to the same statement, and its
 # signature lands beside the first under the text both cover.
 # This is what the note format is here for.

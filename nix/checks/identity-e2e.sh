@@ -784,8 +784,8 @@ compile --now 2026-08-09 --declared-keys declared-keys || exit 1
 
 # Attestation names. Under a registry with two signers, the hook checks
 # each pushed attestation's signature against the compiled keys, so a name
-# in the create-only namespace can only be taken by the evidence it is
-# named for. The pusher is never the question: evidence is relayed.
+# in the attestation namespace, held for good by whoever creates it, can
+# only be taken by the evidence it is named for. The pusher is never the question: evidence is relayed.
 for who in victim attacker stranger; do
   ssh-keygen -q -t ed25519 -N "" -C "$who" -f "$TMPDIR/$who"
 done

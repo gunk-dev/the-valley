@@ -89,10 +89,12 @@ package main
 // long as work keeps arriving, and holds no more than the versions it
 // still meets.
 //
-// The attestation namespace admits creations only, so the worker never
-// builds what it could not publish. When origin already holds this
-// worker's ref for a tree and the ref lacks a required check, the pass
-// reports it and builds nothing. approve --build-here builds the rest
+// The worker publishes the ref a batch stores, which holds that batch's
+// notes alone, and origin takes an existing attestation ref only with
+// every note it holds kept. So a worker publishes a tree's evidence once,
+// and never builds what it could not publish: when origin already holds
+// this worker's ref for a tree and the ref lacks a required check, the
+// pass reports it and builds nothing. approve --build-here builds the rest
 // under the operator's key (bd-7b7d58f). When the worker's ref is stored
 // here but not on origin, an earlier batch built it and its push was
 // lost, so the pass pushes that same ref again rather than building it
@@ -1059,7 +1061,7 @@ func (w *worker) assess(j *job, met map[string]bool) (bool, error) {
 	names := strings.Join(j.names(), ", ")
 	if _, ok := e.listed[j.ref]; ok {
 		w.note(j, "origin already holds %s, this worker's evidence for its tree, and it does not cover %s. "+
-			"That namespace admits creations only, so approve --build-here builds the rest (bd-7b7d58f)", j.ref, names)
+			"A worker publishes a tree's evidence once, so approve --build-here builds the rest (bd-7b7d58f)", j.ref, names)
 		return false, nil
 	}
 	if stored, found, err := j.r.g.ref(j.ref); err == nil && found {

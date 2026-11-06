@@ -1094,7 +1094,7 @@ let
 
   # The keys a pushed attestation's signature is checked against: the ones
   # a controller accepts evidence from. An attestation no controller here
-  # would accept cannot take a name in the create-only namespace, and a host
+  # would accept cannot take a name in the attestation namespace, and a host
   # that names no such keys accepts no attestation at all.
   hookVerifiers = lib.optional (knownSigners != "") knownSigners;
 
@@ -1116,13 +1116,13 @@ let
   # write. It is installed on every project the host serves. Replacement
   # refs, notes and the valley's own namespace take no push, but for the
   # four namespaces below; a symbolic ref takes none; topic branches are
-  # open; an attestation ref may only be created, and only holding what its
-  # name says; an integration request takes the approve grant; a change
-  # record moves only by the transitions the hook allows; the plan graph,
-  # refs/the-valley/knots, takes any named principal's write of one commit
-  # on its tip that keeps the graph valid; every other ref, tags included,
-  # takes a named grant of the project; and a protected ref also takes a
-  # declared writer. All policy beyond this lives in the integrator.
+  # open; an attestation ref holds only what its name says, and takes
+  # added notes but no other change and no delete; an integration request
+  # takes the approve grant; a change record moves only by the transitions
+  # the hook allows; the plan graph, refs/the-valley/knots, takes any named
+  # principal's write of one commit on its tip that keeps the graph valid;
+  # every other ref, tags included, takes a named grant of the project; and
+  # a protected ref also takes a declared writer. All policy beyond this lives in the integrator.
   #
   # The rules are valleyhook's, in Go, and this script is only how git
   # reaches it. It hands over what the policy is a function of: the pushing

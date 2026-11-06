@@ -127,7 +127,8 @@ type update struct {
 //  2. A ref that is symbolic in the repository takes no push. git would
 //     write the ref it points at, and that ref is not the one decided.
 //  3. The ref's namespace has its own rule. Topic branches are open.
-//     Attestations are create-only and must be what their name says.
+//     Attestations must be what their name says, and an existing one
+//     only takes added notes.
 //     Integration requests take the approve grant. A change record moves
 //     only by the transitions checkRecord allows. A restack report takes
 //     the restack grant, and moves only by the writes checkReport allows.
@@ -176,11 +177,17 @@ func (p policy) decide(principal string, u update) string {
 		// Topic branches are open.
 
 	case strings.HasPrefix(u.ref, attestationPrefix):
-		if !isZero(u.old) {
-			return refuse("update", "attestation refs are create-only")
-		}
-		if err := p.checkAttestation(u.ref, u.new); err != nil {
-			return refuse("create", err.Error())
+		switch {
+		case isZero(u.new):
+			return refuse("delete", "published evidence is never removed, so no push deletes an attestation ref")
+		case isZero(u.old):
+			if err := p.checkAttestation(u.ref, u.new); err != nil {
+				return refuse("create", err.Error())
+			}
+		default:
+			if err := p.checkAttestationUpdate(u.ref, u.old, u.new); err != nil {
+				return refuse("update", err.Error())
+			}
 		}
 
 	case strings.HasPrefix(u.ref, requestPrefix):

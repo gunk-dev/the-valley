@@ -624,8 +624,8 @@ if [ "$(git -C "$origin" rev-parse refs/the-valley/integration-requests/main/top
 fi
 
 # Both attestations stand. The old one is about a tree that will never
-# land, but the namespace is create-only and a record that can be dropped
-# is not one; the second approval publishes beside it, never over it.
+# land, but published evidence is never removed, and a record that can be
+# dropped is not one; the second approval publishes beside it, never over it.
 for stands in "refs/the-valley/attestations/$staledigest/$keyhash" \
   "refs/the-valley/attestations/$newdigest/$keyhash"; do
   git -C "$origin" rev-parse --verify --quiet "$stands" > /dev/null || {
@@ -642,9 +642,9 @@ if [ "$pushes" != 1 ]; then
   exit 1
 fi
 grep -qx "$stalehead $newhead refs/the-valley/integration-requests/main/topic-five" "$pushlog"
-# And every attestation ref in that push is a creation: an all-zero old id
-# is what the create-only namespace admits, and an approval that
-# updated one would be refused by the real hook.
+# And every attestation ref in that push is a creation: an all-zero old id.
+# approve pushes a ref of its own notes alone, so an approval that updated
+# one would drop the notes it held, which the real hook refuses.
 if grep '^[0-9a-f]* [0-9a-f]* refs/the-valley/attestations/' "$pushlog" \
   | grep -qv '^0* '; then
   echo "valley-request: the second approval updated an attestation ref" >&2
@@ -1664,8 +1664,8 @@ integrated partial
 
 # 20e. Origin already holds the operator's own evidence for this tree, for
 #      one check alone. It is reused, and the other check has nowhere to
-#      go, since the namespace admits creations only: refused before
-#      anything runs (bd-7b7d58f).
+#      go, since approve publishes a signer's evidence for a tree once:
+#      refused before anything runs (bd-7b7d58f).
 edited occupied docs/readme.md src/main.txt
 occupiedhead="$(git rev-parse occupied)"
 occupieddigest="$(attest digest --rev occupied | cut -d: -f2)"
@@ -2386,8 +2386,8 @@ built nothing
 integrated "c-$id" "$r/worker.projects"
 
 # 21f. Origin already holds the worker's own ref for a tree, without one of
-#      the checks the change requires. The namespace admits creations
-#      only, so the pass says so and builds nothing. approve without
+#      the checks the change requires. A worker publishes a tree's
+#      evidence once, so the pass says so and builds nothing. approve without
 #      --build-here files the request at once, naming the missing check,
 #      and builds nothing. The real integrator holds that request as stale
 #      for want of evidence, and keeps it. approve --build-here then builds
@@ -2401,7 +2401,7 @@ attest run --rev worker-occupied --key "$r/keys/worker" --name "$workername" --c
 git push --quiet origin "$occupiedref:$occupiedref"
 fresh
 working worker-occupied
-said worker-occupied "$line: origin already holds $occupiedref, this worker's evidence for its tree, and it does not cover code-build. That namespace admits creations only, so approve --build-here builds the rest (bd-7b7d58f)"
+said worker-occupied "$line: origin already holds $occupiedref, this worker's evidence for its tree, and it does not cover code-build. A worker publishes a tree's evidence once, so approve --build-here builds the rest (bd-7b7d58f)"
 built nothing
 pushed none
 approving worker-occupied-filed valley approve -v --head "$head" "$handle"

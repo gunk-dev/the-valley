@@ -816,8 +816,8 @@ func (in *integrator) writeMemo(r request, value string) error {
 
 // evidenceState digests the attestation namespace: every ref under it and
 // the object it points at, as change.EvidenceFingerprint reads them.
-// Attestation refs are create-only, so this moves exactly when evidence
-// arrives.
+// An attestation ref only ever takes added notes, and each one moves its
+// object, so this moves exactly when evidence arrives.
 //
 // It is deliberately the whole namespace rather than the refs for one
 // change's subject digest, which would take a checkout to compute and would

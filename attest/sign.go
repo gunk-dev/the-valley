@@ -37,7 +37,8 @@ package main
 // this program alone. attest signs with it and attest verify opens with
 // it, and so does the pre-receive hook a valley host checks pushed
 // attestations with (valleyhook/). One reading means a note the hook
-// accepts into the create-only namespace is a note every verifier opens,
+// accepts into the attestation namespace, where no note is ever changed or
+// removed, is a note every verifier opens,
 // and a note this program writes is one the hook accepts.
 //
 // golang.org/x/mod/sumdb/note is the reference implementation of the

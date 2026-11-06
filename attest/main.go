@@ -47,7 +47,8 @@ run flags:
   --provenance FILE   json run provenance, carried in every statement
   --schema FILE       attestation schema to vet against
   --system SYSTEM     flake system (default: this machine's)
-  --push REMOTE       publish: one atomic push of the branch and the refs
+  --push REMOTE       publish: one atomic push of the branch and the refs,
+                      adding this run's notes to a ref the remote holds
   --branch REF        branch pushed alongside (default: the current branch)
   --timings           also append one JSON line per check to the timing
                       log, $XDG_STATE_HOME/valley/timings.jsonl

@@ -791,22 +791,22 @@ as contributor git push --quiet guarded "$att:$att"
 has_ref guarded "$att"
 landed="$(git -C "$TMPDIR/guarded.git" rev-parse "$att")"
 
-# … and nobody may rewrite or drop one, writer or not.
+# … and nobody may rewrite or drop one, writer or not. An update
+# only adds notes.
 git update-ref "$att" "$(git rev-parse HEAD^{tree})"
 refused rewritten.err "an attestation ref was rewritten" \
   as contributor git push --quiet --force guarded "$att:$att"
-grep -q 'create-only' rewritten.err
-grep -q "$att" rewritten.err
+grep -q "may not update $att" rewritten.err
 refused rewritten-by-writer.err "a writer rewrote an attestation ref" \
   as integrator git push --quiet --force guarded "$att:$att"
-grep -q 'create-only' rewritten-by-writer.err
+grep -q "may not update $att" rewritten-by-writer.err
 refused dropped.err "an attestation ref was deleted" \
   as integrator git push --quiet --delete guarded "$att"
-grep -q 'create-only' dropped.err
+grep -q 'published evidence is never removed' dropped.err
 [ "$(git -C "$TMPDIR/guarded.git" rev-parse "$att")" = "$landed" ]
 git update-ref "$att" "$landed"
 
-# Occupation: a name in a create-only namespace is held for
+# Occupation: a name in the attestation namespace is held for
 # good by whoever creates it first, so a name may only hold
 # what it says. Each of these would keep the real signer's
 # evidence out, and each is refused on a project that has

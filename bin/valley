@@ -375,10 +375,10 @@ usage: valley review [-v] [--build-here] <change>
                                   ref under a lease and names the head it
                                   replaced; at the same head it leaves the
                                   ref alone and publishes only the new
-                                  evidence, which the create-only
-                                  attestation namespace refuses when this
-                                  signer has already attested that tree
-                                  (bd-7b7d58f). every write of the request
+                                  evidence, which origin refuses when
+                                  this signer has already attested that
+                                  tree: approve publishes a signer's
+                                  evidence for a tree once (bd-7b7d58f). every write of the request
                                   ref is leased, filing included, so an
                                   approval that lost a race is refused
                                   rather than clobbering the one that won.
@@ -640,9 +640,10 @@ usage: valley approve [-v] [--head <sha>] [--build-here] <change>
                    same head it leaves the ref alone and publishes only the
                    new evidence. origin already holding this signer's
                    evidence for that tree, without a check that still has
-                   to run, is refused before anything runs: the
-                   attestation namespace is create-only, so the new
-                   evidence would have nowhere to go (bd-7b7d58f). every
+                   to run, is refused before anything runs: approve
+                   publishes a signer's evidence for a tree once, as a
+                   ref of the new notes alone, and origin keeps every
+                   note the ref holds (bd-7b7d58f). every
                    write of the request ref
                    is leased, filing included, so an approval that lost a
                    race is refused rather than clobbering the one that won.
@@ -1872,8 +1873,9 @@ report_local_evidence() {
 }
 
 # Whether origin already holds one of these attestation refs at a value
-# other than the one being pushed. The namespace admits creations only, so
-# that is the one refusal approving again will never clear: it is what a
+# other than the one being pushed. approve pushes a ref of its own notes
+# alone, and origin takes an existing one only with every note it holds
+# kept, so that is the one refusal approving again will never clear: it is what a
 # re-observation of a tree this signer has already attested runs into
 # (bd-7b7d58f).
 attestation_stands_elsewhere() {
@@ -2203,9 +2205,10 @@ approve_attempt() {
     [ -z "${VALLEY_ATTEST_NAME:-}" ] || signer+=(--name "$VALLEY_ATTEST_NAME")
 
     # The ref this run's evidence goes to is keyed by the tree and this
-    # signer's key hash, and the namespace admits creations only. When
-    # origin already holds it, evidence for the checks still missing has
-    # nowhere to go, so that is said before anything is built rather than
+    # signer's key hash, and approve pushes it holding this run's notes
+    # alone, which origin refuses once it holds the ref: it keeps every
+    # note a ref holds. When origin already holds it, evidence for the
+    # checks still missing has nowhere to go, so that is said before anything is built rather than
     # after (bd-7b7d58f).
     local verifier keyhash own
     verifier="$(attest key "${signer[@]}")" || {
@@ -2468,9 +2471,9 @@ approve_attempt() {
   # The verdict. Checks with no evidence yet are built by a check worker
   # only for a ready change's active version. Elsewhere approve offers to
   # build them here, unless a command check that ran here put this
-  # signer's evidence for the tree on origin: that namespace admits
-  # creations only, so a plain branch is offered readying instead, which
-  # lets a worker build it.
+  # signer's evidence for the tree on origin, which approve cannot add to,
+  # so a plain branch is offered readying instead, which lets a worker
+  # build it.
   local -a facts=(--required "${#required[@]}" --passed "$((${#required[@]} - ${#unbuilt[@]}))")
   [ -z "$took" ] || facts+=(--took "$took")
   for check in ${unbuilt[@]+"${unbuilt[@]}"}; do facts+=(--waiting "$check"); done

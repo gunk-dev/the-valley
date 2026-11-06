@@ -50,11 +50,13 @@ A write is allowed only if every rule that applies to its ref allows it:
   a symbolic ref    nobody. A push to one would write the ref it points at.
   refs/heads/*      anyone: topic branches.
   refs/the-valley/attestations/<digest>/<key hash>
-                    anyone, and only to create one. The ref must point at
-                    a tree of notes about that digest, read within fixed
-                    bounds, each opening under the --known-signers keys
-                    the way attest verify opens it, with a verified
-                    signature under that key hash.
+                    anyone, to create one or add notes to one. The ref
+                    must point at a tree of notes about that digest, read
+                    within fixed bounds, each opening under the
+                    --known-signers keys the way attest verify opens it,
+                    with a verified signature under that key hash. An
+                    update keeps every note the ref holds, byte for byte,
+                    and adds at least one. No push deletes one.
   refs/the-valley/integration-requests/*
                     principals holding the approve grant (also accepted as
                     request). They may file, replace and withdraw a

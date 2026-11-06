@@ -28,8 +28,8 @@ func verifier(name string, priv ed25519.PrivateKey) VerifierKey {
 // A relayer can change a note's signature block and nothing else: the
 // text is signed. So every way of adding to the block has to be refused
 // by the one reading every reader shares, or a note one reader accepts is
-// a note another refuses — and in a create-only namespace, the first
-// reader's acceptance is permanent. The first case is the one the review
+// a note another refuses — and in a namespace where no note is ever
+// changed or removed, the first reader's acceptance is permanent. The first case is the one the review
 // that found this wrote down: a genuine note with an unknown signature
 // line appended, whose signer name holds a tab.
 func TestARelayerCannotAppendWhatAnotherReaderRefuses(t *testing.T) {

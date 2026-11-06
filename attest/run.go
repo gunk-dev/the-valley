@@ -16,7 +16,8 @@ import (
 // cmdRun is the whole protocol in order: digest the subject tree, run the
 // checks, compose a statement per check, vet each against the schema,
 // write each out and sign it as a note, store the notes at one ref keyed
-// by the subject digest, and publish with a single atomic push. Every
+// by the subject digest and the signer, and publish with a single atomic
+// push, adding the notes to the ref when the remote holds it (publish.go). Every
 // check runs whatever another's result, and then any step failing stops
 // the run before the next — a failed check publishes nothing, and neither
 // does a statement the schema rejects. How long each check took is
@@ -312,13 +313,7 @@ func cmdRun(args []string) (err error) {
 	}
 	head = strings.TrimPrefix(head, "refs/heads/")
 	branchSpec := fmt.Sprintf("refs/heads/%s:refs/heads/%s", head, head)
-	refSpec := ref + ":" + ref
-	out, err := gitPush(root, "--atomic", *push, branchSpec, refSpec)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("pushed  %s --atomic %s %s\n%s", *push, branchSpec, refSpec, out)
-	return nil
+	return publish(root, *push, branchSpec, ref, subtrees)
 }
 
 // composeSubject builds the digest set: the content-addressed tree digest

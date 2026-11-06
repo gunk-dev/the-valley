@@ -154,11 +154,11 @@ func schemaPath(flag, repo string) (string, error) {
 // attestationRef is where a note is stored: a ref keyed by the subject
 // digest, then by the key hash of the signer that wrote it. The key hash
 // segment is what lets several hosts publish about one subject without
-// racing — each writes a ref only it writes, which an integrator can hold
-// create-only — and it is the same eight hex digits a reader sees in that
-// host's verifier key. It names which key wrote the ref and is not itself
-// evidence of anything; two hosts colliding on four bytes lose a
-// create-only push and forge nothing, because what is checked is the note.
+// racing — each writes a ref only it writes, which takes added notes and
+// keeps every note it holds — and it is the same eight hex digits a reader
+// sees in that host's verifier key. It names which key wrote the ref and
+// is not itself evidence of anything; two hosts colliding on four bytes
+// lose a push and forge nothing, because what is checked is the note.
 func attestationRef(subjectDigest, keyHash string) string {
 	return fmt.Sprintf("%s/%s/%s", refPrefix, subjectDigest, keyHash)
 }

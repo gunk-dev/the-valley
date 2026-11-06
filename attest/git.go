@@ -46,19 +46,21 @@ func gitCommand(repo string, args ...string) *exec.Cmd {
 	return cmd
 }
 
-// gitPush pushes to a remote. It is the one git this program runs that
-// keeps the person's own configuration — how a remote's URL is rewritten,
-// which ssh command reaches it — because it reads nothing it decides on.
-// Replacement refs are still off.
-func gitPush(repo string, args ...string) (string, error) {
-	cmd := exec.Command("git", append([]string{"--no-replace-objects", "push"}, args...)...)
+// gitRemote runs a git that talks to a remote: push, ls-remote and fetch.
+// These are the gits this program runs that keep the person's own
+// configuration — how a remote's URL is rewritten, which ssh command
+// reaches it — because nothing they read is signed: what a fetch brings is
+// only kept beside the new notes and pushed back, where the remote's hook
+// checks it. Replacement refs are still off.
+func gitRemote(repo string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"--no-replace-objects"}, args...)...)
 	cmd.Dir = repo
 	cmd.Env = append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1")
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git push %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(errb.String()))
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(errb.String()))
 	}
 	return out.String(), nil
 }
@@ -244,8 +246,7 @@ func writeBlob(repo string, content []byte) (string, error) {
 // mkTree builds a tree object from named blobs and subtrees. Deterministic
 // by construction: the attestation ref's value is a function of the
 // statements under it and nothing else, so re-running attest over an
-// unchanged tree produces the identical ref and a create-only push stays
-// idempotent.
+// unchanged tree produces the identical ref.
 func mkTree(repo string, blobs, trees map[string]string) (string, error) {
 	var lines []string
 	for name, oid := range blobs {

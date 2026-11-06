@@ -1931,6 +1931,113 @@ predicate.output.sha256 c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0
   - `predicate.observedAt` (`YYYY-MM-DDTHH:MM:SSZ`)
   - `predicate.result` (`passed` or `failed`)
 
+### Approval statement (`the-valley/approval/v1`)
+
+An approval is a signed note whose text is an approval statement: an approver's key saying that one
+recorded head of a change may land on a target. The `approval` command writes, signs and verifies
+them ([`approval/`](../approval/statement.go)). The statement, its signing and its verification are
+`implemented`. Storing approvals, publishing the approval signers files, and a gate that refuses a
+landing without an approval are `not built`.
+
+```text
+the-valley/approval/v1
+instance 5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f
+project app
+target main
+change nxvpwlkmqtsrzyoukklnpmqrstuvwxyz
+version 2
+head git-sha1:2222222222222222222222222222222222222222
+record git-sha1:3333333333333333333333333333333333333333
+principal operator
+issued 2026-11-06T00:43:26Z
+
+— operator EF0F5PFxzXr1GG3aE0XrARCy/b7ePYduOTJR9VvPRiLb7vje5gECMZA/DRi/M7ZyaAD1Hn9iO1CpjA/OI02hJRyhfwE=
+```
+
+- **Written form.** The attestation's line form: the type line `the-valley/approval/v1`, then these
+  nine lines in this order, each a key, one space and a value, and a closing newline. A line
+  missing, added, repeated or out of place, or a value in any other spelling, is refused.
+  - `instance`: the instance's identity, 64 lowercase hex digits (below).
+  - `project`: the project's name, at most 64 bytes, as the registry schema spells one.
+  - `target`: the branch the change lands on.
+  - `change`: the change ID, 32 letters from `k` to `z`.
+  - `version`: the version whose head was approved, `1` to `1000`, with no leading zero.
+  - `head`: that version's head commit, `git-sha1:` and 40 lowercase hex digits.
+  - `record`: the change-record commit the approver read, written the same way.
+  - `principal`: who approves: the principal their approval key is listed under.
+  - `issued`: when the statement was made, `YYYY-MM-DDTHH:MM:SSZ` in UTC. It is kept for the record.
+    A statement carries no expiry, and nothing judges an approval by its age.
+- **Bound.** A statement is at most 1024 bytes, and a note at most 2048. A statement over the bound
+  is refused before any key signs it, and the error names the bound. 1024 bytes is the most the PIV
+  signer is held to.
+- **Envelope.** The note format of
+  [Signed notes](#signed-notes-and-attestation-statement-the-valleyattestationv1), with exactly one
+  signature line, named by the statement's principal. The signature covers the whole statement text;
+  nothing is hashed first.
+- **Instance identity.** SHA-256, in lowercase hex, over the line `valley-instance-v1`, the line
+  `object-format <sha1|sha256>`, and one line `root <id>` for each root commit of the instance
+  repository's integrated tip, sorted bytewise, each line ending in a newline. Repositories sharing
+  that history, project names and approval keys share approvals. Deriving it from an instance
+  repository is `not built`.
+- **Verifying.** A note verifies under a set of approval keys, the lines of an
+  [approval signers file](#approval-signers-files), when its one signature is by one of those keys,
+  its text is an approval statement in its written form, and the key's principal is the statement's
+  `principal`. A software key's approval verifies under `approval-signers` and is refused under
+  `approval-signers-hardware`, which lists only hardware keys.
+
+```sh
+approval statement --instance HEX --project app --target main --change ID --version 2 \
+  --head git-sha1:HEX --record git-sha1:HEX --principal operator > a.statement
+approval sign --piv a.statement b.statement      # or --key FILE for a software key
+approval verify --signers approval-signers-hardware a.statement.note b.statement.note
+```
+
+- **`approval statement`** writes a statement to stdout. `--issued` defaults to now.
+- **`approval sign`** reads every statement file and holds it to the written form and the bound
+  before any key is used, then signs each as its principal and writes `<file>.note`. It opens each
+  note under the signing key before writing it. Signing stops at the first failure, keeps the notes
+  already written, and lists the statements not signed.
+  - `--key FILE` signs with an unencrypted OpenSSH Ed25519 key.
+  - `--piv` signs with the key in a YubiKey's PIV slot: `--slot` (default `9c`; also `9a`, `9d`,
+    `9e`, `82` to `95`) on the first reader whose name holds `--reader`.
+- **`approval verify`** opens each note under the keys in `--signers` and prints who approved which
+  change, version and head. It fails when any note does not verify, and when the file lists no key.
+
+#### The PIV session signer (`valley-piv-signer`)
+
+`approval sign --piv` signs through `valley-piv-signer`, a small C program on libykpiv packaged with
+the command ([`approval/piv/`](../approval/piv/valley-piv-signer.c)). It holds the YubiKey for the
+whole run, so a list of statements asks for the PIN once and the key's touch policy asks for a touch
+on every signature. The Go programs link no smart card library.
+
+- **Key.** The helper reads the slot's attestation certificate, so the slot must hold a key
+  generated on the YubiKey. The command signs with the key it attests to, and reads the key's PIN
+  and touch policy from it.
+- **Exclusive.** The helper connects to the YubiKey in exclusive mode, so no other program can send
+  it a command while the PIN is verified. A program already using the YubiKey, such as `scdaemon`,
+  keeps the run from starting until it lets go. A YubiKey reset or removed during the run ends it;
+  the next run asks for the PIN again.
+- **Every exit resets it.** The run ends by resetting the YubiKey, which forgets the verified PIN,
+  also after `Ctrl-C`, `SIGTERM`, `SIGHUP`, or a closed pipe. `SIGKILL` cannot be caught and leaves
+  the PIN verified until the YubiKey is reset or removed.
+- **PIN.** The helper asks on the controlling terminal, with echo off and job control held until the
+  PIN is read. The PIN never appears in arguments, the environment, a pipe, or a log, and the helper
+  can be neither traced nor dumped. It is asked for at the first signature of a run. For a key whose
+  PIN policy is `always`, it is asked for before every signature, and for one whose PIN policy is
+  `never`, not at all.
+- **Refusals end the run.** A PIN the YubiKey refuses is reported with the tries left and never sent
+  again. An empty PIN, end of input or `Ctrl-C` cancels. A PIN that is not 6 to 8 characters is not
+  sent. A signature not touched in time, a signature refused for want of a verified PIN, a device
+  that went away, or no terminal to ask on each end the run with the statements not signed listed.
+- **Requirements.** A running PC/SC service (`pcscd`) and a YubiKey with Ed25519 PIV support
+  (firmware 5.7 or later).
+- **Trying it on a YubiKey.** The unit tests reach no device, so these are tried by hand:
+  - signing `approval/testdata/largest.statement`, 1024 bytes, takes the PIN once and a touch;
+  - while a run waits at the PIN prompt, `ykman piv info` cannot reach the YubiKey;
+  - after `Ctrl-C` at the touch, the next run asks for the PIN again;
+  - `kill -TERM` or `kill -USR1` sent to the helper while it waits at the PIN prompt, or between
+    statements, ends the run at once with echo restored, and the next run asks for the PIN again.
+
 ### Canonical digest manifests (`valley-tree-v1`, `valley-inputs-v1`, `valley-delta-v1`)
 
 the-valley uses three canonical SHA-256 manifest formats for trees, pure check inputs, and
@@ -4655,7 +4762,9 @@ example-operator+3649fd12+AT/3+vgQhY5cdQ4AqspQ1A2yW60nn4j1FOyx04WfuQjc
 - **`approval-signers-hardware`** lists the hardware approval keys: the keys from `approval-signers`
   whose entry carries an `attestation` that verifies and says the touch policy is `always`. The
   YubiKey then asks for a touch before every signature.
-- No gate reads either file, and the host module does not write them (`not built`).
+- `approval verify` opens approval notes under either file
+  ([Approval statement](#approval-statement-the-valleyapprovalv1)). No gate reads them, and the host
+  module does not write them (`not built`).
 - [`examples/identity/attested/`](../examples/identity/attested/registry.cue) is an example registry
   enrolling a YubiKey key for `example-operator`. Its keys are examples, and its attestation chains
   to a test-only root, "the-valley example attestation root, not Yubico". The compiler refuses it,

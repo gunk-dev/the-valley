@@ -116,6 +116,10 @@
               type = "app";
               program = lib.getExe packages.identity;
             };
+            approval = {
+              type = "app";
+              program = lib.getExe packages.approval;
+            };
             sigverify = {
               type = "app";
               program = lib.getExe packages.sigverify;
@@ -141,6 +145,7 @@
               attest
               integrator
               identity
+              approval
               valleyhook
               sigverify
               valley-web

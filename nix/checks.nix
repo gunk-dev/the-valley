@@ -37,6 +37,8 @@
 #                    knots-e2e, init-e2e — the hooks the module renders,
 #                    run against real git, the formats they read, and the
 #                    init script that wires them
+#   approval.nix     approval-unit — approval statements, their signing
+#                    and verification, and the PIV session signer
 #   identity.nix     identity-unit, identity-e2e — the compiler's unit
 #                    tests, and the registry compiler over a real
 #                    instance repository, against the hand-written
@@ -179,6 +181,7 @@ import ./checks/host-module.nix args
 // import ./checks/restack.nix args
 // import ./checks/signers.nix args
 // import ./checks/hooks.nix args
+// import ./checks/approval.nix args
 // import ./checks/identity.nix args
 // import ./checks/sigverify.nix args
 // import ./checks/web.nix args

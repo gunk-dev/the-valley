@@ -40,6 +40,7 @@ project: {
 		"attest-e2e",
 		"identity-unit",
 		"identity-e2e",
+		"approval-unit",
 		"integrator-unit",
 		"integrator-e2e",
 		"restack-unit",
@@ -142,6 +143,7 @@ project: {
 		requires: "valley-changes":  true
 		requires: "integrator-unit": true
 		requires: "integrator-e2e":  true
+		requires: "approval-unit":   true
 	}
 
 	// The plan graph's module, which the CLI's Go verbs write the graph
@@ -208,6 +210,7 @@ project: {
 		requires: "attest-unit":     true
 		requires: "attest-e2e":      true
 		requires: "identity-unit":   true
+		requires: "approval-unit":   true
 		requires: "web-unit":        true
 		requires: "web-server-unit": true
 	}
@@ -236,6 +239,13 @@ project: {
 		requires: "web-unit":           true
 		requires: "web-server-unit":    true
 		requires: "web-receiver-unit":  true
+	}
+
+	// Approval statements, their signing and verifying, and the PIV
+	// session signer.
+	classes: approval: {
+		paths: "approval/**":      true
+		requires: "approval-unit": true
 	}
 
 	// The identity registry compiler, and the registries it is driven over.
@@ -605,6 +615,7 @@ project: {
 		"derive.nix": ["derive-unit"]
 		"review.nix": ["review-unit"]
 		"identity.nix": ["identity-unit", "identity-e2e"]
+		"approval.nix": ["approval-unit"]
 		"integrator.nix": ["integrator-unit", "integrator-e2e"]
 		"signers.nix": ["signers-e2e"]
 		"sigverify.nix": ["sigverify-unit", "sigverify-e2e"]

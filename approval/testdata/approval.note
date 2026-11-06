@@ -1,0 +1,12 @@
+the-valley/approval/v1
+instance 5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f
+project app
+target main
+change nxvpwlkmqtsrzyoukklnpmqrstuvwxyz
+version 2
+head git-sha1:2222222222222222222222222222222222222222
+record git-sha1:3333333333333333333333333333333333333333
+principal operator
+issued 2026-11-06T00:43:26Z
+
+— operator EF0F5PFxzXr1GG3aE0XrARCy/b7ePYduOTJR9VvPRiLb7vje5gECMZA/DRi/M7ZyaAD1Hn9iO1CpjA/OI02hJRyhfwE=

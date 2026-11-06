@@ -426,6 +426,72 @@ rec {
     meta.mainProgram = "valleyhook";
   };
 
+  # The PIV session signer (approval/piv/): a small C program on libykpiv
+  # that holds a YubiKey exclusively for a run of approval signatures,
+  # asks for the PIN once on the terminal, and signs each statement with a
+  # touch. It is C so that the Go modules stay standard library only: the
+  # approval command runs it rather than linking a smart card library. It
+  # calls pcsc-lite, libykpiv's own transport, directly only to connect
+  # exclusively and to see a reset. libykpiv reconnects after a reset or a
+  # removal (_ykpiv_begin_transaction) in shared mode; the signer's
+  # libykpiv reconnects exclusively, so no command reaches the card over a
+  # shared connection even when the card changes between the helper's
+  # check and libykpiv's call. nixpkgs' default hardening applies.
+  piv-signer = pkgs.stdenv.mkDerivation {
+    pname = "valley-piv-signer";
+    version = "0";
+    src = ../approval/piv;
+    buildInputs = [
+      (pkgs.yubico-piv-tool.overrideAttrs (old: {
+        postPatch = (old.postPatch or "") + ''
+          substituteInPlace lib/ykpiv.c \
+            --replace-fail 'SCardReconnect(state->card, SCARD_SHARE_SHARED,' \
+              'SCardReconnect(state->card, SCARD_SHARE_EXCLUSIVE,' \
+            --replace-fail 'SCardConnect(state->context, state->reader, SCARD_SHARE_SHARED,' \
+              'SCardConnect(state->context, state->reader, SCARD_SHARE_EXCLUSIVE,'
+        '';
+      }))
+      pkgs.pcsclite
+    ];
+    buildPhase = ''
+      $CC -std=c11 -O2 -Wall -Wextra -Werror -o valley-piv-signer valley-piv-signer.c \
+        -I${lib.getDev pkgs.pcsclite}/include/PCSC -lykpiv -lpcsclite
+    '';
+    installPhase = ''
+      install -Dm755 valley-piv-signer $out/bin/valley-piv-signer
+    '';
+    meta.mainProgram = "valley-piv-signer";
+  };
+
+  # Approval statements (approval/): the-valley/approval/v1's written form,
+  # signing it with a software key or a YubiKey's PIV slot, and verifying
+  # an approval note under the approval signers files. Go, standard library
+  # only. The PIV signer it runs is fixed at build time, the way
+  # sigverify's git is: an absolute store path compiled into the binary.
+  # Its unit tests run that signer with no smart card service to reach, so
+  # no device is touched.
+  approval = goModule {
+    pname = "valley-approval";
+    dir = ../approval;
+    modules = [
+      ../note
+      ../change
+    ];
+    excluded = [ ../approval/piv ];
+    subPackages = [ "cmd/approval" ];
+    preBuild = readsGoMod;
+    ldflags = [ "-X main.pivSigner=${lib.getExe piv-signer}" ];
+    tests = {
+      reads = [ ../approval/testdata ];
+      subPackages = [
+        "."
+        "cmd/approval"
+      ];
+      VALLEY_PIV_SIGNER = lib.getExe piv-signer;
+    };
+    meta.mainProgram = "approval";
+  };
+
   # The note envelope (note/). Its tests hold it to refusing every line a
   # relayer could append that one of its readers would refuse.
   note = goModule {

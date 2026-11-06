@@ -90,6 +90,9 @@
           pkgs = pkgsFor system;
         };
 
+      # `nix fmt` runs the same program as `nix run .#fmt`.
+      formatter = lib.genAttrs systems (system: (packagesFor system).prose-fmt);
+
       apps =
         lib.genAttrs systems (
           system:

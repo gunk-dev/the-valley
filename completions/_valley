@@ -116,6 +116,7 @@ _valley() {
     local -a opts=(
       '--head:the exact head to approve, one of the change'"'"'s version heads'
       '--build-here:build the nix checks origin holds no evidence for on this machine'
+      '--verbose:also print the refs, evidence, signers and digest approve read and published'
     )
     _describe -t options 'valley approve option' opts
   elif [[ ${words[2]} == approve && ${words[CURRENT-1]} == --head ]]; then

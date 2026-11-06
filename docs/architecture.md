@@ -2148,7 +2148,7 @@ far each version has landed for its listings. The package stamps its version on 
 | ---------------------------- | ----------------------------------------------------------------------------------------------------- |
 | `valley pending`             | Lists the ready changes not yet landed, then the branches no change is on, then the drafts.           |
 | `valley changes --json`      | Prints every change in every state, across the host with `--all`, as `valley-changes/v1`.             |
-| `valley review <change>`     | Shows a change, then offers `[a]pprove`, `[v]iew full diff`, `[r]eject` and `[s]kip`.                 |
+| `valley review <change>`     | Shows a change, then offers `[a]pprove`, `[v]iew diff`, `[r]eject` and `[s]kip`.                      |
 | `valley approve <change>`    | Approves one head of the change, as `[a]pprove` does. `--head <sha>` names the head.                  |
 | `valley rebase <change>`     | Rebases the change's whole stack, and adds each rebased head as a new version.                        |
 | `valley checks`              | Reports the checks the policy requires of a change, grouped by declared cost. It runs nothing.        |
@@ -2266,7 +2266,7 @@ branch no record is on is requested under its name with each `/` replaced by `-`
 name maps to `c-<change-id>` is refused, by `approve` and by `status`: that name is the change's.
 
 When the checks fail under `[a]pprove`, approving the same head again can only fail again. So the
-prompt then says approving needs a new head. It offers only `[v]iew full diff`, `[r]eject` and
+prompt's header then says `checks failed at <head>`. It offers only `[v]iew diff`, `[r]eject` and
 `[s]kip`. `[a]pprove` comes back once the change is at another head. A refusal that is not a check
 failure, such as a lost lease race, keeps the prompt as it was.
 
@@ -2277,10 +2277,10 @@ ready says so on the first line shown, above its diff, and again in place of the
   `nxvp v2 is a draft: its owner (alice) hasn't marked it ready, so it can't be approved yet.`
 - A withdrawn change: `nxvp is withdrawn: there is nothing to approve.`
 
-The prompt then offers only `[v]iew full diff` and `[s]kip`. A change is often a draft because an
-agent is working on it: an agent runner unreadies a change while its run works, and readies the new
-head when the run finishes. `[a]pprove` would be refused. `[r]eject` is not offered, because it
-records nothing on the change. It only deletes the branch, which the owner may still be working on.
+The prompt then offers only `[v]iew diff` and `[s]kip`. A change is often a draft because an agent
+is working on it: an agent runner unreadies a change while its run works, and readies the new head
+when the run finishes. `[a]pprove` would be refused. `[r]eject` is not offered, because it records
+nothing on the change. It only deletes the branch, which the owner may still be working on.
 
 The change can move while the review is open: it can return to draft, gain a new version, be
 withdrawn, or land. So before `[a]pprove` or `[r]eject` acts, `review` reads the change again with
@@ -2344,14 +2344,14 @@ too.
   - `[v]iew full diff` pages the layer's log and diff against the layer below it, and asks again.
   - `[s]top` ends the review, and nothing is done.
 - After the top, the prompt names the change and says that approving it lands every layer, such as
-  `three, 3 of 3: [a]pprove all 3, [v]iew full diff, [r]eject three, [s]top?`. Only the top is
-  offered `[r]eject`.
+  `three v1 · stack of 3` over `[a]pprove all 3  [v]iew diff  [r]eject three  [s]top:`. Only the top
+  is offered `[r]eject`.
 - When a layer's checks fail, its prompt says approving needs a new head and stops offering
   `[a]pprove`, as for a change alone.
 - A layer that is not ready says so under its heading and in its prompt, as a change alone does.
   `[a]pprove` is not offered at that layer or at any layer above it, since approving one would land
   it. Each prompt above it says why in its place, such as
-  `three, 3 of 3: it would bring two, change 2 of 3, which is a draft, so it can't be approved yet. [v]iew full diff, [r]eject three, [s]top?`.
+  `three v1 · stack of 3 · it would bring two, change 2 of 3, which is a draft, so it can't be approved yet.`
   A top that is not ready is not offered `[r]eject` either.
 - Every layer's notes are printed at the end, whatever the verdict.
 
@@ -2669,8 +2669,8 @@ written beside a line of that last diff keeps its file and line.
 Either way, the commits from each base to its head are compared for their messages and their author
 fields (name, email and date), apart from the files. A difference is shown under its own heading,
 `Commit messages changed since approved v<M>.` or `Commit authors changed since approved v<M>:`,
-whatever the files say. Every prompt after a change is shown offers `[v]iew full diff`, which pages
-the whole diff and asks again. Checked by `valley-go-unit`, `valley-ready` and `review-notes`.
+whatever the files say. Every prompt after a change is shown offers `[v]iew diff`, which pages the
+whole diff and asks again. Checked by `valley-go-unit`, `valley-ready` and `review-notes`.
 
 ### The status object
 

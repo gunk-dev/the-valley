@@ -547,8 +547,8 @@ in
           host.succeed("install -m 600 -o alice ${keys}/alice /home/alice/keys/later")
           host.wait_until_succeeds("test $(grep -o 'pprove' /tmp/review.out | wc -l) -ge 2", timeout=60)
           host.succeed("echo a > /tmp/review.fifo")
-          side_by_side(reviewed, lambda: host.execute("grep -q '^Approved ' /tmp/review.out")[0] == 0)
-          host.wait_until_succeeds("grep -q '^Approved ' /tmp/review.out", timeout=300)
+          side_by_side(reviewed, lambda: host.execute("grep -q '  approved' /tmp/review.out")[0] == 0)
+          host.wait_until_succeeds("grep -q '  approved' /tmp/review.out", timeout=300)
           host.succeed("kill $(cat /tmp/review.holder)")
           ls, second = filed(reviewed)
           assert len(second) == 1 and second[0]["run"] != first, second

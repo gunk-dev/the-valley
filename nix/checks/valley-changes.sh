@@ -616,13 +616,13 @@ line "^change"$'\t'"$A"$'\t'
 ok valley-go resolve again
 line "^change"$'\t'"$I"$'\t'"zzzz"$'\t'"2"$'\t'"$hprime"$'\t'"again"$'\t'"draft"$'\t'"alice$"
 if valley approve again > "$w/out" 2> "$w/err"; then fail "approve took the branch of a draft"; fi
-grep -q "change zzzz v2 is draft, not ready" "$w/err" || fail "approve did not refuse the draft for its state"
+grep -qx "⊘ zzzz v2  not approved · change is a draft" "$w/err" || fail "approve did not refuse the draft for its state"
 
 # J' is not J's landing replayed, so its branch names J, a draft, too.
 ok valley-go resolve ffrec
 line "^change"$'\t'"$J"$'\t'"lmlm"$'\t'"2"$'\t'"$jprime"$'\t'"ffrec"$'\t'"draft"$'\t'"alice$"
 if valley approve ffrec > "$w/out" 2> "$w/err"; then fail "approve took the branch of a replayed landing"; fi
-grep -q "change lmlm v2 is draft, not ready" "$w/err" || fail "approve did not refuse J' for its state"
+grep -qx "⊘ lmlm v2  not approved · change is a draft" "$w/err" || fail "approve did not refuse J' for its state"
 
 # A landed change names its branch no more once the branch moves on to new
 # work: ff is a branch, free for that work.
@@ -862,8 +862,8 @@ after '^knkn v1  ' '^  chk-none$' '^  1 commit · ' '^  requires 1 quick check, 
 # not fitted to a terminal. It reads the line while it shows the diff and
 # does not wait for it, so this run is told to wait.
 printf 's\n' | ok env VALLEY_REVIEW_CHECKS_WAIT=120 valley review "$K1"
-[ "$(grep -B1 '^chk-pass: \[a\]pprove' "$w/out" | head -1)" = 'checks: 1 passed in 1m40s (eval 24s); prose-format 100s, +40s against its recent 60s' ] \
-  || fail "review did not show the checks line before its prompt: $(cat "$w/out")"
+[ "$(grep -B1 '^\[a\]pprove' "$w/out" | head -1)" = 'klkl v1 · checks: 1 passed in 1m40s (eval 24s); prose-format 100s, +40s against its recent 60s' ] \
+  || fail "review's prompt did not carry the checks line: $(cat "$w/out")"
 
 # A check with no recent build in the project is new.
 {

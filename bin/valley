@@ -334,7 +334,12 @@ usage: valley review [-v] [--build-here] <change>
                    waits for them: a line not read by the prompt is not
                    shown, unless VALLEY_REVIEW_CHECKS_WAIT=<seconds> says
                    how long to wait for it. checks that cannot be read show no line; -v
-                   warns on stderr. then choose:
+                   warns on stderr. the prompt is one header line, the
+                   change and its state, `nqyw v3 · checks: 4 passed ·
+                   behind main (integrator merges)`, then the keys it
+                   takes; a change that can't be approved says why in the
+                   header and is not offered [a]pprove. -v also passes -v
+                   to approve. then choose:
                      [a]pprove    file an integration request for the
                                   head shown, as approve does (valley
                                   help approve). it reuses the evidence
@@ -550,9 +555,9 @@ EOF
 
 help_approve() {
   cat <<'EOF'
-usage: valley approve [--head <sha>] [--build-here] <change>
+usage: valley approve [-v] [--head <sha>] [--build-here] <change>
 
-  approve [--head <sha>] [--build-here] <change>
+  approve [-v] [--head <sha>] [--build-here] <change>
                    do what review's [a]pprove does for the change, without
                    paging it: the same checks, the same refusals, the same
                    leased request write and the same output. exits non-zero
@@ -584,9 +589,10 @@ usage: valley approve [--head <sha>] [--build-here] <change>
                    evidence for the check's name and flake attribute and
                    says it passed. VALLEY_KNOWN_SIGNERS, when set, must
                    accept it too: it can narrow what is reused, never widen
-                   it. approve prints each check it reuses and who signed
-                   it, and says on stderr why it does not reuse a note it
-                   judged. a command check is never reused. a listing or a fetch of
+                   it. a required nix check whose judged note records a
+                   failure refuses the approval, since the integrator
+                   judges the check by that note. a command check is never
+                   reused. a listing or a fetch of
                    origin's evidence that fails is refused, and nothing is
                    run.
                    a required nix check that origin holds no evidence for
@@ -596,7 +602,7 @@ usage: valley approve [--head <sha>] [--build-here] <change>
                    command checks still run first, and a missing signing
                    key, a failed check, or a refused push still fails the
                    approval. approve says the approval is recorded and
-                   names the checks still missing. the integrator keeps the
+                   how many checks it waits for. the integrator keeps the
                    request and considers it again when evidence is
                    published. landing still requires a clean apply and
                    acceptable evidence for every required check. an
@@ -606,7 +612,8 @@ usage: valley approve [--head <sha>] [--build-here] <change>
                    same tree, and a failed build publishes nothing. waiting
                    does not ensure the evidence will be published. no
                    worker builds a branch no record is on, or a version
-                   that is not the active one, and approve says so. the
+                   that is not the active one, and approve says so and
+                   offers --build-here. the
                    evidence of an approval that ran a command check
                    occupies this signer's ref for the tree, so use
                    --build-here on the initial approval.
@@ -660,7 +667,24 @@ usage: valley approve [--head <sha>] [--build-here] <change>
                    the bottom layer of a stack or a change alone, is
                    approved as it is, and the integrator merges it onto
                    main.
-                   approve prints how long each required check took, and
+                   approve ends in one verdict line: the change, whether
+                   it was approved, and what happens next, with one
+                   indented line under it only when you must act:
+                     ✓ nqyw v3  approved · checks passed · landing on main
+                     ◐ nqyw v3  approved · lands when 3 checks pass (1/4 passed)
+                     ◇ nqyw v3  approved · waiting for 2 checks (no worker building)
+                       run: valley approve --build-here nqyw
+                     ⊘ nqyw v3  not approved · change is a draft
+                       run: valley ready --change <id> <branch>
+                   a refusal goes to stderr. checks built here show one
+                   line of progress, and a failed check's log. the glyphs
+                   are in colour on a terminal unless NO_COLOR is set.
+                     -v, --verbose  also print what approve read and
+                                  published: the checks it reuses and who
+                                  signed them, the tree's digest, the
+                                  evidence and request refs, and the
+                                  checks' own output and timings.
+                   approve times each required check it runs, and
                    appends one JSON line per check to the timing log,
                    $XDG_STATE_HOME/valley/timings.jsonl (default
                    ~/.local/state/valley/timings.jsonl). the log stays on
@@ -1638,7 +1662,7 @@ show_review() {
   REVIEW_TMP="$(mktemp -d)"
   compare_shown "$CHANGE_ID" "$CHANGE_VERSION" "$head"
   show_compared "$branch" "$head" "$held" "$(does_of "$CHANGE_ID")" full_diff "$branch" "$head"
-  checks_line "$CHANGE_ID"
+  REVIEW_CHECKS="$(checks_line "$CHANGE_ID")"
 }
 
 # view_full <branch>: [v]iew full diff for a change alone. It pages the
@@ -1732,6 +1756,9 @@ APPROVE_WT=""
 # The head approve last ran the checks over and saw them fail, for the
 # review prompt: see approve_failed_at.
 CHECKS_FAILED_AT=""
+# The checks line review read for the change it shows (checks_line), for
+# the header of its prompt.
+REVIEW_CHECKS=""
 # Set by --build-here, on approve and on review: approve builds the
 # required nix checks that origin holds no evidence for, on this machine.
 # Without it, approve files the request without their evidence, and the
@@ -1752,6 +1779,32 @@ cleanup_approve_wt() {
 refuse() {
   printf 'valley: %s\n' "$*" >&2
   return 1
+}
+
+# Set by -v, on approve and on review: approve prints what it read and
+# published, the refs, the evidence and who signed it, the tree's digest
+# and the policy, above its verdict, and lets the checks' and coverage's
+# own output through.
+VERBOSE=""
+
+# declined <obstruction> [--run <command> | --see <command> | --then <text>]:
+# approve's refusal, as valley-go verdict prints it (status/verdict.go):
+# what stops the approval on one line on stderr, and what to do about it
+# on a second. A change is named by its handle and the version being
+# approved, a plain branch by its name. Fails, so a caller can return it.
+declined() {
+  local why="$1" version=""
+  shift
+  [ -z "$CHANGE_ID" ] || version="${APPROVE_VERSION:-$CHANGE_VERSION}"
+  valley-go verdict refused --name "${CHANGE_HANDLE:-$CHANGE_BRANCH}" \
+    ${version:+--version "$version"} --why "$why" "$@"
+  return 1
+}
+
+# verdict_name: the change as approve's lines name it, for the commands
+# they offer: its handle, or a plain branch's name, quoted for a shell.
+verdict_name() {
+  printf '%q' "${CHANGE_HANDLE:-$CHANGE_BRANCH}"
 }
 
 # The change segment of a request ref. The integrator reads a request as
@@ -1810,10 +1863,10 @@ push_lookalike() {
 }
 
 # Where the checks this run signed are stored, for every failure that
-# happens after they have run. One stanza, so no failure path invents its
-# own wording. Called with no refs it says nothing.
+# happens after they have run, with -v. One stanza, so no failure path
+# invents its own wording. Called with no refs it says nothing.
 report_local_evidence() {
-  [ "$#" -gt 0 ] || return 0
+  [ "$#" -gt 0 ] && [ -n "$VERBOSE" ] || return 0
   printf 'valley: the evidence is stored locally at:\n' >&2
   printf '  %s\n' "$@" >&2
 }
@@ -1838,27 +1891,22 @@ attestation_stands_elsewhere() {
 
 # Why a push carrying the request ref failed, said as precisely as the
 # state allows. Every such push is leased, and a lease refuses when the
-# ref it named is not where the read before it saw it — which covers three
-# different events. Reading the ref again is what tells them apart, and a
-# read that does not happen is its own answer rather than a guess.
-#
-# Anything the lease is not responsible for is origin's own refusal, and
-# git has already printed it.
+# ref it named is not where the read before it saw it: the request was
+# consumed, or another approval filed or moved it. Reading the ref again
+# is what tells them apart. Anything the lease is not responsible for, or
+# a read that does not happen, is origin's own refusal, and git has
+# already printed it.
 diagnose_request_push() {
   local ref="$1" pending="$2" now
-  if ! now="$(remote_ref "$ref")"; then
-    refuse "origin refused the push, and $ref could not be read again to say why. Nothing was published there and main is untouched"
-    return 0
-  fi
-  if [ "$now" = "$pending" ]; then
-    refuse "origin refused the push; nothing was published there and main is untouched"
+  if ! now="$(remote_ref "$ref")" || [ "$now" = "$pending" ]; then
+    declined "origin refused the push"
   elif [ -z "$now" ]; then
-    refuse "the pending request was consumed while this one was being prepared, which is what the integrator does when a change lands. The lease on $ref refused and nothing was published; fetch and review the branch again before approving it a second time"
-  elif [ -z "$pending" ]; then
-    refuse "a request for this change appeared while this one was being prepared, at $(git rev-parse --short "$now") ($(subject_of "$now")); the lease on $ref refused and nothing was published"
+    declined "the pending request was consumed meanwhile" --see "valley status $(verdict_name)"
   else
-    refuse "the pending request moved from $(git rev-parse --short "$pending") to $(git rev-parse --short "$now") while this one was being prepared; the lease on $ref refused, nothing was published, and the request stands where the other approval put it"
+    declined "another approval filed $(git rev-parse --short "$now") ($(subject_of "$now")) meanwhile" \
+      --run "valley approve $(verdict_name)"
   fi
+  return 0
 }
 
 # File the request. Called in a condition, from the review prompt and from
@@ -1922,6 +1970,9 @@ tel_end() {
 # a stack's layers included, so each attempt is its own run. An attempt the
 # session exits during is ended by cleanup_scratch.
 approve() {
+  # Off a terminal, the answer to review's prompt ends no line, so the
+  # verdict starts its own, unless carried's line has ended it.
+  [ -z "$REVIEWING" ] || [ -t 0 ] || [ -n "$CARRIED" ] || printf '\n'
   tel_begin
   local status=0
   approve_attempt "$@" || status=$?
@@ -1935,7 +1986,7 @@ approve_attempt() {
   local -a signer=() required=() run=() timing=() evidence=()
 
   root="$(git rev-parse --show-toplevel)" || {
-    refuse "not a git repository; nothing published"
+    declined "not in a git repository"
     return 1
   }
   # main's tip as the fetch left it, read once by its exact name. The
@@ -1943,9 +1994,9 @@ approve_attempt() {
   # one commit.
   tip="$(ref_oid refs/remotes/origin/main)" || {
     if [ $? -eq 1 ]; then
-      refuse "origin has no main to approve onto; nothing published"
+      declined "origin has no main to approve onto"
     else
-      refuse "could not read origin/main; nothing published"
+      declined "could not read origin/main" --run "git fetch origin"
     fi
     return 1
   }
@@ -1956,10 +2007,10 @@ approve_attempt() {
   if [ -n "$CHANGE_ID" ]; then
     head="$APPROVE_HEAD"
     [ -n "$head" ] || {
-      refuse "no head of change $CHANGE_HANDLE is bound to this approval; nothing published"
+      declined "no head is bound to this approval"
       return 1
     }
-    check_record "nothing published" "" "$head" || return 1
+    check_record "" "$head" || return 1
     change="c-$CHANGE_ID"
     what="$CHANGE_HANDLE v$APPROVE_VERSION"
   elif [ -n "$APPROVE_HEAD" ]; then
@@ -1971,7 +2022,7 @@ approve_attempt() {
     what="$branch"
   else
     head="$(ref_oid "refs/remotes/origin/$branch")" || {
-      refuse "no such branch on origin: $branch; nothing published"
+      declined "origin has no branch $branch"
       return 1
     }
     change="$(change_name "$branch")"
@@ -1980,15 +2031,16 @@ approve_attempt() {
   # c-<change ID> is the request name of the change with that ID, so a
   # branch is never filed under one.
   if [ -z "$CHANGE_ID" ] && [[ "$change" =~ ^c-[k-z]{32}$ ]]; then
-    refuse "the branch $branch would be requested as $change, and that name is reserved for the change with the ID ${change#c-}; rename the branch, or name the change by its ID. Nothing published"
+    declined "the branch's request name $change is change ${change#c-}'s" \
+      --then "rename the branch, or name the change by its ID"
     return 1
   fi
   base="$(git merge-base "$tip" "$head")" || {
-    refuse "$what and main share no history; nothing published"
+    declined "shares no history with main"
     return 1
   }
   ref="refs/the-valley/integration-requests/$target/$change"
-  local named="$branch" under of
+  local named="$branch" under
   TEL_CTX=(--change "$CHANGE_ID" --version "${APPROVE_VERSION:-0}" --head "$head")
   tel approve.start --data "what=$what" --data "request=$ref"
   [ -z "$CHANGE_ID" ] || named="$CHANGE_HANDLE"
@@ -2005,13 +2057,12 @@ approve_attempt() {
   # the integrator merges it onto main.
   if ! git merge-base --is-ancestor "$tip" "$head"; then
     if ! under="$(valley-go brings ${CHANGE_ID:+--change "$CHANGE_ID"} "$head")"; then
-      refuse "could not read which changes $what would bring to main; nothing published"
+      declined "could not read which changes it would bring to main"
       return 1
     fi
     if [ -n "$under" ]; then
-      of="a version of $under"
-      [ "$(printf '%s\n' "$under" | wc -l)" -eq 1 ] || of="versions of $(printf '%s\n' "$under" | join_lines)"
-      refuse "$what does not fast-forward from main, and the commits it would bring hold $of, not landed. Approved as it is, it would land them with no landing record of their own; nothing published. Rebase the stack first: valley rebase $(printf '%q' "$named")"
+      declined "stack is behind main (includes $(printf '%s\n' "$under" | join_lines))" \
+        --run "valley rebase $(printf '%q' "$named")"
       return 1
     fi
   fi
@@ -2024,12 +2075,14 @@ approve_attempt() {
   # integrator will derive, from whatever branch the operator happens to be
   # on. It is printed for exactly that reason.
   policy_defaults "$root"
-  resolve_instance_layer "$root" refs/remotes/origin/main "$tip" || return 1
-  resolve_project_layer "$root" refs/remotes/origin/main "$tip" || return 1
-  derive_required "$POLICY_SCHEMA" "$POLICY_INSTANCE" "$POLICY_PROJECT" \
-    "$base" "$head" || return 1
+  if ! resolve_instance_layer "$root" refs/remotes/origin/main "$tip" \
+    || ! resolve_project_layer "$root" refs/remotes/origin/main "$tip" \
+    || ! derive_required "$POLICY_SCHEMA" "$POLICY_INSTANCE" "$POLICY_PROJECT" "$base" "$head"; then
+    declined "the policy did not derive"
+    return 1
+  fi
   sort_into required "${!DERIVED_REQUIRED[@]}" || {
-    refuse "could not sort the required checks; nothing published"
+    declined "could not sort the required checks"
     return 1
   }
   tel approve.policy --list "required=$(join_by , ${required[@]+"${required[@]}"})" \
@@ -2052,20 +2105,25 @@ approve_attempt() {
   # A read of origin that fails ends the approval rather than reading as no
   # evidence. When every check is covered, nothing runs and no key is
   # needed, as when nothing is required.
-  local -a missing=() reused=()
+  local -a missing=() reused=() failed=()
   local -A stored=() covered=()
   if [ "${#required[@]}" -gt 0 ]; then
     command -v attest > /dev/null 2>&1 || {
-      refuse "this choice needs the attest helper; nix run .#valley bundles it. Nothing published"
+      declined "the attest helper is not installed" --then "nix run .#valley bundles it"
       return 1
     }
     local -a asked=()
     for check in "${required[@]}"; do
       [ "${CHECK_RUNNER[$check]:-}" != nix ] || asked+=(--check "$check=${CHECK_ATTRIBUTE[$check]}")
     done
+    # Its stderr is shown only with -v, and then as the same descriptor:
+    # opening /dev/stderr again waits forever on a pipe nobody reads.
     local coverage kind field value by
-    if ! coverage="$(valley-go coverage --head "$head" ${asked[@]+"${asked[@]}"})"; then
-      refuse "could not read the evidence origin holds for $what; nothing run, nothing published"
+    if ! coverage="$(
+      [ -n "$VERBOSE" ] || exec 2> /dev/null
+      valley-go coverage --head "$head" ${asked[@]+"${asked[@]}"}
+    )"; then
+      declined "could not read the evidence origin holds" --run "valley approve -v $(verdict_name)"
       return 1
     fi
     while read -r kind field value by; do
@@ -2073,12 +2131,23 @@ approve_attempt() {
         digest) digest="$field" ;;
         stored) stored["$field"]="$value" ;;
         covered) covered["$field"]="$value $by" ;;
+        failed) failed+=("$field") ;;
       esac
     done <<< "$coverage"
     [ -n "$digest" ] || {
-      refuse "valley-go coverage named no tree for $what; nothing run, nothing published"
+      declined "valley-go coverage named no tree"
       return 1
     }
+    # A check whose evidence on origin records a failure is judged by that
+    # evidence, so building it again changes nothing for this tree, and
+    # nothing is filed.
+    if [ "${#failed[@]}" -gt 0 ]; then
+      CHECKS_FAILED_AT="$head"
+      local -a flags=()
+      for check in "${failed[@]}"; do flags+=(--failed "$check"); done
+      declined "" --required "${#required[@]}" "${flags[@]}"
+      return 1
+    fi
     for check in "${required[@]}"; do
       if [ -n "${covered[$check]:-}" ]; then reused+=("$check"); else missing+=("$check"); fi
     done
@@ -2090,8 +2159,8 @@ approve_attempt() {
       --list "reused=$(join_by , ${reused[@]+"${reused[@]}"})" \
       --list "reused_by=$(join_by , ${signed_by[@]+"${signed_by[@]}"})" \
       --list "missing=$(join_by , ${missing[@]+"${missing[@]}"})"
-    if [ "${#reused[@]}" -gt 0 ]; then
-      printf '\nreusing the evidence origin holds for %s at %s:\n' "$what" "$(git rev-parse --short "$head")"
+    if [ -n "$VERBOSE" ] && [ "${#reused[@]}" -gt 0 ]; then
+      printf 'reusing the evidence origin holds for %s at %s, tree %s:\n' "$what" "$(git rev-parse --short "$head")" "$digest"
       for check in "${reused[@]}"; do
         printf '  %-24s signed by %s\n' "$check" "${covered[$check]#* }"
       done
@@ -2111,6 +2180,7 @@ approve_attempt() {
   # worker runs one, so it runs here either way. From here on, missing is
   # what runs here, and unbuilt is what nothing here builds.
   local -a unbuilt=()
+  local began took=""
   if [ -z "$BUILD_HERE" ]; then
     local -a here=()
     for check in ${missing[@]+"${missing[@]}"}; do
@@ -2122,11 +2192,11 @@ approve_attempt() {
   if [ "${#missing[@]}" -gt 0 ]; then
     key="${VALLEY_ATTEST_KEY:-}"
     [ -n "$key" ] || {
-      refuse "no signing key: set VALLEY_ATTEST_KEY to the ed25519 key this host attests with. The host signs; nothing published"
+      declined "no signing key" --then "set VALLEY_ATTEST_KEY to the ed25519 key this host attests with"
       return 1
     }
     [ -f "$key" ] || {
-      refuse "no signing key at $key; nothing published"
+      declined "no signing key at $key"
       return 1
     }
     signer=(--key "$key")
@@ -2139,13 +2209,14 @@ approve_attempt() {
     # after (bd-7b7d58f).
     local verifier keyhash own
     verifier="$(attest key "${signer[@]}")" || {
-      refuse "could not read the signing key at $key; nothing published"
+      declined "could not read the signing key at $key"
       return 1
     }
     keyhash="${verifier#*+}"
     own="refs/the-valley/attestations/$digest/${keyhash%%+*}"
     if [ -n "${stored[$own]:-}" ]; then
-      refuse "origin already holds $own, this signer's evidence for this tree, and it does not cover $(printf '%s\n' "${missing[@]}" | join_lines). That namespace admits creations only, so evidence for the rest has nowhere to go: that is bd-7b7d58f, which approving again will not clear. Nothing run, nothing published"
+      declined "this key's evidence for the tree, on origin, lacks $(printf '%s\n' "${missing[@]}" | join_lines)" \
+        --then "attest with another key: set VALLEY_ATTEST_KEY"
       return 1
     fi
 
@@ -2160,7 +2231,7 @@ approve_attempt() {
         nix) run+=(--check "$check=${CHECK_ATTRIBUTE[$check]}") ;;
         command) run+=(--command "$check=${CHECK_COMMAND[$check]}") ;;
         *)
-          refuse "the policy requires $check but does not say how to run it; nothing published"
+          declined "the policy requires $check but says no way to run it"
           return 1
           ;;
       esac
@@ -2169,27 +2240,33 @@ approve_attempt() {
 
     cleanup_approve_wt
     APPROVE_WT="$(mktemp -d)" || {
-      refuse "no scratch directory to check $what in; nothing published"
+      declined "no scratch directory to check it in"
       return 1
     }
     git worktree add --quiet --detach "$APPROVE_WT" "$head" || {
       cleanup_approve_wt
-      refuse "could not check $what out to run its checks; nothing published"
+      declined "could not check the head out to run its checks"
       return 1
     }
 
-    printf '\nchecking %s at %s: %s\n' "$what" "$(git rev-parse --short "$head")" \
-      "$(printf '%s\n' "${missing[@]}" | join_lines)"
     if [ -n "$TEL_RUN" ]; then
       timing+=(--telemetry "$TEL_SPOOL" --telemetry-run "$TEL_RUN-checks" --project "$TEL_PROJECT")
       tel approve.checks --data "attest_run=$TEL_RUN-checks" --list "checks=$(join_by , "${missing[@]}")"
     fi
-    if ! attest run --repo "$APPROVE_WT" "${signer[@]}" "${timing[@]}" "${run[@]}"; then
+    # valley-go verdict runs attest and shows its progress, and on a
+    # failure the failed check's log and the refusal.
+    local -a building=()
+    for check in "${missing[@]}"; do building+=(--check "$check"); done
+    began="$SECONDS"
+    if ! valley-go verdict checking --name "${CHANGE_HANDLE:-$branch}" \
+      ${CHANGE_ID:+--version "$APPROVE_VERSION"} --of "${#required[@]}" --passed "${#reused[@]}" \
+      ${VERBOSE:+-v} "${building[@]}" \
+      -- attest run --repo "$APPROVE_WT" "${signer[@]}" "${timing[@]}" "${run[@]}"; then
       cleanup_approve_wt
       CHECKS_FAILED_AT="$head"
-      refuse "the checks did not pass; nothing published, main untouched"
       return 1
     fi
+    took="$((SECONDS - began))s"
     cleanup_approve_wt
 
     # Every attestation stored here for this tree, whoever signed it: the
@@ -2198,11 +2275,11 @@ approve_attempt() {
     mapfile -t evidence < <(git for-each-ref --format='%(refname)' \
       "refs/the-valley/attestations/$digest")
     [ "${#evidence[@]}" -gt 0 ] || {
-      refuse "no attestation is stored for $digest; nothing published"
+      declined "no attestation is stored for the tree"
       return 1
     }
-  elif [ "${#required[@]}" -eq 0 ]; then
-    printf '\n%s requires no check under %s + %s; filing the request with no evidence\n' \
+  elif [ "${#required[@]}" -eq 0 ] && [ -n "$VERBOSE" ]; then
+    printf '%s requires no check under %s + %s; filing the request with no evidence\n' \
       "$what" "$POLICY_INSTANCE_LABEL" "$POLICY_PROJECT_LABEL"
   fi
 
@@ -2219,12 +2296,13 @@ approve_attempt() {
   local pending lookalike
   if ! pending="$(remote_ref "$ref")" \
     || ! lookalike="$(push_lookalike "$ref" ${evidence[@]+"${evidence[@]}"})"; then
-    refuse "could not read $ref from origin; nothing published"
+    declined "could not read the request ref on origin"
     report_local_evidence ${evidence[@]+"${evidence[@]}"}
     return 1
   fi
   if [ -n "$lookalike" ]; then
-    refuse "origin holds $lookalike, whose name ends in the name of a ref this approval pushes. git would push to $lookalike in that ref's place, or refuse the push as ambiguous. Nothing published; $lookalike has to be deleted on origin before this change can be filed"
+    declined "origin holds $lookalike, which git would push to in place of a ref approve pushes" \
+      --then "delete $lookalike on origin"
     report_local_evidence ${evidence[@]+"${evidence[@]}"}
     return 1
   fi
@@ -2278,7 +2356,7 @@ approve_attempt() {
   # request is named, so a request filed in the window stays until the
   # change is ready again. It reads the records last just before it moves
   # the target, so only a record written in that moment is missed.
-  if ! check_record "nothing published" "$head" "$APPROVE_HEAD"; then
+  if ! check_record "$head" "$APPROVE_HEAD"; then
     report_local_evidence ${evidence[@]+"${evidence[@]}"}
     return 1
   fi
@@ -2302,7 +2380,8 @@ approve_attempt() {
       tel approve.request --data "ref=$ref" --data "result=refused"
       if [ "${#lease[@]}" -eq 0 ] \
         && attestation_stands_elsewhere "$digest" ${evidence[@]+"${evidence[@]}"}; then
-        refuse "origin already holds an attestation for this tree from this signer, and that namespace admits creations only, so a second observation of the same tree has nowhere to go. That is bd-7b7d58f rather than anything approving again will clear. Nothing was published and main is untouched"
+        declined "this key's evidence for the tree is on origin already" \
+          --then "attest with another key: set VALLEY_ATTEST_KEY"
       else
         diagnose_request_push "$ref" "$pending"
       fi
@@ -2312,8 +2391,8 @@ approve_attempt() {
     tel approve.request --data "ref=$ref" --data "result=pushed"
   fi
 
-  # The lines under the request line, which differ by what was found and
-  # what was done about it.
+  # The lines -v adds under the request line, which differ by what was
+  # found and what was done about it.
   local -a standing=()
 
   if [ "$pending" = "$head" ]; then
@@ -2328,22 +2407,26 @@ approve_attempt() {
     # as the state it consumes the ref to avoid; replacing a request
     # another approval has just filed would clobber the winner; and
     # either would be a second push behind the one this verb promises. So
-    # what this does is say what is true and stop. Approving again is the
-    # repair, and by then it takes the create or the replace path against
-    # what is actually there.
+    # what this does is say what is true and stop. The approval stood
+    # before this run, so a request that cannot be read, or was consumed,
+    # leaves its state unknown here rather than unapproved. Approving again
+    # is the repair, and by then it takes the create or the replace path
+    # against what is actually there.
     local after
     if ! after="$(remote_ref "$ref")"; then
-      refuse "$ref could not be read again, so whether the request still stands at this head is not known here"
+      valley-go verdict unknown --name "${CHANGE_HANDLE:-$branch}" ${CHANGE_ID:+--version "$APPROVE_VERSION"}
       report_local_evidence ${evidence[@]+"${evidence[@]}"}
       return 1
     fi
     if [ -z "$after" ]; then
-      refuse "the request was consumed while this run was working, which is what the integrator does when a change lands. Nothing here re-filed it: a request for a change already in the stream is judged against an empty delta on every pass. Fetch and review $what again, and approve it once more if it has not landed"
+      valley-go verdict unknown --name "${CHANGE_HANDLE:-$branch}" ${CHANGE_ID:+--version "$APPROVE_VERSION"} \
+        --why "request consumed meanwhile"
       report_local_evidence ${evidence[@]+"${evidence[@]}"}
       return 1
     fi
     if [ "$after" != "$head" ]; then
-      refuse "the request moved to $(git rev-parse --short "$after") ($(subject_of "$after")) while this run was working, so another approval filed it. Nothing here replaced it; approve again to replace it deliberately"
+      declined "another approval filed $(git rev-parse --short "$after") ($(subject_of "$after")) meanwhile" \
+        --run "valley approve $(verdict_name)"
       report_local_evidence ${evidence[@]+"${evidence[@]}"}
       return 1
     fi
@@ -2360,55 +2443,50 @@ approve_attempt() {
     standing+=("replaced the pending request, which stood at $(git rev-parse --short "$pending") ($(subject_of "$pending"))")
   fi
 
-  printf '\nApproved %s (%s): its integration request for origin/%s is filed.\n' \
-    "$what" "$(git rev-parse --short "$head")" "$target"
-  printf 'The integrator will decide whether this change can land.\n'
-  printf 'Your local checkout has not changed.\n\n'
-  # The approval is recorded either way. What has to happen before the
-  # change can land depends on whether a check worker builds this head:
-  # one builds only a ready change's active version.
+  if [ -n "$VERBOSE" ]; then
+    printf '  request  %s -> %s\n' "$ref" "$(git rev-parse --short "$head")"
+    [ "${#standing[@]}" -eq 0 ] || printf '  %s\n' "${standing[@]}"
+    if [ "${#required[@]}" -eq 0 ]; then
+      printf '  evidence none — nothing was required, so nothing was signed\n'
+      printf '  checks   none — the policy requires no check of this change\n'
+    else
+      printf '  tree     %s\n' "$digest"
+      [ "${#evidence[@]}" -eq 0 ] || printf '  evidence %s\n' "${evidence[@]}"
+      # The refs on origin whose evidence was reused, each once.
+      local -A shown=()
+      for check in ${reused[@]+"${reused[@]}"}; do
+        spec="${covered[$check]%% *}"
+        [ -z "${shown[$spec]:-}" ] || continue
+        shown["$spec"]=1
+        printf '  reused   %s\n' "$spec"
+      done
+      [ "${#unbuilt[@]}" -eq 0 ] || printf '  missing  %s\n' "$(printf '%s\n' "${unbuilt[@]}" | join_lines)"
+      printf '  checks   %s\n' "$(printf '%s\n' "${required[@]}" | join_lines)"
+    fi
+  fi
+
+  # The verdict. Checks with no evidence yet are built by a check worker
+  # only for a ready change's active version. Elsewhere approve offers to
+  # build them here, unless a command check that ran here put this
+  # signer's evidence for the tree on origin: that namespace admits
+  # creations only, so a plain branch is offered readying instead, which
+  # lets a worker build it.
+  local -a facts=(--required "${#required[@]}" --passed "$((${#required[@]} - ${#unbuilt[@]}))")
+  [ -z "$took" ] || facts+=(--took "$took")
+  for check in ${unbuilt[@]+"${unbuilt[@]}"}; do facts+=(--waiting "$check"); done
   if [ "${#unbuilt[@]}" -gt 0 ]; then
-    local these="the nix check" them=it
-    if [ "${#unbuilt[@]}" -gt 1 ]; then these="the nix checks" them=them; fi
-    printf 'Origin holds no evidence yet for %s %s, and nothing was built here.\n' \
-      "$these" "$(printf '%s\n' "${unbuilt[@]}" | join_lines)"
-    if [ -z "$CHANGE_ID" ]; then
-      printf 'No check worker builds a branch no record is on.\n'
-    elif [ "$head" != "$CHANGE_HEAD" ]; then
-      printf 'The host'"'"'s check worker builds only the active version, v%s.\n' "$CHANGE_VERSION"
+    if [ -n "$CHANGE_ID" ] && [ "$head" = "$CHANGE_HEAD" ]; then
+      facts+=(--worker)
+    elif [ "${#missing[@]}" -eq 0 ]; then
+      facts+=(--run "valley approve --build-here ${CHANGE_ID:+--head $(git rev-parse --short "$head") }$(verdict_name)")
+    elif [ -z "$CHANGE_ID" ]; then
+      facts+=(--run "valley ready $(verdict_name)")
     else
-      printf 'An enabled check worker that serves this project attempts to build that evidence, unless it already holds its own evidence for the tree.\n'
-    fi
-    printf 'When evidence is published, the integrator considers the request again. Landing still requires a clean apply and acceptable evidence for every required check.\n'
-    printf 'Waiting does not ensure that the missing evidence will be published.\n'
-    # A command check that ran here put this signer's evidence for the
-    # tree on origin, and that namespace admits creations only, so an
-    # approval with --build-here could not add the nix checks to it.
-    if [ "${#missing[@]}" -gt 0 ]; then
-      printf 'This approval published this signer'"'"'s evidence for the tree, and that namespace admits creations only, so --build-here cannot add %s now (bd-7b7d58f).\n\n' "$them"
-    else
-      printf 'To build %s on this machine instead, approve with --build-here.\n\n' "$them"
+      facts+=(--see "valley status $(verdict_name)")
     fi
   fi
-  printf 'Check the result: valley status %q\n\n' "$named"
-  printf '  request  %s -> %s\n' "$ref" "$(git rev-parse --short "$head")"
-  [ "${#standing[@]}" -eq 0 ] || printf '  %s\n' "${standing[@]}"
-  if [ "${#required[@]}" -eq 0 ]; then
-    printf '  evidence none — nothing was required, so nothing was signed\n'
-    printf '  checks   none — the policy requires no check of this change\n'
-  else
-    [ "${#evidence[@]}" -eq 0 ] || printf '  evidence %s\n' "${evidence[@]}"
-    # The refs on origin whose evidence was reused, each once.
-    local -A shown=()
-    for check in ${reused[@]+"${reused[@]}"}; do
-      spec="${covered[$check]%% *}"
-      [ -z "${shown[$spec]:-}" ] || continue
-      shown["$spec"]=1
-      printf '  reused   %s\n' "$spec"
-    done
-    [ "${#unbuilt[@]}" -eq 0 ] || printf '  missing  %s\n' "$(printf '%s\n' "${unbuilt[@]}" | join_lines)"
-    printf '  checks   %s\n' "$(printf '%s\n' "${required[@]}" | join_lines)"
-  fi
+  valley-go verdict approved --name "${CHANGE_HANDLE:-$branch}" \
+    ${CHANGE_ID:+--version "$APPROVE_VERSION"} --target "$target" "${facts[@]}"
 }
 
 # status, ready, unready and withdraw are a Go program, valley-go
@@ -2462,15 +2540,24 @@ read_resolved() {
 REVIEWING=""
 
 # ready_hint <change ID> <branch> <owner>: what a refusal of a change that
-# is not ready adds for the caller: the valley ready line that readies the
-# change again, naming the branch unless its version records none. Only
-# the change's owner, as git config valley.principal names them, is told
-# it, and never in a review. Prints nothing for anyone else.
+# is not ready offers the caller: the valley ready command that readies the
+# change again, naming the branch unless its version records none, as
+# --run and its value, one per line. Only the change's owner, as git
+# config valley.principal names them, is offered it, and never in a
+# review. Prints nothing for anyone else.
 ready_hint() {
   [ -z "$REVIEWING" ] || return 0
   [ -n "$3" ] && [ "$(git config valley.principal || true)" = "$3" ] || return 0
-  printf '. Ready it first: valley ready --change %s' "$1"
+  printf -- '--run\nvalley ready --change %s' "$1"
   [ -z "$2" ] || printf ' %q' "$2"
+}
+
+# not_ready_declined <state> <change ID> <branch> <owner>: approve's
+# refusal of a change that is not ready.
+not_ready_declined() {
+  local -a hint=()
+  mapfile -t hint < <(ready_hint "$2" "$3" "$4")
+  declined "change is $([ "$1" = draft ] && echo 'a draft' || echo "$1")" ${hint[@]+"${hint[@]}"}
 }
 
 resolve_change() {
@@ -2557,55 +2644,56 @@ check_recorded_tip() {
 # A name that read as a plain branch can come to name a change meanwhile:
 # someone readies the branch, and perhaps unreadies it, while the review
 # is open. So the last check before approve files reads the original name
-# again too. approve passes the head it is about to file as the second
+# again too. approve passes the head it is about to file as the first
 # argument. When the name now names a change, the same rules hold: the
-# change must be ready, and its recorded head must be that head. The first
-# argument is what the refusal leaves undone.
+# change must be ready, and its recorded head must be that head.
 #
 # approve binds the head it approves (APPROVE_HEAD), and passes it as the
-# third argument. For approve the change must be ready, and that head must
+# second argument. For approve the change must be ready, and that head must
 # be one of its version heads, whichever version is active by then: a
 # record that moves after review cannot change what lands, since the
 # request names the head approved.
 check_record() {
-  local undone="$1" acting="${2:-}" bound="${3:-}" line kind id handle version head branch state owner
+  local acting="${1:-}" bound="${2:-}" line kind id handle version head branch state owner
   if [ -z "$CHANGE_ID" ]; then
     [ -n "$acting" ] || return 0
     if ! line="$(valley-go resolve "$CHANGE_NAME")"; then
-      refuse "could not read $CHANGE_NAME again against origin's records; $undone"
+      declined "could not read origin's records again"
       return 1
     fi
     read_resolved "$line" kind id handle version head branch state owner
     [ "$kind" = change ] || return 0
     if [ "$state" != ready ]; then
-      refuse "$CHANGE_NAME is now change $handle v$version, which is $state, not ready; $undone$(ready_hint "$id" "$branch" "$owner")"
+      local -a hint=()
+      mapfile -t hint < <(ready_hint "$id" "$branch" "$owner")
+      declined "now change $handle v$version, which is $state" ${hint[@]+"${hint[@]}"}
       return 1
     fi
     if [ "$head" != "$acting" ]; then
-      refuse "$CHANGE_NAME is now change $handle v$version, which records the head $head, and this run began at $acting; $undone. Review it again by its handle"
+      declined "now change $handle v$version, at another head" --run "valley review $handle"
       return 1
     fi
     return 0
   fi
   if ! line="$(valley-go resolve "$CHANGE_ID")"; then
-    refuse "could not read the record of change $CHANGE_HANDLE again; $undone"
+    declined "could not read the change's record again"
     return 1
   fi
   read_resolved "$line" kind id handle version head branch state owner
   if [ "$kind" != change ] || [ "$id" != "$CHANGE_ID" ]; then
-    refuse "origin no longer holds a record of change $CHANGE_HANDLE; $undone"
+    declined "origin no longer holds the change's record"
     return 1
   fi
   if [ "$state" != ready ]; then
-    refuse "change $CHANGE_HANDLE v$version is $state, not ready; $undone$(ready_hint "$CHANGE_ID" "$branch" "$owner")"
+    not_ready_declined "$state" "$CHANGE_ID" "$branch" "$owner"
     return 1
   fi
   if [ -n "$bound" ]; then
-    check_version "$undone" "$bound"
+    check_version "$bound"
     return
   fi
   if [ "$head" != "$CHANGE_HEAD" ]; then
-    refuse "change $CHANGE_HANDLE is at v$version, $head, and this run began at v$CHANGE_VERSION, $CHANGE_HEAD; $undone. Review it again at its new head"
+    declined "change moved to v$version" --run "valley review $CHANGE_HANDLE"
     return 1
   fi
 }
@@ -2613,15 +2701,14 @@ check_record() {
 # For a change with a record, read its versions from origin again, and
 # refuse unless the change is ready and the head given is one of its
 # versions' heads. Sets APPROVE_VERSION and APPROVE_TITLE to that
-# version's number and title. The first argument is what the refusal
-# leaves undone.
+# version's number and title.
 APPROVE_VERSION="" APPROVE_TITLE=""
 check_version() {
-  local undone="$1" head="$2" out n vhead vstate title state=""
+  local head="$1" out n vhead vstate title state=""
   local -a known=()
   APPROVE_VERSION="" APPROVE_TITLE=""
   if ! out="$(valley-go versions "$CHANGE_ID")"; then
-    refuse "could not read the versions of change $CHANGE_HANDLE; $undone"
+    declined "could not read the change's versions"
     return 1
   fi
   # read empties its variables at the end of its input, so the state is
@@ -2635,11 +2722,12 @@ check_version() {
     fi
   done <<< "$out"
   if [ "$state" != ready ]; then
-    refuse "change $CHANGE_HANDLE is $state, not ready; $undone$(ready_hint "$CHANGE_ID" "$CHANGE_BRANCH" "$CHANGE_OWNER")"
+    not_ready_declined "$state" "$CHANGE_ID" "$CHANGE_BRANCH" "$CHANGE_OWNER"
     return 1
   fi
   if [ -z "$APPROVE_VERSION" ]; then
-    refuse "$head is no version of change $CHANGE_HANDLE, whose versions are $(printf '%s\n' "${known[@]}" | join_lines); $undone"
+    declined "$(git rev-parse --short "$head") is none of its versions ($(printf '%s\n' "${known[@]}" | join_lines))" \
+      --see "valley status $CHANGE_HANDLE"
     return 1
   fi
 }
@@ -2657,22 +2745,23 @@ bind_head() {
   local want="$1" sha answer
   APPROVE_HEAD=""
   if [ "$CHANGE_STATE" != ready ]; then
-    refuse "change $CHANGE_HANDLE v$CHANGE_VERSION is $CHANGE_STATE, not ready; nothing published$(ready_hint "$CHANGE_ID" "$CHANGE_BRANCH" "$CHANGE_OWNER")"
+    not_ready_declined "$CHANGE_STATE" "$CHANGE_ID" "$CHANGE_BRANCH" "$CHANGE_OWNER"
     return 1
   fi
   if [ -n "$want" ]; then
     if ! [[ "$want" =~ ^[0-9a-f]{4,64}$ ]] \
       || ! sha="$(git rev-parse --verify --quiet "$want^{commit}")"; then
-      refuse "--head takes the object ID of one of change $CHANGE_HANDLE's version heads, and $want is none here; nothing published"
+      declined "--head $want names no commit here" --see "valley status $CHANGE_HANDLE"
       return 1
     fi
-    check_version "nothing published" "$sha" || return 1
+    check_version "$sha" || return 1
     APPROVE_HEAD="$sha"
     return 0
   fi
-  check_version "nothing published" "$CHANGE_HEAD" || return 1
+  check_version "$CHANGE_HEAD" || return 1
   if [ ! -t 0 ]; then
-    refuse "approving change $CHANGE_HANDLE names the head it approves: off a terminal, pass it with --head. Its active version is v$APPROVE_VERSION at $CHANGE_HEAD, $APPROVE_TITLE: valley approve --head $CHANGE_HEAD $CHANGE_HANDLE. Nothing published"
+    declined "no terminal to confirm the head, $APPROVE_TITLE" \
+      --run "valley approve --head $CHANGE_HEAD $CHANGE_HANDLE"
     return 1
   fi
   printf 'approve change %s v%s at %s, %s? [y/N] ' \
@@ -2681,7 +2770,7 @@ bind_head() {
   case "$answer" in
     y | Y | yes) APPROVE_HEAD="$CHANGE_HEAD" ;;
     *)
-      refuse "not approved; nothing published"
+      declined "not confirmed"
       return 1
       ;;
   esac
@@ -2708,16 +2797,17 @@ bind_review() {
 branch_at_shown() {
   local out now
   out="$(git ls-remote origin "refs/heads/$1")" || {
-    refuse "could not read $1 on origin to check that it is still at $APPROVE_HEAD, the head shown; nothing published"
+    declined "could not read origin/$1 again"
     return 1
   }
   now="$(printf '%s\n' "$out" | awk -v r="refs/heads/$1" '$2 == r { print $1 }')"
   if [ -z "$now" ]; then
-    refuse "origin/$1 is gone, and is no longer at $APPROVE_HEAD, the head shown; nothing published"
+    declined "origin/$1 is gone"
     return 1
   fi
   [ "$now" = "$APPROVE_HEAD" ] && return 0
-  refuse "origin/$1 is at $now, and is no longer at $APPROVE_HEAD, the head shown; nothing published"
+  declined "origin/$1 moved from $(git rev-parse --short "$APPROVE_HEAD"), the head shown, to $(git rev-parse --short "$now")" \
+    --run "valley review $(printf '%q' "$1")"
 }
 
 # The head the checks failed at in this review, short, while the change is
@@ -2789,6 +2879,7 @@ read_standing() {
 # reject check themselves.
 moved() {
   local h="$CHANGE_HANDLE"
+  CARRIED=""
   [ -n "$CHANGE_ID" ] || return 1
   if ! read_standing; then
     echo "could not read $h again from origin; nothing done"
@@ -2814,6 +2905,11 @@ moved() {
   return 1
 }
 
+# Set by carried when the answer carries, and cleared by moved: off a
+# terminal, carried's line ended the line review's prompt left open, so
+# approve's verdict needs no newline of its own.
+CARRIED=""
+
 # carried: whether the answer about the version review showed carries to
 # the version the change moved to, as valley-go carry decides
 # (status/carry.go). When it does, carried says so in one line, and the
@@ -2829,6 +2925,7 @@ carried() {
   case "$verdict" in
     carries)
       echo "$h moved to v$STANDING_VERSION while you were reviewing ($reason) · your answer about v$CHANGE_VERSION stands"
+      CARRIED=yes
       cleanup_review_tmp
       return 0
       ;;
@@ -2847,22 +2944,22 @@ carried() {
   return 1
 }
 
-# behind_main <branch> <label>: the line review shows above the prompt of
-# a change that does not fast-forward from main. Being behind main is
-# normal and asks nothing of the operator: the integrator applies the
-# change's delta onto main as main stands, with the evidence for the head
-# approved, and the host's restacker rebases ready changes itself. When
-# the restacker reports that rebasing the change conflicted, the line
-# says so instead, and [a]pprove stays offered: the integrator decides
-# whether the change applies. Prints nothing, and fails, for a change
-# that fast-forwards from main.
+# behind_main <branch>: the clause review's prompt shows for a change that
+# does not fast-forward from main. Being behind main is normal and asks
+# nothing of the operator: the integrator applies the change's delta onto
+# main as main stands, with the evidence for the head approved, and the
+# host's restacker rebases ready changes itself. When the restacker
+# reports that rebasing the change conflicted, the clause says so instead,
+# and [a]pprove stays offered: the integrator decides whether the change
+# applies. Prints nothing, and fails, for a change that fast-forwards from
+# main.
 behind_main() {
   fast_forwards "$(change_head "$1")" && return 1
   read_standing || STANDING_CONFLICT=""
   if [ "$STANDING_CONFLICT" = conflict ]; then
-    printf '%s conflicts with main; its owner is resolving it.' "$2"
+    printf 'conflicts with main (owner resolving)'
   else
-    printf '%s is behind main; the integrator lands it onto main as main stands (no rebase needed).' "$2"
+    printf 'behind main (integrator merges)'
   fi
 }
 
@@ -2874,52 +2971,58 @@ read_and_decide() {
 }
 
 # decide <branch> [<name> <n>]: the verdict on a change alone, and on the
-# top of a stack. A change alone is asked about by its branch. The top of
-# a stack of <n> is asked about by its <name>, as the stack lists it, and
-# its prompt says that approving it lands all <n> layers. [v]iew full
-# diff pages the change's whole diff, or the top layer's.
+# top of a stack. Its prompt is one header line, the change and what
+# stands in its way as clauses, and the keys it takes (valley-go verdict
+# prompt, status/verdict.go). A change is named by its handle and version,
+# a plain branch by its name, and a change alone carries the checks line
+# review read for it. The top of a stack of <n> is named by its <name>, as
+# the stack lists it, and its [a]pprove says that approving it lands all
+# <n> layers. [v]iew diff pages the change's whole diff, or the top
+# layer's.
 #
-# A change that is not ready is asked about by the line not_ready gives,
-# in place of the label, and is offered only [v]iew full diff and
-# [s]kip, or [s]top. The top of a stack with a layer under it that is not
-# ready says why it can't be approved (layer_held), and is offered the
-# rest. A change that can be approved and does not fast-forward from main
-# has behind_main's line above its prompt. Before [a]pprove and [r]eject
-# act, moved reads the change again, and ends its review when it moved.
+# A change that is not ready says so in its header, and is offered only
+# [v]iew diff and [s]kip, or [s]top. The top of a stack with a layer under
+# it that is not ready says why it can't be approved (layer_held), as
+# does a change whose checks failed at the head shown, and neither is
+# offered [a]pprove. A change that can be approved and does not
+# fast-forward from main says so (behind_main). Before [a]pprove and
+# [r]eject act, moved reads the change again, and ends its review when it
+# moved.
 decide() {
-  local branch="$1" name="${2:-}" n="${3:-}" choice failed answers own held="" behind=""
-  local label="$1" approve="[a]pprove" reject="[r]eject" stop="[s]kip"
+  local branch="$1" name="${2:-}" n="${3:-}" choice failed answers own="" held="" behind="" clause
+  local approve="[a]pprove" reject="[r]eject" stop="[s]kip"
   local stopped="skipped $1; nothing done"
-  own="$(shown_not_ready)" || own=""
+  local -a header=("$1") keys=()
+  if [ -n "$CHANGE_ID" ]; then
+    header=("$CHANGE_HANDLE v$CHANGE_VERSION")
+    case "$CHANGE_STATE" in
+      draft) own="draft (its owner, $CHANGE_OWNER, has not readied it)" ;;
+      withdrawn) own="withdrawn" ;;
+    esac
+  fi
   if [ -n "$n" ]; then
-    label="$name, $n of $n" approve="[a]pprove all $n" reject="[r]eject $name" stop="[s]top"
+    header+=("stack of $n")
+    approve="[a]pprove all $n" reject="[r]eject $name" stop="[s]top"
     stopped="stopped reviewing $name at change $n of $n; nothing done"
     held="$(layer_held $((n - 1)))" || held=""
+  elif [ -n "${REVIEW_CHECKS:-}" ]; then
+    header+=("$REVIEW_CHECKS")
   fi
   if [ -z "$own" ] && [ -z "$held" ]; then
-    behind="$(behind_main "$branch" "${name:-$branch}")" || behind=""
+    behind="$(behind_main "$branch")" || behind=""
   fi
   while true; do
     failed=""
-    [ -z "$behind" ] || printf '%s\n' "$behind"
     if [ -n "$own" ]; then
-      if [ -n "$n" ]; then
-        printf '%s: %s [v]iew full diff, %s? ' "$label" "$own" "$stop"
-      else
-        printf '%s [v]iew full diff, %s? ' "$own" "$stop"
-      fi
-      answers="v or s"
+      clause="$own" keys=("[v]iew diff" "$stop") answers="v or s"
     elif [ -n "$held" ]; then
-      printf '%s: %s [v]iew full diff, %s, %s? ' "$label" "$held" "$reject" "$stop"
-      answers="v, r, or s"
+      clause="$held" keys=("[v]iew diff" "$reject" "$stop") answers="v, r, or s"
     elif failed="$(approve_failed_at "$branch")"; then
-      printf '%s: its checks failed at %s, so approving needs a new head: [v]iew full diff, %s, %s? ' \
-        "$label" "$failed" "$reject" "$stop"
-      answers="v, r, or s"
+      clause="checks failed at $failed" keys=("[v]iew diff" "$reject" "$stop") answers="v, r, or s"
     else
-      printf '%s: %s, [v]iew full diff, %s, %s? ' "$label" "$approve" "$reject" "$stop"
-      answers="a, v, r, or s"
+      clause="$behind" keys=("$approve" "[v]iew diff" "$reject" "$stop") answers="a, v, r, or s"
     fi
+    valley-go verdict prompt "${header[@]}" ${clause:+"$clause"} -- "${keys[@]}"
     read -r choice || die "stdin closed before an answer; nothing done"
     case "$choice" in
       # A refusal from approve is not a verdict: it says what it did not do
@@ -3087,25 +3190,27 @@ summarize_stack() {
 
 # base_stack: before any layer is paged, a stack whose bottom does not
 # fast-forward from main is offered [b]ase, which rebases every layer as
-# the rebase verb does (status/rebase.go), or [s]top. After a rebase the
-# stack is read again and listed again, so the heads paged are the heads
-# approved. A rebase refused or left unfinished has said what happened,
-# and only [s]top is offered then. Fails when the review stops here.
+# the rebase verb does (status/rebase.go), [v]iew diff, which pages the
+# top's whole diff, or [s]kip. After a rebase the stack is read again and
+# listed again, so the heads paged are the heads approved. A rebase
+# refused or left unfinished has said what happened, and only [v]iew diff
+# and [s]kip are offered then. Fails when the review stops here.
 base_stack() {
-  local n choice offered="[b]ase" stopped="; nothing done"
+  local n choice answers clause="behind main" stopped="; nothing done"
+  local -a keys=()
   while ! fast_forwards "${L_HEAD[0]}"; do
     n="${#L_NAME[@]}"
-    if [ -n "$offered" ]; then
-      printf '%s, at the bottom, does not fast-forward from main: [b]ase all %d onto main, [s]top? ' \
-        "${L_NAME[0]}" "$n"
+    if [ "$clause" = "behind main" ]; then
+      keys=("[b]ase onto main" "[v]iew diff" "[s]kip") answers="b, v, or s"
     else
-      printf 'the stack under %s is not rebased: [s]top? ' "${L_NAME[n - 1]}"
+      keys=("[v]iew diff" "[s]kip") answers="v or s"
     fi
+    valley-go verdict prompt "${L_NAME[n - 1]}" "stack of $n" "$clause" -- "${keys[@]}"
     read -r choice || die "stdin closed before an answer; nothing done"
     case "$choice" in
       b)
-        if [ -z "$offered" ]; then
-          echo "answer s"
+        if [ "$clause" != "behind main" ]; then
+          echo "answer $answers"
         elif rebase_shown "${L_HEAD[n - 1]}"; then
           fetch_origin
           if [ -n "$CHANGE_ID" ]; then
@@ -3115,14 +3220,15 @@ base_stack() {
           read_stack || die "could not read the stack under $TOP_NAME again after the rebase"
           summarize_stack
         else
-          offered="" stopped=""
+          clause="not rebased" stopped=""
         fi
         ;;
+      v) view_full "$CHANGE_BRANCH" ;;
       s)
         echo "stopped reviewing ${L_NAME[n - 1]} before its first layer$stopped"
         return 1
         ;;
-      *) echo "answer ${offered:+b or }s" ;;
+      *) echo "answer $answers" ;;
     esac
   done
 }
@@ -3299,7 +3405,7 @@ cmd_review() {
   local usage="usage: valley review [-v] [--build-here] <change>"
   for arg in "$@"; do
     case "$arg" in
-      -v) verbose=(-v) ;;
+      -v) verbose=(-v) VERBOSE=yes ;;
       --build-here) BUILD_HERE=yes ;;
       -*) die "$usage" ;;
       *)
@@ -3353,11 +3459,15 @@ cmd_review() {
 # for (approve_attempt).
 cmd_approve() {
   local name="" want=""
-  local usage="usage: valley approve [--head <sha>] [--build-here] <change>"
+  local usage="usage: valley approve [-v] [--head <sha>] [--build-here] <change>"
   while [ $# -gt 0 ]; do
     case "$1" in
       --build-here)
         BUILD_HERE=yes
+        shift
+        ;;
+      -v | --verbose)
+        VERBOSE=yes
         shift
         ;;
       --head)
@@ -3389,7 +3499,9 @@ cmd_approve() {
     tip="$(ref_oid "refs/remotes/origin/$branch")" \
       || die "no such branch on origin: $branch"
     if [ -n "$want" ] && [ "$(git rev-parse --verify --quiet "$want^{commit}" || true)" != "$tip" ]; then
-      die "origin/$branch is at $tip, not $want; nothing published"
+      declined "origin/$branch is at $(git rev-parse --short "$tip"), not $want" \
+        --run "valley approve $(printf '%q' "$branch")"
+      exit 1
     fi
   fi
   # In a condition, as the review prompt calls it: approve checks each of

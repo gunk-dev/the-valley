@@ -8,17 +8,18 @@ import (
 )
 
 // terminal is what valley pending's and valley plan's text is laid out
-// for: a width in columns, and whether text is styled, with names in bold
-// and plan's glyphs in colour.
+// for: a width in columns, whether text is styled, with names in bold and
+// plan's glyphs in colour, and whether a line can be redrawn in place.
 type terminal struct {
 	width int
 	bold  bool
+	live  bool
 }
 
 // terminalOf is the terminal w writes to. Its width is the terminal's
 // own, or 80 columns when w is no terminal or the terminal does not know
 // its width. Text is styled on a terminal, unless NO_COLOR is set to
-// anything but the empty string.
+// anything but the empty string, and a terminal is live either way.
 func terminalOf(w io.Writer) terminal {
 	t := terminal{width: 80}
 	f, ok := w.(*os.File)
@@ -32,6 +33,7 @@ func terminalOf(w io.Writer) terminal {
 	if cols > 0 {
 		t.width = cols
 	}
+	t.live = true
 	t.bold = os.Getenv("NO_COLOR") == ""
 	return t
 }

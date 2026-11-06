@@ -27,8 +27,8 @@ version against its earlier **approved version** when one can be compared: if th
 unchanged (a clean restack), it prints a short summary with any landings between the two bases and
 pages nothing; if the version changed files, it pages the comparison (the files whose change
 differs, the range-diff between the two versions, and the shown version's diff of those files); and
-if there is no approved version or no comparison can be made, it pages the full diff
-(`[v]iew full diff` is available at the prompt in every case). The operator approves the change with
+if there is no approved version or no comparison can be made, it pages the full diff (`[v]iew diff`
+is available at the prompt in every case). The operator approves the change with
 `valley approve <change>` (or by selecting `[a]pprove` in `valley review`), which reuses eligible
 evidence already on `origin` for the commit's content tree, runs and signs the required `command`
 checks, and writes an integration request binding that one exact commit. Approval and passing checks

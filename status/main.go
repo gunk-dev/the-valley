@@ -18,7 +18,8 @@
 // which checks a change requires, as the Go deriver derives them
 // (checks.go); no verb of bin/valley runs it. coverage says which of a
 // head's required nix checks already have evidence on origin that approve
-// can reuse rather than build (coverage.go). work is one pass of a check
+// can reuse rather than build (coverage.go), and verdict prints what
+// approve and review's prompt say (verdict.go). work is one pass of a check
 // worker, which builds and publishes that evidence for ready changes
 // before they are approved (worker.go); no verb of bin/valley runs it.
 //
@@ -69,6 +70,7 @@ const usage = `usage: valley-go status [--json] [-v] <change>
        valley-go carry <change ID> <version shown> <later version>
        valley-go checks [--schema <file>] --instance <dir> --project <dir> <base> <head>
        valley-go coverage --head <sha> [--check <name>=<attribute>]...
+       valley-go verdict approved|refused|unknown|checking|prompt [args]
        valley-go work --repo <name>... --key <file> [--name <name>] [--state <dir>]
        valley-go changes --json [--all] [--repo <name>] [-v]
        valley-go pending [--json] [--all] [--repo <name>] [--checks] [-v]
@@ -144,6 +146,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runChecks(g, args, stdout)
 	case "coverage":
 		err = runCoverage(g, args, stdout, stderr)
+	case "verdict":
+		return runVerdict(args, stdout, stderr)
 	case "changes":
 		err = runChanges(g, args, stdout, stderr)
 	case "pending":

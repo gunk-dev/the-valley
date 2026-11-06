@@ -231,11 +231,10 @@ bottom up; approving its top includes the layers below. Review lists a layer bel
 already approved but does not page it. Name that layer to review it.
 
 A change behind `main` is approved as it is. The integrator applies the change onto `main` as `main`
-stands, and a host that runs the restacker rebases ready changes itself. Review shows one line above
-the prompt, such as
-`kqxm is behind main; the integrator lands it onto main as main stands (no rebase needed).` When the
-restacker reports a conflict, the line says `kqxm conflicts with main; its owner is resolving it.`
-instead. Review offers no rebase; an author rebases their own change with `valley rebase`.
+stands, and a host that runs the restacker rebases ready changes itself. The prompt's header says
+so, as in `kqxm v3 · behind main (integrator merges)`. When the restacker reports a conflict, it
+says `conflicts with main (owner resolving)` instead. Review offers no rebase; an author rebases
+their own change with `valley rebase`.
 
 A change can move while you read it: its owner may return it to draft, ready a new version, or
 withdraw it, and it may land. Review reads the change again before `[a]pprove` or `[r]eject` acts.
@@ -246,8 +245,8 @@ changes keeps your answer instead:
 and approving v3 lands those changes.
 
 For a revised change, review automatically compares it with an earlier approved version when one can
-be identified. A clean restack gets a short summary. Use `[v]iew full diff` to see the whole change.
-The [comparison rules](./architecture.md#review-against-the-approved-version) explain what can be
+be identified. A clean restack gets a short summary. Use `[v]iew diff` to see the whole change. The
+[comparison rules](./architecture.md#review-against-the-approved-version) explain what can be
 compared.
 
 You can also approve from the command line:
@@ -263,14 +262,28 @@ on `origin` for the commit's content tree (see [`valley approve`](./reference.md
 It runs and signs the required `command` checks, and publishes the new evidence and request
 together. When every required check is covered, nothing runs and no signing key is needed. Approval
 does not wait for landing. An enabled integrator processes the request; `status` tells you what
-happened.
+happened. Approval ends in one line that says what happened and what comes next:
+
+```text
+✓ kqxm v3  approved · checks passed · landing on main
+```
+
+A refusal says what stands in the way, and what to run about it:
+
+```text
+⊘ kqxm v3  not approved · change is a draft
+  run: valley ready --change <id> kqxm
+```
+
+`valley approve -v` also prints the refs, evidence and signers behind that line.
 
 When a required `nix` check has no evidence on `origin` yet, approval still files the request at
 once, after the required `command` checks pass. Your approval is recorded, and no `nix` check is
-built on your machine. Approval names the checks still missing. The integrator keeps the request.
-When evidence is published, an enabled integrator considers the request again, and you do not need
-to approve again. Landing still requires the change to apply cleanly and carry acceptable evidence
-for every required check.
+built on your machine. The integrator keeps the request, and approval says how many checks it is
+waiting for, such as `◐ kqxm v3  approved · lands when 3 checks pass (1/4 passed)`. When evidence is
+published, an enabled integrator considers the request again, and you do not need to approve again.
+Landing still requires the change to apply cleanly and carry acceptable evidence for every required
+check.
 
 An enabled worker that serves the project attempts the missing `nix` checks of a ready change's
 unlanded active version. It cannot add checks to its own existing evidence ref for the same tree,

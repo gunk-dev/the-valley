@@ -69,7 +69,7 @@ answer_after() {
 # shellcheck disable=SC2094 # the answers wait on the review's own output
 {
   printf 'v\nq'
-  answer_after session.log 'scratch: \[a\]pprove, \[v\]iew full diff, \[r\]eject, \[s\]kip? ' : 's\n'
+  answer_after session.log '\]kip: ' : 's\n'
   wait_for session.log '5 note(s) on scratch'
 } | script -qec "valley review scratch" /dev/null > session.log 2>&1
 sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r//g' session.log > plain.log
@@ -225,7 +225,7 @@ grep -q '^  3\. pppp (ready): layer three$' stack.out
 grep -qxF 'read each layer and go on with [n]; approving pppp at the top lands all 3. [a] on a lower layer lands it and the layers under it, and ends the review.' stack.out
 grep -qF 'one, 1 of 3: [n]ext layer, [a]pprove one alone, [v]iew full diff, [s]top? ' stack.out
 grep -qF 'qqqq, 2 of 3: [n]ext layer, [a]pprove one and qqqq, [v]iew full diff, [s]top? ' stack.out
-grep -qF 'pppp, 3 of 3: [a]pprove all 3, [v]iew full diff, [r]eject pppp, [s]top? ' stack.out
+grep -qF '[a]pprove all 3  [v]iew diff  [r]eject pppp  [s]top: ' stack.out
 # Piped, each page's first line follows the prompt before it.
 [ "$(grep -o 'change [0-9] of 3: [a-z]* on [a-z]*$' stack.out)" = "$(printf '%s\n' \
   'change 1 of 3: one on main' 'change 2 of 3: qqqq on one' 'change 3 of 3: pppp on qqqq')" ]
@@ -263,7 +263,7 @@ valley ready --change "$q" two > /dev/null
 # A change with no stack under it pages and prompts as it always has.
 printf 's\n' | valley review one > stack-one.out 2>&1
 grep -q '^branch one, log against origin/main:$' stack-one.out
-grep -q '^one: \[a\]pprove, \[v\]iew full diff, \[r\]eject, \[s\]kip? skipped one; nothing done$' stack-one.out
+grep -q '^\[a\]pprove  \[v\]iew diff  \[r\]eject  \[s\]kip: skipped one; nothing done$' stack-one.out
 if grep -q 'stack of\|change 1 of' stack-one.out; then exit 1; fi
 
 seed="$(git rev-parse main)" onehead="$(git rev-parse one)"
@@ -287,7 +287,7 @@ git -C "$stack" update-ref -d "$requests/one"
 # shellcheck disable=SC2094 # the answers wait on the review's own output
 answer_after moved-one.out 'one, 1 of 3: \[n\]ext' "git -C '$stack' update-ref refs/heads/one $seed; git fetch -q origin" 'a\ns\n' \
   | valley review pppp > moved-one.out 2>&1
-grep -q "origin/one is at $seed, and is no longer at $onehead, the head shown; nothing published" moved-one.out
+grep -q "not approved · origin/one moved from ${onehead:0:7}[0-9a-f]*, the head shown, to ${seed:0:7}" moved-one.out
 [ ! -s "$pushlog" ]
 if git -C "$stack" rev-parse --verify --quiet "$requests/one" > /dev/null; then exit 1; fi
 git -C "$stack" update-ref refs/heads/one "$onehead"
@@ -311,25 +311,25 @@ git checkout --quiet main
 # shellcheck disable=SC2094 # the answers wait on the review's own output
 {
   printf 'n\nn\nn\n'
-  answer_after moved-four.out 'four, 4 of 4: \[a\]pprove all 4, \[v\]iew full diff, \[r\]eject four, \[s\]top?' "git -C '$stack' update-ref refs/heads/four $seed; git fetch -q origin" 'a\ns\n'
+  answer_after moved-four.out '\[a\]pprove all 4  \[v\]iew diff  \[r\]eject four  \[s\]top:' "git -C '$stack' update-ref refs/heads/four $seed; git fetch -q origin" 'a\ns\n'
 } | valley review four > moved-four.out 2>&1
 grep -q '^four is a stack of 4 changes' moved-four.out
 # From the third layer up, a lower layer's prompt counts what approving
 # there lands. The top's prompt names the top, and says approving it
 # lands all 4.
 grep -qF 'pppp, 3 of 4: [n]ext layer, [a]pprove the 3 up to pppp, [v]iew full diff, [s]top? ' moved-four.out
-grep -qF 'four, 4 of 4: [a]pprove all 4, [v]iew full diff, [r]eject four, [s]top? ' moved-four.out
-grep -q "origin/four is at $seed, and is no longer at $fourhead, the head shown; nothing published" moved-four.out
+grep -qF '[a]pprove all 4  [v]iew diff  [r]eject four  [s]top: ' moved-four.out
+grep -q "not approved · origin/four moved from ${fourhead:0:7}[0-9a-f]*, the head shown, to ${seed:0:7}" moved-four.out
 grep -q 'stopped reviewing four at change 4 of 4; nothing done' moved-four.out
 [ ! -s "$pushlog" ]
 if git -C "$stack" rev-parse --verify --quiet "$requests/four" > /dev/null; then exit 1; fi
 
 : > "$pushlog"
 # shellcheck disable=SC2094 # the answers wait on the review's own output
-answer_after moved-solo.out 'solo: \[a\]pprove' "git -C '$stack' update-ref refs/heads/solo $seed; git fetch -q origin" 'a\ns\n' \
+answer_after moved-solo.out '^\[a\]pprove  \[v\]iew diff' "git -C '$stack' update-ref refs/heads/solo $seed; git fetch -q origin" 'a\ns\n' \
   | valley review solo > moved-solo.out 2>&1
 grep -q '^branch solo, log against origin/main:$' moved-solo.out
-grep -q "origin/solo is at $seed, and is no longer at $solohead, the head shown; nothing published" moved-solo.out
+grep -q "not approved · origin/solo moved from ${solohead:0:7}[0-9a-f]*, the head shown, to ${seed:0:7}" moved-solo.out
 [ ! -s "$pushlog" ]
 if git -C "$stack" rev-parse --verify --quiet "$requests/solo" > /dev/null; then exit 1; fi
 
@@ -354,14 +354,14 @@ git push --quiet origin main
 : > "$pushlog"
 for head in "$threeagain" "$three"; do
   if valley approve --head "$head" pppp > stale-approve.out 2>&1; then exit 1; fi
-  grep -qF 'does not fast-forward from main, and the commits it would bring hold a version of qqqq, not landed.' stale-approve.out
-  grep -qF 'nothing published. Rebase the stack first: valley rebase pppp' stale-approve.out
+  grep -qF 'not approved · stack is behind main (includes qqqq)' stale-approve.out
+  grep -qx '  run: valley rebase pppp' stale-approve.out
   if grep -q 'requires no check' stale-approve.out; then exit 1; fi
 done
 [ ! -s "$pushlog" ]
 # The bottom layer has no change under it, so it is approved as it is.
 valley approve one > stale-bottom.out 2>&1
-grep -q 'requires no check' stale-bottom.out
+grep -qx '✓ one  approved · no checks required · landing on main' stale-bottom.out
 [ "$(git -C "$stack" rev-parse "$requests/one")" = "$onehead" ]
 git -C "$stack" update-ref -d "$requests/one"
 
@@ -369,7 +369,8 @@ git -C "$stack" update-ref -d "$requests/one"
 # [s]top ends it there, and nothing is done.
 : > "$pushlog"
 printf 's\n' | valley review pppp > stale-stop.out 2>&1
-grep -qF 'one, at the bottom, does not fast-forward from main: [b]ase all 3 onto main, [s]top? stopped reviewing pppp before its first layer; nothing done' stale-stop.out
+grep -qxF 'pppp · stack of 3 · behind main' stale-stop.out
+grep -qF '[b]ase onto main  [v]iew diff  [s]kip: stopped reviewing pppp before its first layer; nothing done' stale-stop.out
 if grep -q 'change 1 of 3' stale-stop.out; then exit 1; fi
 [ ! -s "$pushlog" ]
 
@@ -377,7 +378,7 @@ if grep -q 'change 1 of 3' stale-stop.out; then exit 1; fi
 # and pages the rebased layers, and [a]pprove at the top files the
 # request at the top's rebased head.
 printf 'b\nn\nn\na\n' | valley review pppp > stale-review.out 2>&1
-grep -qF 'one, at the bottom, does not fast-forward from main: [b]ase all 3 onto main, [s]top? ' stale-review.out
+grep -qF '[b]ase onto main  [v]iew diff  [s]kip: ' stale-review.out
 grep -qF 'the stack under pppp, bottom first:' stale-review.out
 git fetch --quiet origin
 newone="$(git rev-parse origin/one)" newthree="$(git rev-parse origin/three)"
@@ -386,7 +387,7 @@ git merge-base --is-ancestor origin/main "$newone"
 awk '/change 1 of 3: /{ on = 1 } /change 2 of 3: /{ on = 0 } on' stale-review.out > stale-page1
 grep -q "^$(git rev-parse --short "$newone") layer one$" stale-page1
 if grep -q "$(git rev-parse --short "$onehead")" stale-page1; then exit 1; fi
-grep -qF 'pppp, 3 of 3: [a]pprove all 3, [v]iew full diff, [r]eject pppp, [s]top? ' stale-review.out
+grep -qF '[a]pprove all 3  [v]iew diff  [r]eject pppp  [s]top: ' stale-review.out
 [ "$(git -C "$stack" rev-parse "$requests/c-$p")" = "$newthree" ]
 # qqqq's v1 was approved earlier, and the rebase gave it v2 with the same
 # file delta, so its layer is printed as a clean restack of v1, and not
@@ -426,7 +427,7 @@ chmod +x "$TMPDIR/changed-editor"
 # shellcheck disable=SC2094 # the answers wait on the review's own output
 {
   printf 'v\nq'
-  answer_after changed-tty.log '\[s\]kip? ' : 's\n'
+  answer_after changed-tty.log '\]kip: ' : 's\n'
   wait_for changed-tty.log '1 note(s) on edited'
 } | EDITOR="$TMPDIR/changed-editor" script -qec "valley review mmmm" /dev/null > changed-tty.log 2>&1
 sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r//g' changed-tty.log > changed-plain.log

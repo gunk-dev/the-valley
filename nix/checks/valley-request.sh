@@ -176,16 +176,14 @@ digest="$(attest digest --rev topic/one | cut -d: -f2)"
 
 : > "$pushlog"
 printf 'a\n' > "$w/answers"
-valley review topic/one < "$w/answers" > "$w/approve.out" 2> "$w/approve.err"
+valley review -v topic/one < "$w/answers" > "$w/approve.out" 2> "$w/approve.err"
 
-grep -q '^checking topic/one at .*: tree-ok$' "$w/approve.out"
+grep -q '^◐ topic/one  checking 1 check: tree-ok$' "$w/approve.out"
 grep -qE '^check   tree-ok +command  passed$' "$w/approve.out"
-grep -qx "Approved topic/one ($(git rev-parse --short topic/one)): its integration request for origin/main is filed." "$w/approve.out"
+grep -qx '✓ topic/one  approved · 1 check passed in [0-9]*s · landing on main' "$w/approve.out"
 grep -qx "  request  refs/the-valley/integration-requests/main/topic-one -> $(git rev-parse --short topic/one)" "$w/approve.out"
 grep -qx "  evidence refs/the-valley/attestations/$digest/$keyhash" "$w/approve.out"
 grep -qx '  checks   tree-ok' "$w/approve.out"
-grep -qx 'Your local checkout has not changed.' "$w/approve.out"
-grep -qx 'Check the result: valley status topic/one' "$w/approve.out"
 
 # How long the check took is printed after it, and logged on this machine:
 # one JSON line per required check, in the state directory, outside the
@@ -299,26 +297,27 @@ valley review topic/two < "$w/answers" > "$w/fail.out" 2> "$w/fail.err"
 # The prompt is the whole of what the operator is offered, so it is pinned
 # character for character: a verb that stops being offered, or one that
 # starts, is a change to the review loop and not an incidental one.
-behind='topic/two is behind main; the integrator lands it onto main as main stands (no rebase needed).'
+behind='topic/two · behind main (integrator merges)'
 grep -qx "$behind" "$w/fail.out"
-grep -qF 'topic/two: [a]pprove, [v]iew full diff, [r]eject, [s]kip? ' "$w/fail.out"
+grep -qF '[a]pprove  [v]iew diff  [r]eject  [s]kip: ' "$w/fail.out"
 if grep -qF '[b]ase' "$w/fail.out"; then
   echo "valley-request: review offered [b]ase for a branch behind main" >&2
   exit 1
 fi
-grep -q '^checking topic/two at .*: no-secrets$' "$w/fail.out"
+grep -q '◐ topic/two  checking 1 check: no-secrets' "$w/fail.out"
 twohead="$(git rev-parse --short topic/two)"
-grep -qF "topic/two: its checks failed at $twohead, so approving needs a new head: [v]iew full diff, [r]eject, [s]kip? " "$w/fail.out"
+grep -qxF "topic/two · checks failed at $twohead" "$w/fail.out"
+grep -qF '[v]iew diff  [r]eject  [s]kip: ' "$w/fail.out"
 grep -qF 'answer v, r, or s' "$w/fail.out"
 offers="$(grep -oF '[a]pprove' "$w/fail.out" | wc -l)"
-checked="$(grep -c '^checking topic/two at ' "$w/fail.out" || true)"
+checked="$(grep -c '◐ topic/two  checking ' "$w/fail.out" || true)"
 if [ "$offers" != 1 ] || [ "$checked" != 1 ]; then
   echo "valley-request: after its checks failed, the prompt offered [a]pprove again ($offers offers, $checked runs)" >&2
   cat "$w/fail.out" >&2
   exit 1
 fi
-grep -qE '^check   no-secrets +command  failed$' "$w/fail.out"
-grep -q 'the checks did not pass; nothing published, main untouched' "$w/fail.err"
+grep -qx '⊘ topic/two  not approved · 1 of [0-9]* checks* failed' "$w/fail.err"
+grep -qx '  ✗ no-secrets — see: valley status topic/two' "$w/fail.err"
 # The prompt is printed without a newline, so what follows a refusal shares
 # its line — the answer to it is not anchored.
 grep -q 'skipped topic/two; nothing done' "$w/fail.out"
@@ -346,12 +345,13 @@ leakhead="$(git rev-parse --short topic/leak)"
 : > "$pushlog"
 printf 'a\na\ns\n' > "$w/answers"
 valley review topic/leak < "$w/answers" > "$w/leak.out" 2> "$w/leak.err"
-grep -qF 'topic/leak: [a]pprove, [v]iew full diff, [r]eject, [s]kip? ' "$w/leak.out"
-grep -qF "topic/leak: its checks failed at $leakhead, so approving needs a new head: [v]iew full diff, [r]eject, [s]kip? " "$w/leak.out"
+grep -qF '[a]pprove  [v]iew diff  [r]eject  [s]kip: ' "$w/leak.out"
+grep -qxF "topic/leak · checks failed at $leakhead" "$w/leak.out"
+grep -qF '[v]iew diff  [r]eject  [s]kip: ' "$w/leak.out"
 grep -qF 'answer v, r, or s' "$w/leak.out"
 grep -q 'skipped topic/leak; nothing done' "$w/leak.out"
 offers="$(grep -oF '[a]pprove' "$w/leak.out" | wc -l)"
-checked="$(grep -c '^checking topic/leak at ' "$w/leak.out" || true)"
+checked="$(grep -c '◐ topic/leak  checking ' "$w/leak.out" || true)"
 if [ "$offers" != 1 ] || [ "$checked" != 1 ] || [ -s "$pushlog" ]; then
   echo "valley-request: after its checks failed, a branch that fast-forwards was offered [a]pprove again ($offers offers, $checked runs)" >&2
   cat "$w/leak.out" "$pushlog" >&2
@@ -365,11 +365,12 @@ fi
 : > "$pushlog"
 printf 'a\ns\n' > "$w/answers"
 env -u VALLEY_ATTEST_KEY valley review topic/two < "$w/answers" > "$w/nokey.out" 2> "$w/nokey.err"
-grep -q 'no signing key: set VALLEY_ATTEST_KEY' "$w/nokey.err"
+grep -qx '⊘ topic/two  not approved · no signing key' "$w/nokey.err"
+grep -q '^  set VALLEY_ATTEST_KEY' "$w/nokey.err"
 grep -q 'skipped topic/two; nothing done' "$w/nokey.out"
 # A refusal that is no check failure leaves the prompt as it was, [a]pprove
 # and all: a new session starts with no check failed.
-offers="$(grep -oF 'topic/two: [a]pprove, [v]iew full diff, [r]eject, [s]kip? ' "$w/nokey.out" | wc -l)"
+offers="$(grep -oF '[a]pprove  [v]iew diff  [r]eject  [s]kip: ' "$w/nokey.out" | wc -l)"
 if [ "$offers" != 2 ]; then
   echo "valley-request: a refusal that was no check failure changed the prompt" >&2
   cat "$w/nokey.out" >&2
@@ -397,12 +398,12 @@ quiethead="$(git rev-parse --short topic/quiet)"
 
 : > "$pushlog"
 printf 'a\n' > "$w/answers"
-env -u VALLEY_ATTEST_KEY valley review topic/quiet < "$w/answers" \
+env -u VALLEY_ATTEST_KEY valley review -v topic/quiet < "$w/answers" \
   > "$w/quiet.out" 2> "$w/quiet.err"
 
 grep -q 'requires no check under .* + policy/project@origin/main .*; filing the request with no evidence' "$w/quiet.out"
 grep -qF "$valley policy/instance@refs/heads/main" "$w/quiet.out"
-grep -q '^Approved topic/quiet .*: its integration request for origin/main is filed\.$' "$w/quiet.out"
+grep -qx '✓ topic/quiet  approved · no checks required · landing on main' "$w/quiet.out"
 grep -qx "  request  refs/the-valley/integration-requests/main/topic-quiet -> $quiethead" "$w/quiet.out"
 grep -qx '  evidence none — nothing was required, so nothing was signed' "$w/quiet.out"
 grep -qx '  checks   none — the policy requires no check of this change' "$w/quiet.out"
@@ -440,8 +441,8 @@ before_base="$(git -C "$origin" rev-parse refs/heads/main)"
 printf 'b\na\n' > "$w/answers"
 : > "$pushlog"
 valley review topic/three < "$w/answers" > "$w/base.out" 2>&1
-grep -qx 'topic/three is behind main; the integrator lands it onto main as main stands (no rebase needed).' "$w/base.out"
-grep -qF 'topic/three: [a]pprove, [v]iew full diff, [r]eject, [s]kip? answer a, v, r, or s' "$w/base.out"
+grep -qx 'topic/three · behind main (integrator merges)' "$w/base.out"
+grep -qF '[a]pprove  [v]iew diff  [r]eject  [s]kip: answer a, v, r, or s' "$w/base.out"
 if grep -qF -e '[b]ase' -e 'rebased topic/three' "$w/base.out"; then
   echo "valley-request: review offered or ran a rebase of a branch behind main" >&2
   cat "$w/base.out" >&2
@@ -488,7 +489,7 @@ fi
 printf 'a\n' > "$w/answers"
 valley review topic/nolayer < "$w/answers" \
   > "$w/nolayer.review.out" 2> "$w/nolayer.review.err"
-grep -q '^Approved topic/nolayer .*: its integration request for origin/main is filed\.$' "$w/nolayer.review.out"
+grep -q '^✓ topic/nolayer  approved · ' "$w/nolayer.review.out"
 
 # ----------------------------------------------------------------------
 # 8. The reviewer's checkout contributes nothing. This is the case that
@@ -520,9 +521,9 @@ git checkout --quiet topic/nolayer
 
 : > "$pushlog"
 printf 'a\n' > "$w/answers"
-valley review topic/four < "$w/answers" > "$w/stale.out" 2> "$w/stale.err"
-grep -q '^checking topic/four at .*: tree-ok$' "$w/stale.out"
-grep -q '^Approved topic/four .*: its integration request for origin/main is filed\.$' "$w/stale.out"
+valley review -v topic/four < "$w/answers" > "$w/stale.out" 2> "$w/stale.err"
+grep -q '^◐ topic/four  checking 1 check: tree-ok$' "$w/stale.out"
+grep -q '^✓ topic/four  approved · ' "$w/stale.out"
 grep -qx '  checks   tree-ok' "$w/stale.out"
 
 # ----------------------------------------------------------------------
@@ -577,7 +578,7 @@ stalehead="$(git rev-parse topic/five)"
 staledigest="$(attest digest --rev topic/five | cut -d: -f2)"
 
 printf 'a\n' > "$w/answers"
-valley review topic/five < "$w/answers" > "$w/five-first.out" 2> "$w/five-first.err"
+valley review -v topic/five < "$w/answers" > "$w/five-first.out" 2> "$w/five-first.err"
 grep -qx "  request  refs/the-valley/integration-requests/main/topic-five -> $(git rev-parse --short "$stalehead")" "$w/five-first.out"
 
 # main moves, and the change is rebased onto it — the operator's half of
@@ -608,9 +609,9 @@ fi
 
 : > "$pushlog"
 printf 'a\n' > "$w/answers"
-valley review topic/five < "$w/answers" > "$w/five-again.out" 2> "$w/five-again.err"
+valley review -v topic/five < "$w/answers" > "$w/five-again.out" 2> "$w/five-again.err"
 
-grep -q '^Approved topic/five .*: its integration request for origin/main is filed\.$' "$w/five-again.out"
+grep -q '^✓ topic/five  approved · ' "$w/five-again.out"
 grep -qx "  request  refs/the-valley/integration-requests/main/topic-five -> $(git rev-parse --short "$newhead")" "$w/five-again.out"
 # Replacing a pending request is said out loud, and the sentence names the
 # head that was replaced.
@@ -672,7 +673,7 @@ sixfiled="$(git rev-parse topic/six)"
 
 printf 'a\n' > "$w/answers"
 valley review topic/six < "$w/answers" > "$w/six-first.out" 2> "$w/six-first.err"
-grep -q '^Approved topic/six .*: its integration request for origin/main is filed\.$' "$w/six-first.out"
+grep -q '^✓ topic/six  approved · ' "$w/six-first.out"
 
 git checkout --quiet main
 echo "a third note" > docs/third.md
@@ -695,12 +696,12 @@ arm_race "git -C '$origin' update-ref refs/the-valley/integration-requests/main/
 
 : > "$pushlog"
 printf 'a\ns\n' > "$w/answers"
-valley review topic/six < "$w/answers" > "$w/race.out" 2> "$w/race.err"
+valley review -v topic/six < "$w/answers" > "$w/race.out" 2> "$w/race.err"
 disarm_race
 
 # A refusal, named as one, and the review loop still usable after it.
-grep -q "the pending request moved from $(git rev-parse --short "$sixfiled") to $(git rev-parse --short "$racer") while this one was being prepared" "$w/race.err"
-grep -q 'the lease on refs/the-valley/integration-requests/main/topic-six refused' "$w/race.err"
+grep -q "^⊘ topic/six  not approved · another approval filed $(git rev-parse --short "$racer") (.*) meanwhile$" "$w/race.err"
+grep -qx '  run: valley approve topic/six' "$w/race.err"
 grep -q 'skipped topic/six; nothing done' "$w/race.out"
 
 # Nothing published. The winner's request stands untouched, the loser's
@@ -756,9 +757,9 @@ git push --quiet origin \
 
 : > "$pushlog"
 printf 'a\n' > "$w/answers"
-valley review topic/seven < "$w/answers" > "$w/seven.out" 2> "$w/seven.err"
+valley review -v topic/seven < "$w/answers" > "$w/seven.out" 2> "$w/seven.err"
 
-grep -q '^Approved topic/seven .*: its integration request for origin/main is filed\.$' "$w/seven.out"
+grep -q '^✓ topic/seven  approved · ' "$w/seven.out"
 grep -qx '  the request already stood at this head; the evidence is what was published' "$w/seven.out"
 # The evidence went; the request ref was not in the refspec at all.
 grep -q "refs/the-valley/attestations/$sevendigest/$keyhash" "$pushlog"
@@ -781,7 +782,7 @@ fi
 git checkout --quiet main
 : > "$pushlog"
 printf 'a\n' > "$w/answers"
-env -u VALLEY_ATTEST_KEY valley review topic/quiet < "$w/answers" \
+env -u VALLEY_ATTEST_KEY valley review -v topic/quiet < "$w/answers" \
   > "$w/quiet-again.out" 2> "$w/quiet-again.err"
 grep -qx "  request  refs/the-valley/integration-requests/main/topic-quiet -> $quiethead" "$w/quiet-again.out"
 grep -qx '  the request already stood at this head and nothing was required, so nothing needed publishing' "$w/quiet-again.out"
@@ -818,7 +819,7 @@ disarm_race
 # The other operator's commit is on origin and not here, so the subject
 # says so rather than inventing one. Scenario 10 pins the case where the
 # replaced head IS local and its subject is printed.
-grep -q "a request for this change appeared while this one was being prepared, at $(git rev-parse --short "$firstfiler") (subject not in this repository)" "$w/create-race.err"
+grep -q "not approved · another approval filed $(git rev-parse --short "$firstfiler") (subject not in this repository) meanwhile" "$w/create-race.err"
 grep -q 'skipped topic/eight; nothing done' "$w/create-race.out"
 if [ "$(git -C "$origin" rev-parse refs/the-valley/integration-requests/main/topic-eight)" \
   != "$firstfiler" ]; then
@@ -852,7 +853,7 @@ git push --quiet origin topic/nine
 
 printf 'a\n' > "$w/answers"
 valley review topic/nine < "$w/answers" > "$w/nine-first.out" 2> "$w/nine-first.err"
-grep -q '^Approved topic/nine .*: its integration request for origin/main is filed\.$' "$w/nine-first.out"
+grep -q '^✓ topic/nine  approved · ' "$w/nine-first.out"
 
 git checkout --quiet main
 echo "a fourth note" > docs/fourth.md
@@ -870,10 +871,10 @@ printf 'a\ns\n' > "$w/answers"
 valley review topic/nine < "$w/answers" > "$w/consumed.out" 2> "$w/consumed.err"
 disarm_race
 
-grep -q 'the pending request was consumed while this one was being prepared, which is what the integrator does when a change lands' "$w/consumed.err"
-grep -q 'nothing was published; fetch and review the branch again before approving it a second time' "$w/consumed.err"
+grep -qx '⊘ topic/nine  not approved · the pending request was consumed meanwhile' "$w/consumed.err"
+grep -qx '  see: valley status topic/nine' "$w/consumed.err"
 # Not reported as a race, which is the distinction the re-read buys.
-if grep -q 'the pending request moved from' "$w/consumed.err"; then
+if grep -q 'another approval filed' "$w/consumed.err"; then
   echo "valley-request: a consumed request was reported as a lost race" >&2
   cat "$w/consumed.err" >&2
   exit 1
@@ -921,11 +922,10 @@ git push --quiet origin \
 arm_race "git -C '$origin' update-ref -d refs/the-valley/integration-requests/main/topic-ten"
 : > "$pushlog"
 printf 'a\ns\n' > "$w/answers"
-valley review topic/ten < "$w/answers" > "$w/posthoc.out" 2> "$w/posthoc.err"
+valley review -v topic/ten < "$w/answers" > "$w/posthoc.out" 2> "$w/posthoc.err"
 disarm_race
 
-grep -q 'the request was consumed while this run was working, which is what the integrator does when a change lands' "$w/posthoc.err"
-grep -q 'Nothing here re-filed it' "$w/posthoc.err"
+grep -qx '? topic/ten  approved · request consumed meanwhile · see: valley status topic/ten' "$w/posthoc.out"
 # The claim the old code would have made, from a read that had gone out of
 # date under it.
 if grep -q 'the request already stood at this head' "$w/posthoc.out"; then
@@ -982,14 +982,14 @@ git push --quiet origin topic/config
 cfgdigest="$(attest digest --rev topic/config | cut -d: -f2)"
 
 printf 'a\n' > "$w/answers"
-valley review topic/config < "$w/answers" > "$w/config.out" 2> "$w/config.err"
+valley review -v topic/config < "$w/answers" > "$w/config.out" 2> "$w/config.err"
 if grep -q 'no policy schema' "$w/config.err"; then
   echo "valley-request: [a]pprove looked for the schema in a project's checkout" >&2
   cat "$w/config.err" >&2
   exit 1
 fi
-grep -q '^checking topic/config at .*: tree-ok$' "$w/config.out"
-grep -qx "Approved topic/config ($(git rev-parse --short topic/config)): its integration request for origin/main is filed." "$w/config.out"
+grep -q '^◐ topic/config  checking 1 check: tree-ok$' "$w/config.out"
+grep -q '^✓ topic/config  approved · ' "$w/config.out"
 git -C "$cfgorigin" rev-parse --verify --quiet \
   "refs/the-valley/attestations/$cfgdigest/$keyhash" > /dev/null || {
   echo "valley-request: [a]pprove in a project without schema/ published no evidence" >&2
@@ -1145,13 +1145,12 @@ verbdigest="$(attest digest --rev topic/verb | cut -d: -f2)"
 git checkout --quiet main
 
 : > "$pushlog"
-valley approve origin/topic/verb < /dev/null > "$w/verb.out" 2> "$w/verb.err"
-grep -q '^checking topic/verb at .*: tree-ok$' "$w/verb.out"
-grep -qx "Approved topic/verb ($(git rev-parse --short "$verbhead")): its integration request for origin/main is filed." "$w/verb.out"
+valley approve -v origin/topic/verb < /dev/null > "$w/verb.out" 2> "$w/verb.err"
+grep -q '◐ topic/verb  checking 1 check: tree-ok' "$w/verb.out"
+grep -qx '✓ topic/verb  approved · 1 check passed in [0-9]*s · landing on main' "$w/verb.out"
 grep -qx "  request  refs/the-valley/integration-requests/main/topic-verb -> $(git rev-parse --short "$verbhead")" "$w/verb.out"
 grep -qx "  evidence refs/the-valley/attestations/$verbdigest/$keyhash" "$w/verb.out"
 grep -qx '  checks   tree-ok' "$w/verb.out"
-grep -qx 'Check the result: valley status topic/verb' "$w/verb.out"
 if grep -q '\[[a-z]\]' "$w/verb.out"; then
   echo "valley-request: the approve verb offered a prompt" >&2
   cat "$w/verb.out" >&2
@@ -1177,17 +1176,17 @@ fi
 # A refusal is the verb's exit status, after the same words the key's
 # refusal prints, and it publishes nothing.
 : > "$pushlog"
-if valley approve topic/two < /dev/null > "$w/verb-refused.out" 2> "$w/verb-refused.err"; then
+if valley approve -v topic/two < /dev/null > "$w/verb-refused.out" 2> "$w/verb-refused.err"; then
   echo "valley-request: the approve verb exited 0 for a change whose check failed" >&2
   exit 1
 fi
-grep -q 'the checks did not pass; nothing published, main untouched' "$w/verb-refused.err"
+grep -q '^⊘ topic/two  not approved · 1 of [0-9]* checks* failed$' "$w/verb-refused.err"
 if [ -s "$pushlog" ]; then
   echo "valley-request: a refused approve verb pushed something" >&2
   cat "$pushlog" >&2
   exit 1
 fi
-if valley approve topic/no-such-change < /dev/null > "$w/verb-missing.out" 2> "$w/verb-missing.err"; then
+if valley approve -v topic/no-such-change < /dev/null > "$w/verb-missing.out" 2> "$w/verb-missing.err"; then
   echo "valley-request: the approve verb exited 0 for a change origin does not have" >&2
   exit 1
 fi
@@ -1224,7 +1223,7 @@ for branch in fifo unread; do
   git checkout --quiet main
 done
 
-XDG_STATE_HOME="$fifostate" timeout 120 valley approve origin/topic/fifo \
+XDG_STATE_HOME="$fifostate" timeout 120 valley approve -v origin/topic/fifo \
   < /dev/null > "$w/fifo.out" 2> "$w/fifo.err" || {
   echo "valley-request: approve did not finish past a FIFO at the timing log (exit $?):" >&2
   cat "$w/fifo.out" "$w/fifo.err" >&2
@@ -1241,7 +1240,7 @@ exec 3<> "$w/unread"
 exec 4> "$w/unread"
 exec 3<&-
 status=0
-XDG_STATE_HOME="$fifostate" timeout 120 valley approve origin/topic/unread \
+XDG_STATE_HOME="$fifostate" timeout 120 valley approve -v origin/topic/unread \
   < /dev/null > "$w/unread.out" 2>&4 || status=$?
 exec 4>&-
 if [ "$status" != 0 ]; then
@@ -1348,8 +1347,8 @@ record="$(git commit-tree "$(printf '100644 blob %s\trecord.json\n' "$blob" | gi
 git push --quiet origin "$record:refs/the-valley/changes/main/$bareid"
 
 : > "$pushlog"
-valley approve --head "$barehead" rrrr < /dev/null > "$w/branchless.out" 2> "$w/branchless.err"
-grep -q '^checking rrrr v1 at .*: tree-ok$' "$w/branchless.out"
+valley approve -v --head "$barehead" rrrr < /dev/null > "$w/branchless.out" 2> "$w/branchless.err"
+grep -qx '◐ rrrr v1  checking 1 check: tree-ok' "$w/branchless.out"
 grep -qx "  request  refs/the-valley/integration-requests/main/c-$bareid -> $(git rev-parse --short "$barehead")" "$w/branchless.out"
 grep -qx "  evidence refs/the-valley/attestations/$baredigest/$keyhash" "$w/branchless.out"
 if [ "$(git -C "$origin" rev-parse "refs/the-valley/integration-requests/main/c-$bareid")" != "$barehead" ]; then
@@ -1548,8 +1547,8 @@ edited cover docs/readme.md src/main.txt
 coverhead="$(git rev-parse cover)"
 coverdigest="$(attest digest --rev cover | cut -d: -f2)"
 worker "$coverhead" --check prose-format --check code-build
-approving cover env -u VALLEY_ATTEST_KEY valley approve origin/cover
-grep -qx "reusing the evidence origin holds for cover at $(git rev-parse --short cover):" "$w/cover.out"
+approving cover env -u VALLEY_ATTEST_KEY valley approve -v origin/cover
+grep -q "^reusing the evidence origin holds for cover at $(git rev-parse --short cover), tree " "$w/cover.out"
 grep -qE "^  prose-format +signed by $workername\+$workerhash\$" "$w/cover.out"
 grep -qE "^  code-build +signed by $workername\+$workerhash\$" "$w/cover.out"
 grep -qx "  reused   refs/the-valley/attestations/$coverdigest/$workerhash" "$w/cover.out"
@@ -1573,7 +1572,7 @@ fi
 
 # 20b. The same head again: the evidence is on origin and the request
 #      stands, so there is nothing to push and no push is made.
-approving cover-again env -u VALLEY_ATTEST_KEY valley approve origin/cover
+approving cover-again env -u VALLEY_ATTEST_KEY valley approve -v origin/cover
 grep -qx '  the request already stood at this head and origin already held the evidence, so nothing needed publishing' "$w/cover-again.out"
 if [ -s "$reusepushes" ] || [ -s "$nixlog" ]; then
   echo "valley-request: approving a covered head again pushed or ran something" >&2
@@ -1589,12 +1588,12 @@ edited raced docs/readme.md
 racedhead="$(git rev-parse raced)"
 worker "$racedhead" --check prose-format
 arm_race "git -C '$served' update-ref refs/the-valley/integration-requests/main/raced '$coverhead'"
-if approving raced env -u VALLEY_ATTEST_KEY valley approve origin/raced; then
+if approving raced env -u VALLEY_ATTEST_KEY valley approve -v origin/raced; then
   echo "valley-request: a covered approval clobbered a request filed during it" >&2
   exit 1
 fi
 disarm_race
-grep -q "a request for this change appeared while this one was being prepared, at $(git rev-parse --short "$coverhead")" "$w/raced.err"
+grep -q "^⊘ raced  not approved · another approval filed $(git rev-parse --short "$coverhead") (.*) meanwhile$" "$w/raced.err"
 if [ "$(requested raced)" != "$coverhead" ] || [ -s "$reusepushes" ]; then
   echo "valley-request: a covered approval that lost the lease published something" >&2
   exit 1
@@ -1619,14 +1618,12 @@ partialdigest="$(attest digest --rev partial | cut -d: -f2)"
 worker "$partialhead" --check prose-format
 for filed in partial-filed partial-review; do
   if [ "$filed" = partial-filed ]; then
-    approving "$filed" valley approve origin/partial
+    approving "$filed" valley approve -v origin/partial
   else
-    approving "$filed" bash -c 'printf "a\n" | valley review origin/partial'
+    approving "$filed" bash -c 'printf "a\n" | valley review -v origin/partial'
   fi
-  if ! grep -qx "Approved partial ($(git rev-parse --short partial)): its integration request for origin/main is filed." "$w/$filed.out" \
-    || ! grep -qx 'Origin holds no evidence yet for the nix check code-build, and nothing was built here.' "$w/$filed.out" \
-    || ! grep -qx 'No check worker builds a branch no record is on.' "$w/$filed.out" \
-    || ! grep -qx 'To build it on this machine instead, approve with --build-here.' "$w/$filed.out" \
+  if ! grep -qx '◇ partial  approved · waiting for 1 check (no worker building)' "$w/$filed.out" \
+    || ! grep -qx '  run: valley approve --build-here partial' "$w/$filed.out" \
     || ! grep -qx '  missing  code-build' "$w/$filed.out" \
     || ! grep -qE "^  prose-format +signed by $workername\+$workerhash\$" "$w/$filed.out" \
     || grep -qE '^(checking|  evidence) ' "$w/$filed.out" || [ -s "$nixlog" ] \
@@ -1640,9 +1637,9 @@ for filed in partial-filed partial-review; do
   fi
   git -C "$served" update-ref -d refs/the-valley/integration-requests/main/partial
 done
-approving partial valley approve --build-here origin/partial
+approving partial valley approve -v --build-here origin/partial
 grep -qE "^  prose-format +signed by $workername\+$workerhash\$" "$w/partial.out"
-grep -qx "checking partial at $(git rev-parse --short partial): code-build" "$w/partial.out"
+grep -qx "◐ partial  checking 1 check: code-build" "$w/partial.out"
 grep -qE '^check   code-build +nix +passed$' "$w/partial.out"
 if ! grep -qE '^nix build .*/code-build-[A-Za-z0-9]{6}\.drv\^\*$' "$nixlog" || grep -q 'prose-format' "$nixlog"; then
   echo "valley-request: a partly covered approval did not run exactly the missing check" >&2
@@ -1675,13 +1672,13 @@ occupieddigest="$(attest digest --rev occupied | cut -d: -f2)"
 attest run --rev "$occupiedhead" --key "$r/keys/operator" --name "$operatorname" --check code-build \
   > "$r/operator.out" 2>&1
 git push --quiet origin "refs/the-valley/attestations/$occupieddigest/$operatorhash:refs/the-valley/attestations/$occupieddigest/$operatorhash"
-if approving occupied valley approve --build-here origin/occupied; then
+if approving occupied valley approve -v --build-here origin/occupied; then
   echo "valley-request: approve built evidence that origin could not take" >&2
   exit 1
 fi
 grep -qE "^  code-build +signed by $operatorname\+$operatorhash\$" "$w/occupied.out"
-grep -qF "origin already holds refs/the-valley/attestations/$occupieddigest/$operatorhash, this signer's evidence for this tree, and it does not cover prose-format" "$w/occupied.err"
-grep -qF 'that is bd-7b7d58f, which approving again will not clear. Nothing run, nothing published' "$w/occupied.err"
+grep -qx "⊘ occupied  not approved · this key's evidence for the tree, on origin, lacks prose-format" "$w/occupied.err"
+grep -qx '  attest with another key: set VALLEY_ATTEST_KEY' "$w/occupied.err"
 if [ -s "$nixlog" ] || [ -s "$reusepushes" ] || [ -n "$(requested occupied)" ]; then
   echo "valley-request: an approval refused for an occupied ref ran or published something" >&2
   exit 1
@@ -1722,7 +1719,7 @@ EOF
 chmod +x "$r/shim/git"
 for failing in inventory fetch; do
   if REUSE_FAIL="$failing" PATH="$r/shim:$PATH" VALLEY_VERIFICATION_SCHEMA="$schemaFile" \
-    approving "unread-$failing" bash "$cliScript" approve origin/unread; then
+    approving "unread-$failing" bash "$cliScript" approve -v origin/unread; then
     echo "valley-request: approve went on past a failed $failing of origin's evidence" >&2
     exit 1
   fi
@@ -1731,7 +1728,7 @@ for failing in inventory fetch; do
     fetch) says='valley: could not fetch the evidence origin holds for this tree' ;;
   esac
   grep -qxF "$says" "$w/unread-$failing.err"
-  grep -qF 'valley: could not read the evidence origin holds for unread; nothing run, nothing published' "$w/unread-$failing.err"
+  grep -qx '⊘ unread  not approved · could not read the evidence origin holds' "$w/unread-$failing.err"
   if [ -s "$nixlog" ] || [ -s "$reusepushes" ] || [ -n "$(requested unread)" ]; then
     echo "valley-request: approve ran or published something after a failed $failing" >&2
     exit 1
@@ -1739,7 +1736,7 @@ for failing in inventory fetch; do
 done
 # And with origin answering, the same approval reuses the worker's
 # evidence: the stand-in failed only what it was told to.
-VALLEY_VERIFICATION_SCHEMA="$schemaFile" approving unread bash "$cliScript" approve origin/unread
+VALLEY_VERIFICATION_SCHEMA="$schemaFile" approving unread bash "$cliScript" approve -v origin/unread
 grep -qE "^  prose-format +signed by $workername\+$workerhash\$" "$w/unread.out"
 [ "$(requested unread)" = "$unreadhead" ]
 integrated unread
@@ -1789,11 +1786,29 @@ planted() {
 # for prose-format, says why, and files the request with prose-format
 # missing, building nothing.
 unreused() {
-  approving "$1" env -u VALLEY_ATTEST_KEY valley approve "origin/$1"
+  approving "$1" env -u VALLEY_ATTEST_KEY valley approve -v "origin/$1"
   if ! grep -qF "valley: not reusing prose-format: the integrator judges it by " "$w/$1.err" \
     || ! grep -qF -- "$2" "$w/$1.err" || grep -q 'reusing' "$w/$1.out" \
     || ! grep -qx '  missing  prose-format' "$w/$1.out" \
     || [ "$(requested "$1")" != "$(git rev-parse "$1")" ] || [ -s "$nixlog" ]; then
+    echo "valley-request: approve did not refuse $1 for the reason: $2" >&2
+    cat "$w/$1.err" >&2
+    exit 1
+  fi
+}
+# unpassed <branch> <reason>: the note the integrator judges prose-format
+# by verifies and is no pass of it, so building the check again changes
+# nothing for that tree. approve says why, refuses the head, and files
+# and builds nothing.
+unpassed() {
+  if approving "$1" env -u VALLEY_ATTEST_KEY valley approve -v "origin/$1"; then
+    echo "valley-request: approve filed $1, whose judged note is no pass" >&2
+    exit 1
+  fi
+  if ! grep -qF -- "$2" "$w/$1.err" \
+    || ! grep -q "^⊘ $1  not approved · 1 of [0-9]* checks* failed\$" "$w/$1.err" \
+    || ! grep -qx "  ✗ prose-format — see: valley status $1" "$w/$1.err" \
+    || [ -n "$(requested "$1")" ] || [ -s "$nixlog" ]; then
     echo "valley-request: approve did not refuse $1 for the reason: $2" >&2
     cat "$w/$1.err" >&2
     exit 1
@@ -1855,7 +1870,7 @@ resigned "$r/failed.note" 's/^predicate.result passed$/predicate.result failed/'
 attest verify --note "$r/failed.note" --known-keys "$r/known-signers" --repo . --rev failed > /dev/null
 planted "$(under failed 00000000)" prose-format "$r/failed.note"
 worker "$(git rev-parse failed)" --check prose-format
-unreused failed 'its predicate.result is "failed", not "passed"'
+unpassed failed 'its predicate.result is "failed", not "passed"'
 judged failed stale 'the attestation records the check as failed'
 
 # The same, with an observation first: a note of the wrong kind is no
@@ -1864,7 +1879,7 @@ edited kind docs/readme.md
 noted "$r/kind.note" "$r/keys/worker" "$workername" "$(git rev-parse kind)" prose-format --command prose-format=true
 planted "$(under kind 00000000)" prose-format "$r/kind.note"
 worker "$(git rev-parse kind)" --check prose-format
-unreused kind 'its predicateType is "the-valley/check/effectful/v1", not "the-valley/check/pure/v1"'
+unpassed kind 'its predicateType is "the-valley/check/effectful/v1", not "the-valley/check/pure/v1"'
 judged kind stale 'the policy requires a pure check and the attestation is for an effectful check'
 
 # A malformed envelope: a note the worker signed, without its last newline.
@@ -1899,7 +1914,7 @@ edited expired live/state.txt
 noted "$r/expired.note" "$r/keys/worker" "$workername" "$(git rev-parse expired)" live-ok --command live-ok=true
 resigned "$r/expired.note" 's/^predicate.observedAt .*/predicate.observedAt 2020-01-01T00:00:00Z/'
 planted "$(under expired "$workerhash")" live-ok "$r/expired.note"
-if approving expired env -u VALLEY_ATTEST_KEY valley approve origin/expired \
+if approving expired env -u VALLEY_ATTEST_KEY valley approve -v origin/expired \
   || ! grep -q 'no signing key' "$w/expired.err" || grep -q 'reusing' "$w/expired.out"; then
   echo "valley-request: approve reused an observation of a command check" >&2
   cat "$w/expired.out" "$w/expired.err" >&2
@@ -1908,12 +1923,12 @@ fi
 judged expired stale 'the observation is '
 
 # The attribute: the worker's note for prose-format names another flake
-# attribute. Approve compares it, and builds rather than reuse; the
-# integrator compares it too, on an unmoved tree, and the note is no
-# evidence for prose-format.
+# attribute. Approve compares it and refuses the head; the integrator
+# compares it too, on an unmoved tree, and the note is no evidence for
+# prose-format.
 edited attribute docs/readme.md
 worker "$(git rev-parse attribute)" --check prose-format=code-build
-unreused attribute 'its predicate.check.attribute is "code-build", not "prose-format"'
+unpassed attribute 'its predicate.check.attribute is "code-build", not "prose-format"'
 judged attribute stale 'the attestation is for runner "nix", attribute "code-build", and the policy requires runner "nix", attribute "prose-format"'
 
 # 20h. A signer can be restricted to projects. The host publishes its
@@ -1932,7 +1947,7 @@ restricting() {
 # with no signing key, reuses none of origin's evidence, says why, and
 # files the request with prose-format missing, building nothing.
 unpublished() {
-  approving "$1" env -u VALLEY_ATTEST_KEY valley approve "origin/$1"
+  approving "$1" env -u VALLEY_ATTEST_KEY valley approve -v "origin/$1"
   if ! grep -qxF "valley: $2, so none of the evidence on origin is reused" "$w/$1.err" \
     || grep -q 'reusing' "$w/$1.out" \
     || ! grep -qx '  missing  prose-format' "$w/$1.out" \
@@ -1955,9 +1970,9 @@ worker "$elsewherehead" --check prose-format
 unreused elsewhere \
   "none of its signers counts in project project: the published signer-projects lets $workername count only in elsewhere"
 judged elsewhere stale 'signed by no signer the integrator holds' "$r/known-signers" "$r/elsewhere.projects"
-approving elsewhere-built bash -c 'printf "a\n" | valley review --build-here origin/elsewhere'
+approving elsewhere-built bash -c 'printf "a\n" | valley review -v --build-here origin/elsewhere'
 grep -qF "valley: not reusing prose-format: the integrator judges it by $(under elsewhere "$workerhash"):prose-format/statement.note, and none of its signers counts in project project" "$w/elsewhere-built.err"
-grep -qx "checking elsewhere at $(git rev-parse --short elsewhere): prose-format" "$w/elsewhere-built.out"
+grep -qx "◐ elsewhere  checking 1 check: prose-format" "$w/elsewhere-built.out"
 grep -qx "  evidence $(under elsewhere "$operatorhash")" "$w/elsewhere-built.out"
 if ! grep -qE '^nix build .*/prose-format-[A-Za-z0-9]{6}\.drv\^\*$' "$nixlog" \
   || grep -q '^  reused ' "$w/elsewhere-built.out"; then
@@ -2000,7 +2015,7 @@ done
 # reused, nothing runs, and the integrator lands it.
 printf '# the projects the worker builds for\n%s elsewhere project\n' "$workername" > "$r/here.projects"
 restricting "$r/here.projects"
-approving listed env -u VALLEY_ATTEST_KEY valley approve origin/listed
+approving listed env -u VALLEY_ATTEST_KEY valley approve -v origin/listed
 grep -qE "^  prose-format +signed by $workername\+$workerhash\$" "$w/listed.out"
 grep -qx "  reused   $(under listed "$workerhash")" "$w/listed.out"
 if [ -s "$nixlog" ] || [ "$(requested listed)" != "$listedhead" ]; then
@@ -2017,9 +2032,9 @@ published "$r/known-signers"
 edited commanded docs/readme.md live/state.txt
 commandedhead="$(git rev-parse commanded)"
 worker "$commandedhead" --check prose-format
-approving commanded valley approve origin/commanded
+approving commanded valley approve -v origin/commanded
 grep -qE "^  prose-format +signed by $workername\+$workerhash\$" "$w/commanded.out"
-grep -qx "checking commanded at $(git rev-parse --short commanded): live-ok" "$w/commanded.out"
+grep -qx "◐ commanded  checking 1 check: live-ok" "$w/commanded.out"
 if grep -q '^nix build' "$nixlog" || [ "$(requested commanded)" != "$commandedhead" ]; then
   echo "valley-request: an approval whose only uncovered check is a command check built nix or filed nothing" >&2
   cat "$w/commanded.out" "$w/commanded.err" "$nixlog" >&2
@@ -2036,10 +2051,11 @@ integrated commanded
 edited mixed docs/readme.md live/state.txt
 mixedhead="$(git rev-parse mixed)"
 mixeddigest="$(attest digest --rev mixed | cut -d: -f2)"
-approving mixed valley approve origin/mixed
-grep -qx "checking mixed at $(git rev-parse --short mixed): live-ok" "$w/mixed.out"
+approving mixed valley approve -v origin/mixed
+grep -qx "◐ mixed  checking 1 check: live-ok" "$w/mixed.out"
 grep -qx '  missing  prose-format' "$w/mixed.out"
-grep -qx "This approval published this signer's evidence for the tree, and that namespace admits creations only, so --build-here cannot add it now (bd-7b7d58f)." "$w/mixed.out"
+grep -qx '◇ mixed  approved · waiting for 1 check (no worker building)' "$w/mixed.out"
+grep -qx '  run: valley ready mixed' "$w/mixed.out"
 grep -qx "  evidence refs/the-valley/attestations/$mixeddigest/$operatorhash" "$w/mixed.out"
 if grep -q '^nix build' "$nixlog" || [ "$(requested mixed)" != "$mixedhead" ] \
   || [ "$(grep -c '^--- push' "$reusepushes")" != 1 ] \
@@ -2169,7 +2185,7 @@ working early-again
 said early-again "$line: origin holds evidence for every nix check it requires"
 built nothing
 pushed none
-approving early env -u VALLEY_ATTEST_KEY valley approve --head "$head" "$handle"
+approving early env -u VALLEY_ATTEST_KEY valley approve -v --head "$head" "$handle"
 grep -qE "^  prose-format +signed by $workername\+$workerhash\$" "$w/early.out"
 grep -qE "^  code-build +signed by $workername\+$workerhash\$" "$w/early.out"
 built nothing
@@ -2364,7 +2380,7 @@ working superseded-2
 said superseded-2 "project: $handle v2 at ${newhead:0:7}: origin holds evidence for every nix check it requires"
 built nothing
 pushed none
-approving superseded env -u VALLEY_ATTEST_KEY valley approve --head "$newhead" "$handle"
+approving superseded env -u VALLEY_ATTEST_KEY valley approve -v --head "$newhead" "$handle"
 built nothing
 [ "$(requested "c-$id")" = "$newhead" ]
 integrated "c-$id" "$r/worker.projects"
@@ -2388,10 +2404,8 @@ working worker-occupied
 said worker-occupied "$line: origin already holds $occupiedref, this worker's evidence for its tree, and it does not cover code-build. That namespace admits creations only, so approve --build-here builds the rest (bd-7b7d58f)"
 built nothing
 pushed none
-approving worker-occupied-filed valley approve --head "$head" "$handle"
-grep -qx "Approved $handle v1 (${head:0:7}): its integration request for origin/main is filed." "$w/worker-occupied-filed.out"
-grep -qx 'Origin holds no evidence yet for the nix check code-build, and nothing was built here.' "$w/worker-occupied-filed.out"
-grep -qx 'Waiting does not ensure that the missing evidence will be published.' "$w/worker-occupied-filed.out"
+approving worker-occupied-filed valley approve -v --head "$head" "$handle"
+grep -q "^◐ $handle v1  approved · lands when 1 check passes ([0-9]*/[0-9]* passed)$" "$w/worker-occupied-filed.out"
 grep -qx '  missing  code-build' "$w/worker-occupied-filed.out"
 built nothing
 if [ "$(requested "c-$id")" != "$head" ] || grep -q ' refs/the-valley/attestations/' "$reusepushes"; then
@@ -2413,7 +2427,7 @@ if ! grep -q "^c-$id -> refs/heads/main @ [0-9a-f]*: stale\$" "$r/integrator.out
   cat "$r/integrator.out" >&2
   exit 1
 fi
-approving worker-occupied valley approve --build-here --head "$head" "$handle"
+approving worker-occupied valley approve -v --build-here --head "$head" "$handle"
 built code-build
 grep -qx '  the request already stood at this head; the evidence is what was published' "$w/worker-occupied.out"
 if [ "$(grep -c '^--- push' "$reusepushes")" != 1 ] \
@@ -2718,19 +2732,20 @@ quiet_branch lookalike main
 lookhead="$(git rev-parse topic/lookalike)"
 lookref=refs/heads/refs/the-valley/integration-requests/main/topic-lookalike
 git -C "$lookorigin" update-ref "$lookref" "$lookhead"
-if env -u VALLEY_ATTEST_KEY valley approve origin/topic/lookalike < /dev/null \
+if env -u VALLEY_ATTEST_KEY valley approve -v origin/topic/lookalike < /dev/null \
   > "$w/lookalike.out" 2> "$w/lookalike.err"; then
   echo "valley-request: approve reported success with a branch named like the request it files" >&2
   cat "$w/lookalike.out" >&2
   exit 1
 fi
-grep -qF "origin holds $lookref, whose name ends in the name of a ref this approval pushes" "$w/lookalike.err"
+grep -qF "⊘ topic/lookalike  not approved · origin holds $lookref, " "$w/lookalike.err"
+grep -qxF "  delete $lookref on origin" "$w/lookalike.err"
 [ -z "$(filed lookalike)" ] || {
   echo "valley-request: approve filed a request past a branch named like it" >&2
   exit 1
 }
 git -C "$lookorigin" update-ref -d "$lookref"
-env -u VALLEY_ATTEST_KEY valley approve origin/topic/lookalike < /dev/null \
+env -u VALLEY_ATTEST_KEY valley approve -v origin/topic/lookalike < /dev/null \
   > "$w/lookalike-again.out" 2> "$w/lookalike-again.err"
 if [ "$(filed lookalike)" != "$lookhead" ]; then
   echo "valley-request: with the branch named like it gone, approve filed no request" >&2
@@ -2742,7 +2757,7 @@ fi
 # remote-tracking ref. The fetch brings the tag, and read through it the
 # branch would be approved at the tag's commit.
 git -C "$lookorigin" update-ref refs/tags/refs/remotes/origin/topic/gone "$lookhead"
-if env -u VALLEY_ATTEST_KEY valley approve origin/topic/gone < /dev/null \
+if env -u VALLEY_ATTEST_KEY valley approve -v origin/topic/gone < /dev/null \
   > "$w/gone.out" 2> "$w/gone.err"; then
   echo "valley-request: approve filed a branch origin does not have, at a tag named like it" >&2
   exit 1
@@ -2778,7 +2793,7 @@ echo "$lookvalley" > policy/valley
 git commit --quiet -am "a valley with no main"
 git push --quiet origin main
 quiet_branch floorless main
-if env -u VALLEY_ATTEST_KEY valley approve origin/topic/floorless < /dev/null \
+if env -u VALLEY_ATTEST_KEY valley approve -v origin/topic/floorless < /dev/null \
   > "$w/floorless.out" 2> "$w/floorless.err"; then
   echo "valley-request: approve read a floor from a valley with no main" >&2
   exit 1
@@ -2796,12 +2811,12 @@ grep -qF "the owning valley $lookvalley has no refs/heads/main" "$w/floorless.er
 quiet_branch mainless "$lookbase"
 git -C "$lookorigin" update-ref refs/tags/refs/remotes/origin/main "$lookbase"
 git -C "$lookorigin" update-ref -d refs/heads/main
-if env -u VALLEY_ATTEST_KEY valley approve origin/topic/mainless < /dev/null \
+if env -u VALLEY_ATTEST_KEY valley approve -v origin/topic/mainless < /dev/null \
   > "$w/mainless.out" 2> "$w/mainless.err"; then
   echo "valley-request: approve filed a request while origin has no main" >&2
   exit 1
 fi
-grep -q 'origin has no main to approve onto; nothing published' "$w/mainless.err"
+grep -qx '⊘ topic/mainless  not approved · origin has no main to approve onto' "$w/mainless.err"
 git show-ref --verify --quiet refs/tags/refs/remotes/origin/main || {
   echo "valley-request: the fetch did not bring the tag, so nothing was tested" >&2
   exit 1

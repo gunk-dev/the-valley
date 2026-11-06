@@ -371,9 +371,9 @@ as contributor git push --quiet origin "$r1:refs/the-valley/changes/main/$target
 
 # approve binds the head it approves. Off a terminal it needs --head, and
 # a head no version records is refused.
-refused 'off a terminal, pass it with --head' as requester valley approve pppp
+refused 'not approved · no terminal to confirm the head' as requester valley approve pppp
 no_request 'approve filed a request with no head bound to it'
-refused "$substituted is no version of change pppp" as requester valley approve --head "$substituted" pppp
+refused "is none of its versions" as requester valley approve --head "$substituted" pppp
 no_request 'approve filed a request for a branch tip no version records'
 refused "origin/victim is at $substituted; nothing rebased" as requester valley rebase pppp
 [ "$(git -C "$origin" rev-parse refs/heads/victim)" = "$substituted" ] || fail 'rebase moved the branch'
@@ -394,9 +394,9 @@ grep -qF "records the head $honest, and origin/victim is at $substituted; nothin
 # The dashboard's approve names the head it showed, and approve files
 # exactly that head under the change's request name, wherever the branch
 # is: here the branch is still at the substituted commit.
-ok as requester valley approve pppp --head "$honest"
+ok as requester valley approve -v pppp --head "$honest"
 [ "$(git -C "$origin" rev-parse "$request")" = "$honest" ] || fail 'approve did not file the recorded head'
-grep -q "^Approved pppp v1 " "$w/out" || fail 'approve did not say which version it approved'
+grep -q "^[^ ]* pppp v1  approved · " "$w/out" || fail 'approve did not say which version it approved'
 grep -qx "  request  $request -> $(git rev-parse --short "$honest")" "$w/out" \
   || fail 'approve did not file the request as c-<change ID>'
 if git -C "$origin" rev-parse --verify --quiet refs/the-valley/integration-requests/main/victim > /dev/null; then
@@ -470,16 +470,16 @@ b1="$(jq -cn --arg id "$bare_id" --arg head "git-sha1:$branchless" '{schema: "va
 as contributor git push --quiet origin "$(write_record "$b1" "$branchless"):refs/the-valley/changes/main/$bare_id"
 ok as requester valley approve --head "$branchless" qqqq
 [ "$(git -C "$origin" rev-parse "$bare_request")" = "$branchless" ] || fail 'approve did not file a change with no branch'
-grep -q '^Approved qqqq v1 ' "$w/out" || fail 'approve did not say which version of a change with no branch it approved'
+grep -q '^[^ ]* qqqq v1  approved · ' "$w/out" || fail 'approve did not say which version of a change with no branch it approved'
 for verb in review rebase; do
   refused "change qqqq v1 records no branch, and $verb acts on a change's branch" valley "$verb" qqqq
 done
 ok as contributor valley unready qqqq
 # Only the change's owner is told how to ready it again.
-refused "change qqqq v1 is draft, not ready; nothing published" \
+refused "qqqq v1  not approved · change is a draft" \
   as requester valley approve --head "$branchless" qqqq
-if grep -qF 'Ready it first' "$w/err"; then fail "approve told someone other than the change's owner to ready it"; fi
-refused "change qqqq v1 is draft, not ready; nothing published. Ready it first: valley ready --change $bare_id" \
+if grep -qF 'valley ready' "$w/err"; then fail "approve told someone other than the change's owner to ready it"; fi
+refused "  run: valley ready --change $bare_id" \
   as contributor valley approve --head "$branchless" qqqq
 if grep -qF "''" "$w/err"; then fail "approve suggested readying a change with no branch on the branch ''"; fi
 
@@ -532,12 +532,13 @@ grep -qE '(^|└ |├ )[k-z]{4,32} v[0-9]+  ' "$w/out" || fail 'pending no longe
 # answer it does not offer is answered with what it does, and acts on
 # nothing.
 request_ref="refs/the-valley/integration-requests/main/c-$pid"
-unchanged "$pid" refused "change $ph v1 is draft, not ready; nothing published" as requester valley approve "$ph"
+unchanged "$pid" refused "$ph v1  not approved · change is a draft" as requester valley approve "$ph"
 if git -C "$origin" rev-parse --verify --quiet "$request_ref" > /dev/null; then
   fail 'approve filed a request for a draft'
 fi
 unchanged "$pid" refused "change $ph v1 is draft, not ready; nothing rebased" as requester valley rebase "$ph"
 drafted="$ph v1 is a draft: its owner (contributor) hasn't marked it ready, so it can't be approved yet."
+draft_header="$ph v1 · draft (its owner, contributor, has not readied it)"
 # review_draft <name>: review the draft by that name, answering a, b and
 # r before s. A prompt ends with no newline, so what follows it is on its
 # line.
@@ -546,10 +547,10 @@ review_draft() {
   [ "$(head -n 1 "$w/out")" = "$drafted" ] || fail "review of $1 did not open with the draft's line"
   grep -q "^change $ph v1 at .*, on branch drafts/paused, log against origin/main:$" "$w/out" \
     || fail "review of $1 did not show the draft"
-  [ "$(grep -oF "$drafted [v]iew full diff, [s]kip? " "$w/out" | wc -l)" = 4 ] \
-    || fail "review of $1 did not say the draft's line in place of each prompt"
-  [ "$(grep -oF '[s]kip? answer v or s' "$w/out" | wc -l)" = 3 ] || fail "review of $1 took an answer it does not offer"
-  grep -qF '[s]kip? skipped drafts/paused; nothing done' "$w/out" || fail "review of $1 did not skip the draft"
+  [ "$(grep -cxF "$draft_header" "$w/out")" = 4 ] \
+    || fail "review of $1 did not say the draft's line in the header of each prompt"
+  [ "$(grep -oF '[v]iew diff  [s]kip: answer v or s' "$w/out" | wc -l)" = 3 ] || fail "review of $1 took an answer it does not offer"
+  grep -qF '[s]kip: skipped drafts/paused; nothing done' "$w/out" || fail "review of $1 did not skip the draft"
   if grep -qF -e '[a]pprove' -e '[b]ase' -e '[r]eject' -e 'really delete' "$w/out"; then
     fail "review of $1 offered what a draft can't take"
   fi
@@ -561,7 +562,7 @@ unchanged "$pid" review_draft "$ph"
 # since its active version is the one record on that branch. It is
 # refused, and reviewed, the same way.
 for name in drafts/paused origin/drafts/paused; do
-  unchanged "$pid" refused "change $ph v1 is draft, not ready; nothing published" as requester valley approve "$name"
+  unchanged "$pid" refused "$ph v1  not approved · change is a draft" as requester valley approve "$name"
   unchanged "$pid" refused "change $ph v1 is draft, not ready; nothing rebased" as requester valley rebase "$name"
   unchanged "$pid" review_draft "$name"
 done
@@ -582,10 +583,10 @@ one_parent "$pid"
 ok as requester valley approve --head "$paused" drafts/paused
 [ "$(git -C "$origin" rev-parse "$request_ref")" = "$paused" ] || fail 'approve did not file the ready change'
 ok as requester valley approve --head "$paused" origin/drafts/paused
-grep -q "^Approved $ph v1 " "$w/out" || fail 'approve of origin/drafts/paused did not go ahead'
+grep -q "^[^ ]* $ph v1  approved · " "$w/out" || fail 'approve of origin/drafts/paused did not go ahead'
 printf 'a\n' | as requester valley review drafts/paused > "$w/out" 2> "$w/err" || fail 'review of drafts/paused failed'
 grep -q "^change $ph v1 at " "$w/out" || fail 'review of a branch did not read its change'
-grep -q "^Approved $ph v1 " "$w/out" || fail "review's [a]pprove of drafts/paused did not go ahead"
+grep -q "^[^ ]* $ph v1  approved · " "$w/out" || fail "review's [a]pprove of drafts/paused did not go ahead"
 ok as contributor valley unready "$ph"
 grep -qF "valley: note: the integration request $request_ref for $ph is pending on origin" "$w/err" \
   || fail 'unready did not say a request is pending'
@@ -632,7 +633,7 @@ grep -qF "main/drafts-paused for $ph is pending" "$w/err" || fail 'withdraw did 
 withdrawn="$ph is withdrawn: there is nothing to approve."
 printf 'a\ns\n' | as requester valley review "$ph" > "$w/out" 2> "$w/err" || fail 'review of a withdrawn change failed'
 [ "$(head -n 1 "$w/out")" = "$withdrawn" ] || fail 'review did not open with the withdrawn line'
-grep -qF "$withdrawn [v]iew full diff, [s]kip? answer v or s" "$w/out" \
+grep -qx "$ph v[0-9]* · withdrawn" "$w/out" && grep -qF '[v]iew diff  [s]kip: answer v or s' "$w/out" \
   || fail 'review did not say the withdrawn line in place of its prompt'
 if grep -qF -e '[a]pprove' -e '[b]ase' -e '[r]eject' "$w/out"; then fail "review offered what a withdrawn change can't take"; fi
 
@@ -660,10 +661,10 @@ review_while() {
   reviewer=$!
   exec 3> "$w/fifo"
   for i in $(seq 600); do
-    if grep -qF '[v]iew full diff' "$w/review.out" 2> /dev/null; then break; fi
+    if grep -qF '[v]iew diff' "$w/review.out" 2> /dev/null; then break; fi
     sleep 0.1
   done
-  grep -qF '[v]iew full diff' "$w/review.out" || fail "review of $name never reached its prompt (after $i tries)"
+  grep -qF '[v]iew diff' "$w/review.out" || fail "review of $name never reached its prompt (after $i tries)"
   "$@" > "$w/out" 2> "$w/err" || fail "$* failed while the review was open"
   printf '%b' "$answers" >&3
   exec 3>&-
@@ -679,19 +680,19 @@ rh="$(sed -n 's/^project \([k-z]*\) v1 ready$/\1/p' "$w/out")"
 if [ "${#rid}" != 32 ] || [ -z "$rh" ]; then fail 'ready did not name the new change'; fi
 raced_request="refs/the-valley/integration-requests/main/c-$rid"
 
-prompt="drafts/raced: [a]pprove, [v]iew full diff, [r]eject, [s]kip? "
-behind='drafts/raced is behind main; the integrator lands it onto main as main stands (no rebase needed).'
+prompt="[a]pprove  [v]iew diff  [r]eject  [s]kip: "
+behind=' · behind main (integrator merges)'
 review_while "$rh" 'a\ns\n' as contributor valley unready "$rh"
-grep -qxF "$behind" "$w/review.out" || fail 'review did not say the change is behind main'
+grep -qF "$behind" "$w/review.out" || fail 'review did not say the change is behind main'
 # The answer's prompt is followed by the one line, and nothing comes after.
 last="$(tail -n 1 "$w/review.out")"
 [ "${last#"$prompt"}" != "$last" ] \
   || fail "review of a change unreadied while it was open did not end on its prompt and one line: $(cat "$w/review.out")"
 printf '%s\n' "${last#"$prompt"}" | grep -qE "^$rh changed while you were reviewing: it was returned to draft \(since ([0-9]{4}-[0-9]{2}-[0-9]{2} )?[0-9]{2}:[0-9]{2}Z\), so there is nothing to approve now\. It comes back when it is ready again\.\$" \
   || fail "review did not say plainly that the change went back to draft: $(cat "$w/review.out")"
-[ "$(grep -cF '[v]iew full diff' "$w/review.out")" = 1 ] || fail 'review asked again about a change that moved'
+[ "$(grep -cF '[v]iew diff' "$w/review.out")" = 1 ] || fail 'review asked again about a change that moved'
 if grep -qF -e '[b]ase' -e 'skipped drafts/raced' "$w/review.out"; then fail 'review offered [b]ase, or went on, for a change that moved'; fi
-if grep -qF 'Ready it first' "$w/review.out" "$w/review.err"; then fail 'review told the operator to ready the change'; fi
+if grep -qF 'valley ready --change' "$w/review.out" "$w/review.err"; then fail 'review told the operator to ready the change'; fi
 if git -C "$origin" rev-parse --verify --quiet "$raced_request" > /dev/null; then
   fail 'review filed a request for a change unreadied while it was open'
 fi
@@ -700,7 +701,8 @@ fi
 # Shown as a draft from the start, the change is offered no [a]pprove,
 # and is not said to be behind main.
 printf 'b\ns\n' | as requester valley review "$rh" > "$w/out" 2> "$w/err" || fail "review of the draft $rh failed"
-grep -qF "$rh v1 is a draft: its owner (contributor) hasn't marked it ready, so it can't be approved yet. [v]iew full diff, [s]kip? answer v or s" "$w/out" \
+grep -qxF "$rh v1 · draft (its owner, contributor, has not readied it)" "$w/out" \
+  && grep -qF '[v]iew diff  [s]kip: answer v or s' "$w/out" \
   || fail 'review of a stale draft did not say it is a draft in place of its prompt'
 if grep -qF -e '[a]pprove' -e '[b]ase' "$w/out"; then fail 'review offered a stale draft [a]pprove or [b]ase'; fi
 if grep -qF 'behind main' "$w/out"; then fail 'review said a draft is behind main'; fi
@@ -734,14 +736,14 @@ review_while "$rh" 'a\n' as requester valley rebase "$rh"
 rebased="$(git -C "$origin" rev-parse refs/heads/drafts/raced)"
 [ "$rebased" != "$raced_again" ] || fail 'rebase did not move the branch'
 grep -qx "project $rh v3 ready" "$w/out" || fail 'rebase did not add the rebased head as v3'
-grep -qxF "$behind" "$w/review.out" || fail 'review did not say the change is behind main'
+grep -qF "$behind" "$w/review.out" || fail 'review did not say the change is behind main'
 grep -qxF "$prompt$rh moved to v3 while you were reviewing (a restack of v2; same changes) · your answer about v2 stands" "$w/review.out" \
   || fail "review did not carry the answer across the restack to v3: $(cat "$w/review.out")"
-grep -q "^Approved $rh v2 " "$w/review.out" || fail "review did not approve v2 across the restack: $(cat "$w/review.err")"
+grep -q "^[^ ]* $rh v2  approved · " "$w/review.out" || fail "review did not approve v2 across the restack: $(cat "$w/review.err")"
 [ "$(git -C "$origin" rev-parse "$raced_request")" = "$raced_again" ] \
   || fail 'review filed another head than the one it showed'
-[ "$(grep -cF '[v]iew full diff' "$w/review.out")" = 1 ] || fail 'review asked again about a restacked change'
-if grep -qF 'Ready it first' "$w/review.out" "$w/review.err"; then fail 'review told the operator to ready the change'; fi
+[ "$(grep -cF '[v]iew diff' "$w/review.out")" = 1 ] || fail 'review asked again about a restacked change'
+if grep -qF 'valley ready --change' "$w/review.out" "$w/review.err"; then fail 'review told the operator to ready the change'; fi
 record "$rid" '.state == "ready"' '.active == 3' '.versions | length == 3' \
   ".versions[2].head == \"git-sha1:$rebased\"" '.versions[2].uploader == "requester"' \
   '.versions[2].branch == "drafts/raced"' '.owner == "contributor"'
@@ -764,7 +766,7 @@ review_while drafts/plain 'a\ns\n' ready_then_unready
 grep -q '^branch drafts/plain, log against origin/main' "$w/review.out" \
   || fail 'the review did not begin on a branch with no record'
 record "$plain_id" '.state == "draft"'
-grep -qF "drafts/plain is now change $plain_handle v1, which is draft, not ready; nothing published" "$w/review.err" \
+grep -qxF "⊘ drafts/plain  not approved · now change $plain_handle v1, which is draft" "$w/review.err" \
   || fail "review's [a]pprove went ahead for a branch readied and unreadied while the review was open"
 if git -C "$origin" rev-parse --verify --quiet refs/the-valley/integration-requests/main/drafts-plain > /dev/null; then
   fail 'review filed a request for a branch that became a draft while it was open'
@@ -817,7 +819,7 @@ reserved=c-kkkkllllmmmmnnnnooooppppqqqqrrrr
 git checkout --quiet -b "$reserved" main
 commit reserved
 as contributor git push --quiet origin "$reserved"
-refused 'that name is reserved for the change with the ID' as requester valley approve "$reserved"
+refused "not approved · the branch's request name" as requester valley approve "$reserved"
 if git -C "$origin" rev-parse --verify --quiet "refs/the-valley/integration-requests/main/$reserved" > /dev/null; then
   fail "approve filed a branch under a change's request name"
 fi
@@ -1141,10 +1143,10 @@ grep -A1 "change 2 of 3: $h2 on s10/one\$" "$w/out" | grep -qxF "$drafted" \
   || fail "the draft layer's prompt did not say it is a draft in place of [a]pprove"
 grep -qF '[s]top? answer n, v, or s' "$w/out" || fail 'the draft layer took [a]pprove'
 held="it would bring $h2, change 2 of 3, which is a draft, so it can't be approved yet."
-[ "$(grep -oF "$h3, 3 of 3: $held [v]iew full diff, [r]eject $h3, [s]top? " "$w/out" | wc -l)" = 2 ] \
+[ "$(grep -cF " · stack of 3 · $held" "$w/out")" = 2 ] && grep -qF "[v]iew diff  [r]eject $h3  [s]top: " "$w/out" \
   || fail 'the top above the draft did not say why it cannot be approved'
-grep -qF '[s]top? answer v, r, or s' "$w/out" || fail 'the top above the draft took [a]pprove'
-grep -qF "[s]top? stopped reviewing $h3 at change 3 of 3; nothing done" "$w/out" || fail 'the review of the stack did not stop'
+grep -qF '[s]top: answer v, r, or s' "$w/out" || fail 'the top above the draft took [a]pprove'
+grep -qF "[s]top: stopped reviewing $h3 at change 3 of 3; nothing done" "$w/out" || fail 'the review of the stack did not stop'
 if grep -qF -e "[a]pprove all 3" -e "[a]pprove s10/one and $h2" "$w/out"; then
   fail 'review offered to approve at or above the draft'
 fi
@@ -1155,7 +1157,7 @@ ok as contributor valley withdraw "$h2"
 printf 'n\nn\ns\n' | as requester valley review "$h3" > "$w/out" 2> "$w/err" || fail "review of the stack under $h3 failed"
 grep -A1 "change 2 of 3: $h2 on s10/one\$" "$w/out" | grep -qxF "$h2 is withdrawn: there is nothing to approve." \
   || fail "the withdrawn layer's page did not say it is withdrawn under its heading"
-grep -qF "$h3, 3 of 3: it would bring $h2, change 2 of 3, which is withdrawn, so it can't be approved yet. [v]iew full diff, [r]eject $h3, [s]top? " "$w/out" \
+grep -qF " · stack of 3 · it would bring $h2, change 2 of 3, which is withdrawn, so it can't be approved yet." "$w/out" \
   || fail 'the top above the withdrawn layer did not say why it cannot be approved'
 
 # ----------------------------------------------------------------------
@@ -1180,7 +1182,7 @@ cid="$nid" ch="$nh"
 cv1="$(git rev-parse HEAD)"
 git checkout --quiet main
 ok as requester valley approve --head "$cv1" "$ch"
-grep -q "^Approved $ch v1 " "$w/out" || fail "approve did not approve $ch v1"
+grep -q "^[^ ]* $ch v1  approved · " "$w/out" || fail "approve did not approve $ch v1"
 base1="$(at refs/heads/main)"
 move_main cmp-landing
 landing="$(at refs/heads/main)"
@@ -1192,18 +1194,18 @@ grep -qx "$clean" "$w/out" || fail "review after a rebase did not say v2 is a cl
 after "$w/out" "$clean" > "$w/clean"
 [ "$(sed -n 2,4p "$w/clean")" = "$(printf '%s\n' "File delta unchanged. Base ${base1:0:7} -> ${landing:0:7}." \
   'Landings between bases:' "  ${landing:0:7} cmp-landing")" ] || fail "the clean restack did not list the landing: $(cat "$w/clean")"
-# The change's checks line comes just before the prompt.
-[ "$(sed -n 5p "$w/clean")" = 'checks: none required' ] || fail "the clean restack did not show the checks line before the prompt: $(cat "$w/clean")"
-grep -qx "cmp/topic: \[a\]pprove, \[v\]iew full diff, \[r\]eject, \[s\]kip? skipped cmp/topic; nothing done" "$w/clean" \
+# The change's checks line is a clause of the prompt's header.
+sed -n 5p "$w/clean" | grep -qF ' · checks: none required' || fail "the clean restack did not show the checks line before the prompt: $(cat "$w/clean")"
+grep -qx "\[a\]pprove  \[v\]iew diff  \[r\]eject  \[s\]kip: skipped cmp/topic; nothing done" "$w/clean" \
   || fail 'the prompt after a clean restack did not offer [v]iew full diff'
 if grep -q '^diff --git' "$w/clean"; then fail 'review paged the diff of a clean restack'; fi
 # [v]iew full diff pages it, and the prompt comes back.
 printf 'v\ns\n' | as requester valley review "$ch" > "$w/out" 2> "$w/err" || fail "review of $ch failed"
 after "$w/out" "$clean" > "$w/clean"
-grep -qF "[s]kip? change $ch v2 at ${cv2:0:7}, on branch cmp/topic, log against origin/main:" "$w/clean" \
+grep -qF "[s]kip: change $ch v2 at ${cv2:0:7}, on branch cmp/topic, log against origin/main:" "$w/clean" \
   || fail '[v]iew full diff did not page the change'
 grep -qx 'diff --git a/cmp-one.txt b/cmp-one.txt' "$w/clean" || fail '[v]iew full diff did not show the diff'
-[ "$(grep -c 'cmp/topic: \[a\]pprove, \[v\]iew full diff' "$w/clean")" = 2 ] || fail 'the prompt did not come back after [v]'
+[ "$(grep -c '^\[a\]pprove  \[v\]iew diff' "$w/clean")" = 2 ] || fail 'the prompt did not come back after [v]'
 
 # v3 edits a file. The greatest approved version below it is still v1,
 # so review pages that v3 changed since v1, the file whose change

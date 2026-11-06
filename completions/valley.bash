@@ -30,7 +30,7 @@ _valley() {
   elif [ "${COMP_WORDS[1]}" = checks ] && [ "${cur:0:1}" = - ]; then
     mapfile -t COMPREPLY < <(compgen -W '--schema --instance --project --names --cost' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = approve ] && [ "${cur:0:1}" = - ]; then
-    mapfile -t COMPREPLY < <(compgen -W '--head --build-here' -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W '--head --build-here --verbose' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = approve ] && [ "${COMP_WORDS[COMP_CWORD - 1]}" = --head ]; then
     return
   elif [ "${COMP_WORDS[1]}" = approve ]; then

@@ -54,10 +54,15 @@ package main
 //	digest <valley-tree-v1 digest of the head's tree>
 //	stored <ref> <object ID>   one per attestation ref origin holds for it
 //	covered <check> <ref> <signer>+<key hash>
+//	failed <check> <ref> <signer>+<key hash>
 //	missing <check>
 //
-// with a covered or a missing line for every check asked about, in the
-// order asked.
+// with a covered, a failed or a missing line for every check asked about,
+// in the order asked. A check is failed when the note judged verifies, is
+// signed by a signer who counts in this project, and records something
+// other than a pass of this check, as valley pending --checks reads it
+// (versionchecks.go): the integrator judges the check by that note, so
+// building the check again does not change the verdict on this tree.
 
 import (
 	"bytes"
@@ -127,6 +132,8 @@ func runCoverage(g git, args []string, w, stderr io.Writer) error {
 	for _, c := range checks {
 		if by, ok := e.covered[c.name]; ok {
 			lines = append(lines, "covered "+c.name+" "+by)
+		} else if by, ok := e.failed[c.name]; ok {
+			lines = append(lines, "failed "+c.name+" "+by)
 		} else {
 			lines = append(lines, "missing "+c.name)
 		}
@@ -137,12 +144,14 @@ func runCoverage(g git, args []string, w, stderr io.Writer) error {
 
 // evidence is what coverage reads of a head's tree on origin: the tree's
 // digest, every attestation ref origin holds for it, in order, with the
-// object each names, and each check covered, mapped to "<ref> <signer>".
+// object each names, and each check covered or failed, mapped to
+// "<ref> <signer>".
 type evidence struct {
 	digest  string
 	stored  []string
 	listed  map[string]string
 	covered map[string]string
+	failed  map[string]string
 }
 
 // coverageOf reads the evidence origin holds for a head's tree, and which
@@ -170,7 +179,7 @@ func coverageOf(g git, head string, checks []nixCheck, stderr io.Writer) (eviden
 		return evidence{}, failure("could not list the evidence origin holds for this tree")
 	}
 	e := evidence{digest: digest, listed: o.refs, stored: storedFor(digest, o.refs)}
-	e.covered, err = cover(g, repo, head, e.stored, e.listed, checks, stderr)
+	e.covered, e.failed, err = cover(g, repo, head, e.stored, e.listed, checks, stderr)
 	return e, err
 }
 
@@ -198,36 +207,37 @@ func storedFor(digest string, listed map[string]string) []string {
 	return stored
 }
 
-// cover is the checks the stored refs hold reusable evidence for, each
-// mapped to "<ref> <signer>". It fetches the refs' objects only when there
-// are checks to look for.
-func cover(g git, repo, head string, stored []string, listed map[string]string, checks []nixCheck, stderr io.Writer) (map[string]string, error) {
-	covered := map[string]string{}
+// cover is the checks the stored refs hold reusable evidence for, and the
+// checks whose judged note records a failure, each mapped to
+// "<ref> <signer>". It fetches the refs' objects only when there are
+// checks to look for.
+func cover(g git, repo, head string, stored []string, listed map[string]string, checks []nixCheck, stderr io.Writer) (covered, failed map[string]string, err error) {
+	covered, failed = map[string]string{}, map[string]string{}
 	if len(stored) == 0 || len(checks) == 0 {
-		return covered, nil
+		return covered, failed, nil
 	}
 	var oids []string
 	for _, ref := range stored {
 		oids = append(oids, listed[ref])
 	}
 	if err := fetch(g, oids...); err != nil {
-		return nil, failure("could not fetch the evidence origin holds for this tree")
+		return nil, nil, failure("could not fetch the evidence origin holds for this tree")
 	}
 	keys, p, why := hostSigners(g)
 	if why != "" {
 		fmt.Fprintf(stderr, "valley: %s, so none of the evidence on origin is reused\n", why)
-		return covered, nil
+		return covered, failed, nil
 	}
 	defer os.Remove(keys)
 	here := counting{project: project(g), integrator: p.name, projects: p.projects}
 
 	judged, why, err := judge(g, repo, head, keys, os.Getenv("VALLEY_KNOWN_SIGNERS"), here, stored, listed, checks)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if why != "" {
 		fmt.Fprintf(stderr, "valley: %s, so the integrator cannot judge this tree's evidence, and none of it is reused\n", why)
-		return covered, nil
+		return covered, failed, nil
 	}
 	for _, c := range checks {
 		j, ok := judged[c.name]
@@ -236,11 +246,14 @@ func cover(g git, repo, head string, stored []string, listed map[string]string, 
 		}
 		if j.why != "" {
 			fmt.Fprintf(stderr, "valley: not reusing %s: the integrator judges it by %s:%s, and %s\n", c.name, j.note.ref, j.note.path, j.why)
+			if j.note.refusal == "" && mismatch(j.note, c) != "" {
+				failed[c.name] = j.note.ref + " " + j.note.signer
+			}
 			continue
 		}
 		covered[c.name] = j.note.ref + " " + j.note.signer
 	}
-	return covered, nil
+	return covered, failed, nil
 }
 
 // judgment is the note the integrator judges a check by, and why approve
@@ -391,16 +404,8 @@ func reusable(g git, repo, head, local string, here counting, c nixCheck, n stor
 	if n.refusal != "" {
 		return n.refusal, nil
 	}
-	text := string(n.note[:bytes.LastIndex(n.note, []byte("\n\n"))+1])
-	for _, want := range [][2]string{
-		{"predicateType", predicatePure},
-		{"predicate.check.runner", "nix"},
-		{"predicate.check.attribute", c.attribute},
-		{"predicate.result", "passed"},
-	} {
-		if got := statementValue(text, want[0]); got != want[1] {
-			return fmt.Sprintf("its %s is %q, not %q", want[0], got, want[1]), nil
-		}
+	if why := mismatch(n, c); why != "" {
+		return why, nil
 	}
 	if local != "" {
 		signers, refusal, err := verify(g, repo, head, local, n.note)
@@ -415,6 +420,24 @@ func reusable(g git, repo, head, local string, here counting, c nixCheck, n stor
 		}
 	}
 	return "", nil
+}
+
+// mismatch says why a note is not a pass of this check, or "" when it
+// is one: pure evidence, from the nix runner, for the check's attribute,
+// recording that it passed.
+func mismatch(n storedNote, c nixCheck) string {
+	text := string(n.note[:bytes.LastIndex(n.note, []byte("\n\n"))+1])
+	for _, want := range [][2]string{
+		{"predicateType", predicatePure},
+		{"predicate.check.runner", "nix"},
+		{"predicate.check.attribute", c.attribute},
+		{"predicate.result", "passed"},
+	} {
+		if got := statementValue(text, want[0]); got != want[1] {
+			return fmt.Sprintf("its %s is %q, not %q", want[0], got, want[1])
+		}
+	}
+	return ""
 }
 
 // verify runs attest verify over a note's exact bytes, under a

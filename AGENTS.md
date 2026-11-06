@@ -80,6 +80,19 @@ context, implications, and open questions. Record design decisions in `docs/arch
 `docs/security.md`, and open questions as `question` knots owned by their answerer; land settled
 answers in docs and link the change from the knot.
 
+## Command output
+
+`approve` and the `review` prompt (`status/verdict.go`) set the style other commands adopt:
+
+- Lead with one verdict line: glyph, the bold change, then what happened and what comes next.
+- Add one line, indented two spaces, only when the person must act: `run:` or `see:` and a command.
+- Separate clauses with `·`, and fit a line in 80 columns.
+- Use one glyph vocabulary, `status/plan.go`'s: ✓ done, ◐ under way, ◇ waiting, ⊘ refused, ✗ failed.
+- Say what happened, never what didn't: a ⊘ already means nothing was published.
+- Keep refs, signers, digests and paths behind `--verbose`.
+- On a terminal, redraw progress in one line; in a pipe, print milestones. Pipes and `NO_COLOR` get
+  the same text without colour.
+
 ## Documentation style and verification
 
 1. Label code guarantees `implemented`, instance config (`valley.cue`, `services.valley`, `policy/`,

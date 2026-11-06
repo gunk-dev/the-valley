@@ -1851,6 +1851,9 @@ git commit --quiet -m "c30: the second version"
 attest_change c30-again "" "" --check prose-format
 valley ready --change "$id30" c30-again > /dev/null 2>&1 || die "valley ready --change $id30 c30-again failed"
 v2="$(git rev-parse c30-again)"
+# v2 is made on the main v1 landed on, so it is the change's next round.
+valley status --json "$id30" | jq -e '.version == 2 and .landing == "not-landed" and .landed_version == null' > /dev/null \
+  || die "v2, made on v1's landing, does not read as work left to land: $(valley status --json "$id30")"
 request "c-$id30" main "$v2"
 integrate
 grep -q "^c-$id30 -> refs/heads/main .*: land$" "$work/last.out" || die "version 2 of c-$id30 did not land"
@@ -1864,6 +1867,62 @@ jq -e --arg id "$id30" --arg l1 "$land30v1" --arg l2 "$land30v2" '
   == [["landed-recorded", $l1], ["landed-recorded", $l2]]' "$work/changes30.json" > /dev/null \
   || die "both versions do not read landed-recorded as their own landings: $(jq -c --arg id "$id30" '.repos[].changes[] | select(.change_id == $id) | .versions' "$work/changes30.json")"
 holds "version 2 replaced the outcome record, and version 1's landing record kept it landed-recorded"
+
+# ----------------------------------------------------------------------
+say "30b. approving the version shown lands it under a restacked active version, and the change reads landed as it"
+
+# v1 is what the reviewer read. main moves, and the change is restacked
+# onto it as v2 while the review is open. Approving v1, the head shown,
+# lands it, and from then on the change reads landed as v1 though v2 is
+# active: it is no work left to land, so nothing restacks it, and no
+# request for it is judged when main moves again.
+git fetch --quiet origin
+git checkout --quiet -B c30b origin/main
+echo "the version the reviewer read" > docs/c30b.md
+git add -A
+git commit --quiet -m "c30b: the version the reviewer read"
+git push --quiet origin c30b
+ready_change c30b
+id30b="$readied" v1="$(git rev-parse c30b)"
+git checkout --quiet -B c30b-x origin/main
+echo "main moves under the review" > notes/c30b-x.txt
+git add -A
+git commit --quiet -m "c30b: main moves under the review"
+git push --quiet origin c30b-x
+request c30b-x main "$(git rev-parse c30b-x)"
+integrate
+grep -q "^c30b-x -> refs/heads/main .*: land$" "$work/last.out" || die "c30b-x did not land"
+valley rebase "$id30b" > "$work/rebase30b.out" 2>&1 || die "the restack of c30b failed: $(cat "$work/rebase30b.out")"
+valley status --json "$id30b" | jq -e '.version == 2 and .landing == "not-landed"' > /dev/null \
+  || die "the restack did not make v2 the active version: $(valley status --json "$id30b")"
+VALLEY_ATTEST_KEY="$work/contributor" VALLEY_ATTEST_NAME="$contributor" \
+  valley approve --build-here --head "$v1" "$id30b" > "$work/approve30b.out" 2>&1 \
+  || die "approving v1 under an active v2 failed: $(cat "$work/approve30b.out")"
+integrate
+grep -q "^c-$id30b -> refs/heads/main .*: land$" "$work/last.out" || die "v1 of c-$id30b did not land"
+[ "$(git -C "$origin" rev-parse "$(tip)^")" = "$pre" ] \
+  && [ "$(git -C "$origin" diff "$pre" "$(tip)")" = "$(git -C "$origin" diff "$v1^" "$v1")" ] \
+  || die "v1 did not land as its own delta, one commit on the tip"
+land30b="$(tip)"
+valley status --json "$id30b" | jq -e --arg v1 "$v1" '.version == 2 and .landing == "landed-recorded" and .landed_version == 1 and .head == $v1 and .state == "integrated-recorded"' > /dev/null \
+  || die "the change does not read landed as v1: $(valley status --json "$id30b")"
+valley pending --json | jq -e --arg id "$id30b" '[.. | objects | select(.change_id? == $id)] == []' > /dev/null \
+  || die "valley pending lists c-$id30b, which landed as v1"
+valley rebase "$id30b" > "$work/rebase30b-again.out" 2>&1 || true # a landed change is no layer to restack
+git fetch --quiet origin
+valley status --json "$id30b" | jq -e '.version == 2' > /dev/null \
+  || die "c-$id30b was restacked again after it landed as v1: $(cat "$work/rebase30b-again.out")"
+git checkout --quiet -B c30b-y origin/main
+echo "main moves after the landing" > notes/c30b-y.txt
+git add -A
+git commit --quiet -m "c30b: main moves after the landing"
+git push --quiet origin c30b-y
+request c30b-y main "$(git rev-parse c30b-y)"
+integrate
+grep -q "^c30b-y -> refs/heads/main .*: land$" "$work/last.out" || die "c30b-y did not land"
+[ "$(git -C "$origin" rev-parse "$(tip)^")" = "$land30b" ] || die "main did not move past the landing; the scenario proves nothing"
+grep -q "c-$id30b\|c-c30b " "$work/last.out" && die "a request for c-$id30b was judged after it landed: $(cat "$work/last.out")"
+holds "v1 landed under an active v2, the change reads landed as v1, and nothing restacks or judges it after"
 
 # ----------------------------------------------------------------------
 say "31. a branch below a landed change is no layer, and the change above it is measured from the landing"

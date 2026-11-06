@@ -110,10 +110,10 @@ change is on that branch. review, approve and rebase read a branch name,
 written either way, against every record on origin: when exactly one
 record's active version is on the branch, the name is that change, as if
 its id were given, and when more than one's is, the verb refuses and lists
-their ids. A change whose active version has landed — its head is on
+their ids. A change that has landed as any version — its head is on
 main's first-parent history with no merge above it, or the integrator's
 outcome record and verified transfer statement record that exact head
-landing — is skipped, so a branch can be used again once its change has
+landing — is skipped, unless its active version was made on that landing, so a branch can be used again once its change has
 landed. unready, withdraw and status read a branch the same way. A
 branch no record's active version is on is acted on as a branch. A
 change with a record is reviewed, approved and rebased at the
@@ -451,11 +451,18 @@ usage: valley review [-v] [--build-here] <change>
                      `<change> changed while you were reviewing: it was
                      withdrawn (since <time>), so there is nothing to
                      approve.`
-                     `<change> moved to v<n> while you were reviewing;
-                     review it again to approve what would land.`
-                     `<change> landed while you were reviewing; there is
-                     nothing left to approve.`
+                     `<change> moved to v<n> while you were reviewing
+                     (<why>) · review it again to approve it · [v]iew
+                     what changed since v<m>, [s]kip?`
+                     `<change> landed as v<n> while you were reviewing;
+                     there is nothing left to approve.`
                    <time> is when the record last changed, in UTC.
+                   a new version with the same changes and commits, such
+                   as a restack the carry mode allows, keeps the answer:
+                     `<change> moved to v<n> while you were reviewing
+                     (a restack of v<m>; same changes) · your answer
+                     about v<m> stands`
+                   and [a]pprove files v<m>, the head shown.
                    a branch no record is on has no state, and is offered
                    the usual prompt.
                    while paging, press v: less opens the diff in $EDITOR.
@@ -727,7 +734,8 @@ usage: valley status [--json] [-v] [--known-signers <file>] [--integrator-name <
                    a change with a record is read at its active version's
                    head, under c-<change id>, and the status says the
                    version, its title, the owner, and how far the version
-                   has landed, as changes reads it. a refusal for a record
+                   has landed, as changes reads it. a change that landed
+                   as an older version is read at that version's head. a refusal for a record
                    that is not ready, or for a merge in the change's
                    commits, is a state of its own.
                    after integration, show how to update the local checkout.
@@ -2749,8 +2757,8 @@ shown_not_ready() {
 
 # Where the change under review stands now, as valley-go standing reads
 # it from origin (status/standing.go), set by read_standing. The state,
-# the active version and its head; when the record last changed; whether
-# that version has landed; and STANDING_CONFLICT, which is "conflict"
+# the active version and its head; when the record last changed; the
+# version the change landed as, v<n>, once any has; and STANDING_CONFLICT, which is "conflict"
 # while the host's restacker reports that rebasing the change onto main
 # conflicted.
 STANDING_STATE="" STANDING_VERSION="" STANDING_HEAD="" STANDING_SINCE=""
@@ -2775,8 +2783,10 @@ read_standing() {
 # When it is no longer what review showed, moved says in one line what
 # changed and what happens next, and the review of that change ends: the
 # prompt's answers were about what was shown, so it is not asked again.
-# Fails when the change is still as shown, and for a plain branch, which
-# approve and reject check themselves.
+# A new version the answer carries to, such as a restack with the same
+# changes, does not end it (carried). Fails when the change is still as
+# shown or the answer carries, and for a plain branch, which approve and
+# reject check themselves.
 moved() {
   local h="$CHANGE_HANDLE"
   [ -n "$CHANGE_ID" ] || return 1
@@ -2794,14 +2804,46 @@ moved() {
       return 0
       ;;
   esac
-  if [ "$STANDING_VERSION" != "$CHANGE_VERSION" ] || [ "$STANDING_HEAD" != "$CHANGE_HEAD" ]; then
-    echo "$h moved to v$STANDING_VERSION while you were reviewing; review it again to approve what would land."
-    return 0
-  fi
   if [ -n "$STANDING_LANDED" ]; then
-    echo "$h landed while you were reviewing; there is nothing left to approve."
+    echo "$h landed as $STANDING_LANDED while you were reviewing; there is nothing left to approve."
     return 0
   fi
+  if [ "$STANDING_VERSION" != "$CHANGE_VERSION" ] || [ "$STANDING_HEAD" != "$CHANGE_HEAD" ]; then
+    carried || return 0
+  fi
+  return 1
+}
+
+# carried: whether the answer about the version review showed carries to
+# the version the change moved to, as valley-go carry decides
+# (status/carry.go). When it does, carried says so in one line, and the
+# answer stays bound to the head shown: an approval names what the
+# reviewer read, and the integrator applies its delta onto main as main
+# stands. When it does not, carried says why in one line, offers to page
+# only what changed since the version shown, and fails.
+carried() {
+  local h="$CHANGE_HANDLE" verdict="" reason="" choice
+  REVIEW_TMP="$(mktemp -d)"
+  valley-go carry "$CHANGE_ID" "$CHANGE_VERSION" "$STANDING_VERSION" > "$REVIEW_TMP/carry" \
+    && IFS=$'\t' read -r verdict reason < "$REVIEW_TMP/carry"
+  case "$verdict" in
+    carries)
+      echo "$h moved to v$STANDING_VERSION while you were reviewing ($reason) · your answer about v$CHANGE_VERSION stands"
+      cleanup_review_tmp
+      return 0
+      ;;
+    review)
+      printf '%s moved to v%s while you were reviewing (%s) · review it again to approve it · [v]iew what changed since v%s, [s]kip? ' \
+        "$h" "$STANDING_VERSION" "$reason" "$CHANGE_VERSION"
+      read -r choice || choice=""
+      if [ "$choice" = v ]; then
+        tail -n +2 "$REVIEW_TMP/carry" > "$REVIEW_TMP/changed"
+        page_file "$REVIEW_TMP/changed" || true # quitting the pager early is not an error
+      fi
+      ;;
+    *) echo "$h moved to v$STANDING_VERSION while you were reviewing; review it again to approve what would land." ;;
+  esac
+  cleanup_review_tmp
   return 1
 }
 

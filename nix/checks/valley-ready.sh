@@ -712,32 +712,36 @@ raced_again="$(git rev-parse HEAD)"
 new_version() {
   as contributor git push --quiet origin drafts/raced && as contributor valley ready --change "$rid"
 }
-# A version added while the review is open is said plainly, and nothing
-# is approved: the operator reviews the change again to approve what
-# would land.
-review_while "$rh" 'a\ns\n' new_version
-grep -qxF "$prompt$rh moved to v2 while you were reviewing; review it again to approve what would land." "$w/review.out" \
-  || fail "review did not say the change moved to v2: $(cat "$w/review.out")"
+# A version with new content, added while the review is open, is said
+# plainly, and nothing is approved. Only what changed since the version
+# shown is offered, for the second look.
+review_while "$rh" 'a\nv\n' new_version
+moved_line="$prompt$rh moved to v2 while you were reviewing (its changes differ from v1's) · review it again to approve it · [v]iew what changed since v1, [s]kip? "
+grep -qF "$moved_line$rh v2 at $(git rev-parse --short "$raced_again"): changed since v1 at " "$w/review.out" \
+  || fail "review did not say the change moved to v2, and show what changed since v1: $(cat "$w/review.out")"
 if git -C "$origin" rev-parse --verify --quiet "$raced_request" > /dev/null; then
   fail 'review filed a request for a change that moved while it was open'
 fi
-# Reviewed again, the change behind main is approved as it is, at v2.
-printf 'a\n' | as requester valley review "$rh" > "$w/out" 2> "$w/err" || fail "review of $rh failed"
-grep -qxF "$behind" "$w/out" || fail 'review did not say the change is behind main'
-grep -q "^Approved $rh v2 " "$w/out" || fail "review did not approve a change behind main: $(cat "$w/err")"
-[ "$(git -C "$origin" rev-parse "$raced_request")" = "$raced_again" ] \
-  || fail 'review filed another head than the one it showed'
-if grep -qF 'Ready it first' "$w/out" "$w/err"; then fail 'review told the operator to ready the change'; fi
 
 # rebase rebases the active version's head, pushes the branch, and adds
 # the rebased head as a new version, as the operator. ready --if-active,
 # which it does that with, adds nothing unless the change is ready at that
-# active head.
+# active head. A rebase while the review is open brings the same changes
+# onto main, so the answer stands with no second review: [a]pprove files
+# the head shown, whose delta the integrator applies onto main.
 unchanged "$rid" refused "$rh v2 is at" as contributor valley ready --if-active "$raced" --change "$rid"
-ok as requester valley rebase "$rh"
+review_while "$rh" 'a\n' as requester valley rebase "$rh"
 rebased="$(git -C "$origin" rev-parse refs/heads/drafts/raced)"
 [ "$rebased" != "$raced_again" ] || fail 'rebase did not move the branch'
 grep -qx "project $rh v3 ready" "$w/out" || fail 'rebase did not add the rebased head as v3'
+grep -qxF "$behind" "$w/review.out" || fail 'review did not say the change is behind main'
+grep -qxF "$prompt$rh moved to v3 while you were reviewing (a restack of v2; same changes) · your answer about v2 stands" "$w/review.out" \
+  || fail "review did not carry the answer across the restack to v3: $(cat "$w/review.out")"
+grep -q "^Approved $rh v2 " "$w/review.out" || fail "review did not approve v2 across the restack: $(cat "$w/review.err")"
+[ "$(git -C "$origin" rev-parse "$raced_request")" = "$raced_again" ] \
+  || fail 'review filed another head than the one it showed'
+[ "$(grep -cF '[v]iew full diff' "$w/review.out")" = 1 ] || fail 'review asked again about a restacked change'
+if grep -qF 'Ready it first' "$w/review.out" "$w/review.err"; then fail 'review told the operator to ready the change'; fi
 record "$rid" '.state == "ready"' '.active == 3' '.versions | length == 3' \
   ".versions[2].head == \"git-sha1:$rebased\"" '.versions[2].uploader == "requester"' \
   '.versions[2].branch == "drafts/raced"' '.owner == "contributor"'

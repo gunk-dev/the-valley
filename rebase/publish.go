@@ -180,7 +180,7 @@ func UnlandedOn(ctx context.Context, g Git, o Origin, branch string, v Verifier)
 	s := NewSnapshot(ctx, g, o, all, v)
 	var found []Recorded
 	for _, n := range on {
-		if !s.IsLanded(n.ID, n.Record.ActiveVersion()) {
+		if s.Unlanded(n) {
 			found = append(found, n)
 		}
 	}

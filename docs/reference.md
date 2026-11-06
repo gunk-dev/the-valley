@@ -345,12 +345,23 @@ valley review [-v] [--build-here] <change>
   without asking again:
   - `<change> changed while you were reviewing: it was returned to draft (since <time>), so there is nothing to approve now. It comes back when it is ready again.`
   - `<change> changed while you were reviewing: it was withdrawn (since <time>), so there is nothing to approve.`
-  - `<change> moved to v<n> while you were reviewing; review it again to approve what would land.`
-  - `<change> landed while you were reviewing; there is nothing left to approve.`
+  - `<change> moved to v<n> while you were reviewing (<why>) · review it again to approve it · [v]iew what changed since v<m>, [s]kip?`
+  - `<change> landed as v<n> while you were reviewing; there is nothing left to approve.`
 
   `<time>` is the record commit's committer time in UTC, as `HH:MMZ` on the current day and
   `YYYY-MM-DD HH:MMZ` otherwise. Review never suggests `valley ready` for a change that is not
   ready; only `valley approve`, run by the change's owner, does.
+
+  A new version v<n> is set against v<m>, the version shown, by
+  `valley-go carry <change ID> <m> <n>` (`status/carry.go`), as `valley-go compare` sets a version
+  against its approved one, at `main`'s tip on origin. When the two have the same file delta, commit
+  messages and authors, and the change's carry mode allows the landings between their bases, the
+  answer carries: review prints
+  `<change> moved to v<n> while you were reviewing (a restack of v<m>; same changes) · your answer about v<m> stands`,
+  and `[a]pprove` files v<m>'s head, the one shown, whose delta the integrator applies onto `main`
+  as `main` stands. Otherwise `<why>` says what holds it: other changes, other commit messages or
+  authors, the carry mode, or versions that cannot be compared, and `[v]` pages the comparison of
+  v<n> with v<m>.
 
 - **Inline review notes:** Pressing `v` inside `less` opens the diff buffer in `$EDITOR`. Any lines
   inserted by the reviewer are anchored to their file and new-side line number, appended to
@@ -2291,7 +2302,8 @@ Five `--json` commands emit versioned JSON documents for scripts and front ends.
     `awaiting-new-decision`, `stale`, `rejected`, `refused-not-ready`, `refused-merge`, or `failed`.
   - `change_id`, `handle`, `title`, `owner`, `landing` (`string` or `null`) and `version` (`int` or
     `null`): Populated for a recorded change (`landing` is `"landed"`, `"landed-recorded"`,
-    `"uncertain"`, or `"not-landed"`); `null` for an unrecorded branch.
+    `"uncertain"`, or `"not-landed"`); `null` for an unrecorded branch. Once the change has landed
+    as any version, `landing` is that version's and `landed_version` (`int` or `null`) names it.
   - `restack` (`object` or `null`):
     `{ "ref": <string>, "commit": <oid>, "current": <bool>, "report": <RestackReport> }` when the
     change has a valid restack report on `origin`.
@@ -2350,10 +2362,10 @@ Five `--json` commands emit versioned JSON documents for scripts and front ends.
     [`checks`](#version-checks).
   - `approved` (`boolean`, **present only on `changes` in `valley-pending/v1`**): Whether the active
     version has an integration request at its head.
-  - `includes` (`array` of `string`): Change IDs of other changes whose active version has not
-    landed and whose active version head is a strict ancestor of this change's active version head
-    in `main..head`. A change whose active version has landed is never named, even though
-    `valley-changes/v1` still lists it.
+  - `includes` (`array` of `string`): Change IDs of other changes that have not landed as any
+    version and whose active version head is a strict ancestor of this change's active version head
+    in `main..head`. A change that has landed is never named, even though `valley-changes/v1` still
+    lists it.
   - `restack` (`jsonRestack` or `null`) and `knots` (`array` of
     `{ "id", "type", "status", "title" }`).
 
@@ -2784,7 +2796,7 @@ as compact JSON ending with a newline.
     last edited) and `edited_by` (who edited it); a comment never edited has neither field.
   - `in_flight` (`array` of `string`): Active claimed knots ordered from oldest claim to newest,
     followed in tree order by active unclaimed knots whose status is `in-progress`.
-  - `changes` (`array`): Ready changes whose active version has not landed. Each item carries
+  - `changes` (`array`): Ready changes that have not landed as any version. Each item carries
     `change_id`, `handle`, `target`, `owner`, `includes`, `knots`, and the active version alone as
     `version`:
     `{ "n", "head", "title", "uploader", "landing", "request": { "commit" } or null, "outcome": { "decision", "head", "tip" } or null }`.

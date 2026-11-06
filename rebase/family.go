@@ -52,7 +52,7 @@ const (
 	Draft     State = "draft"     // a change its owner paused
 	Withdrawn State = "withdrawn" // a change its owner withdrew
 	Plain     State = "branch"    // a branch no record is on
-	Submitted State = "submitted" // a change whose active version has landed
+	Submitted State = "submitted" // a change that has landed as any version
 	Uncertain State = "uncertain" // a change whose active version may have landed, with no evidence either way
 )
 
@@ -218,10 +218,14 @@ func Capture(s *Snapshot, sel Selection) (*Family, error) {
 }
 
 // changeLayer is a change as a layer: its handle, its record, its active
-// version's head and branch, and how far that version has landed.
+// version's head and branch, and how far that version has landed, or the
+// version the change landed as has (LandedAs).
 func (s *Snapshot) changeLayer(n Recorded) *Layer {
 	v := n.Record.ActiveVersion()
 	landing, _ := s.Landing(n.ID, v)
+	if as, landed := s.LandedAs(n); landed {
+		landing, _ = s.Landing(n.ID, as)
+	}
 	return &Layer{
 		Name: s.Handle(n.ID), ID: n.ID, Branch: v.Branch,
 		Ref: change.Ref(Target, n.ID), Commit: n.Commit, Record: n.Record, Version: v.N,

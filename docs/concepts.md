@@ -85,8 +85,9 @@ instance floor governs verification alone. To map changed files to the checks th
 groups file globs into **path classes**, and any changed path that matches no declared class falls
 under `unclassified` and requires the checks listed in `unclassified` (which may be empty). To
 express how far an approval may carry across a rebase, each path class can also declare a `carry`
-mode (`same-paths`, `same-class`, or `exact`); `valley checks` reports the composed carry mode,
-while acting on `carry` to carry approval automatically across restacks is **not built**
+mode (`same-paths`, `same-class`, or `exact`); `valley checks` reports the composed carry mode, and
+`valley review` keeps a reviewer's answer when a restack adds a version during review and the mode
+allows it. Carrying an already filed approval by its mode is **not built**
 ([`schema/verification.cue`](../schema/verification.cue)).
 
 Checks come in two kinds: **pure checks**, which build Nix flake check targets via `nix build`

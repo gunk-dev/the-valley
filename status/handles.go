@@ -28,7 +28,7 @@ func (l listed) handleLines(h handleMap) []string {
 	var lines []line
 	for _, n := range l.snap.all {
 		st := n.record.State
-		if (st != change.Ready && st != change.Draft) || l.snap.isLanded(n.id, n.record.ActiveVersion()) {
+		if (st != change.Ready && st != change.Draft) || l.snap.isLanded(n) {
 			continue
 		}
 		v := n.record.ActiveVersion()

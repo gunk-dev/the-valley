@@ -1759,8 +1759,9 @@ the principal the restacker is configured to push as. The planner counts every v
 with that uploader, and holds a change whose next version would go over the cap. A host may impose a
 lower ceiling of its own, outside the policy. The carry modes and the cap are part of the composed
 policy, so the integrator's policy digest, a SHA-256 of the whole composition, changes when either
-does. Approval carry reads the carry modes, and is not built yet, so nothing acts on them. The
-restacker's planner reads the cap (`composed/composed.go`, `restack/plan.go`). Checked by `cue-vet`,
+does. `review` reads the carry modes when a change gains a version while it is open (see
+[The valley command](#the-valley-command)); the integrator does not act on them. The restacker's
+planner reads the cap (`composed/composed.go`, `restack/plan.go`). Checked by `cue-vet`,
 `integrator-unit`, `restack-unit` and `restack-e2e`.
 
 the-valley's own project layer is `policy/project/policy.cue`. It gives each part of this repository
@@ -2281,9 +2282,18 @@ records nothing on the change. It only deletes the branch, which the owner may s
 The change can move while the review is open: it can return to draft, gain a new version, be
 withdrawn, or land. So before `[a]pprove` or `[r]eject` acts, `review` reads the change again with
 `valley-go standing`. When the change differs from what review showed, `review` says what changed in
-one line, acts on nothing, and moves on without asking again. It never tells the operator to ready a
-change: readying is for the change's owner, and `approve` suggests it only to the owner. A branch no
-record is on has no state, and is offered the usual prompt.
+one line, acts on nothing, and moves on without asking again. A new version the answer carries to is
+the exception. `valley-go carry` (`status/carry.go`) sets it against the version shown by the
+comparison `valley-go compare` makes, at `main`'s tip on origin. The answer carries when the file
+delta, the commit messages and the authors are the same, and the change's carry mode, derived under
+the policy at that tip, allows the landings between the two bases. Then the answer stands, and
+`[a]pprove` files the head shown, so a restack during review needs no second review. An approval
+names exactly what the reviewer read, and a restack never puts another head in its place: the
+integrator applies the delta of the head approved onto `main` as `main` stands. When the answer does
+not carry, `review` offers the comparison, which shows only what changed since the version shown
+(`implemented`, checked by `valley-ready`). It never tells the operator to ready a change: readying
+is for the change's owner, and `approve` suggests it only to the owner. A branch no record is on has
+no state, and is offered the usual prompt.
 
 `review` also shows the knots a change does. These are the knots in the project's plan graph whose
 `changes` lists `valley:<project>/<change ID>` (see [The plan graph](#the-plan-graph)). The project
@@ -2798,6 +2808,14 @@ reads `not-landed`, not `uncertain`, and the overwritten record cannot be recove
 then count as work in the listing of a change whose head descends from it. Rebasing that change does
 not guarantee their removal: commits replayed by the rebase can still count as work.
 
+A change has landed once any of its versions is `landed` or `landed-recorded`
+(`rebase.Snapshot.LandedAs`, `implemented`). An approval names the head the reviewer read, so the
+version that lands can be older than the active one: a restack made during review stays active after
+the version it restacked lands, and is no work left to land. `valley pending`, `valley-go standing`,
+`valley status`, branch names and the restacker all read a change this way, and say which version it
+landed as. An active version whose head descends from that landing was made on a `main` that holds
+it, and is the change's next round: the change reads unlanded until that version lands.
+
 The client checks a transfer statement with `attest verify`. The signature must be by the
 integrator's signing name, under a key in a known-signers file. The client takes each of these two
 values from the first source that gives it (`status/signers.go`):
@@ -2926,11 +2944,10 @@ configuration.
   commit, so `main` reaches neither its own commits nor a branch below them, though their content is
   on `main`. A branch name that is not UTF-8 is left out, with a warning on stderr.
 
-`valley pending` prints three sections. `ready` holds the ready changes whose active version is
-neither `landed` nor `landed-recorded`. `branches` holds the branches no change is on. `drafts`
-holds the drafts. When no ready change is at the top of a stack, one line says so in place of
-`ready`. That line also says where any ready change inside another section's stack is. With `--all`,
-each repository is headed by its name.
+`valley pending` prints three sections. `ready` holds the ready changes that have not landed as any
+version. `branches` holds the branches no change is on. `drafts` holds the drafts. When no ready
+change is at the top of a stack, one line says so in place of `ready`. That line also says where any
+ready change inside another section's stack is. With `--all`, each repository is headed by its name.
 
 Each entry is a block. Its first line is its name, with the age and author of its head: the handle
 and version for a change, the branch for a branch, and the handle and version on its branch for a
@@ -3002,12 +3019,12 @@ qqqq v1 on paused                                             3 days ago · alic
 ```
 
 `review`, `approve`, `rebase`, `status`, `unready` and `withdraw` read a branch name as the change
-whose active version is on it. A change whose active version is `landed` or `landed-recorded` is
-skipped, so a branch name can be used again once its change has landed, whether or not the branch
-has moved since. A landing read wrongly could make a draft's branch read as a plain branch. Nothing
-lands from that: the integrator refuses a request at a draft's version head whatever it is named.
-Checked by `valley-changes`, by `valley-status` for restack reports, and by the Go tests in
-`status/` for handles, URLs and the JSON writer.
+whose active version is on it. A change that has landed as any version is skipped, so a branch name
+can be used again once its change has landed, whether or not the branch has moved since. A landing
+read wrongly could make a draft's branch read as a plain branch. Nothing lands from that: the
+integrator refuses a request at a draft's version head whatever it is named. Checked by
+`valley-changes`, by `valley-status` for restack reports, and by the Go tests in `status/` for
+handles, URLs and the JSON writer.
 
 ### Version and self-update
 

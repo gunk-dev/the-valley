@@ -3,9 +3,9 @@
 // outcome for it. It is `valley status`.
 //
 // A change with a record is read at the head its active version records,
-// under the request name approve files it under, c-<change ID>, and its
-// status carries what its record says and how far its active version has
-// landed. Any other name is a branch, read at its head on origin under the
+// or the version it landed as records, under the request name approve
+// files it under, c-<change ID>, and its status carries what its record
+// says and how far that version has landed. Any other name is a branch, read at its head on origin under the
 // request name approve gives a branch.
 //
 // It writes nothing. The objects it reads are fetched without writing
@@ -123,6 +123,7 @@ type status struct {
 type statusRecord struct {
 	id, handle, title, owner, landing string
 	version                           int
+	landedAs                          int // the version the change landed as, or 0
 }
 
 // name is how the status names the change in the commands it suggests:
@@ -254,7 +255,8 @@ func read(g git, branch string) (*status, error) {
 
 // readRecorded reads a change with a record from the snapshot o its name
 // was resolved in. The change is read at the head its active version
-// records, under its request name, c-<change ID>.
+// records, or the head of the version it landed as, under its request
+// name, c-<change ID>.
 func readRecorded(g git, o origin, n recorded, stderr io.Writer) (*status, error) {
 	v := n.record.ActiveVersion()
 	name := change.RequestName(n.id)
@@ -272,7 +274,10 @@ func readRecorded(g git, o origin, n recorded, stderr io.Writer) (*status, error
 		return nil, err
 	}
 	// How far the active version has landed, by the rules changes uses,
-	// and the change's restack report.
+	// or, once the change landed as any version, how far that one has;
+	// and the change's restack report. A change that landed as an older
+	// version is settled again at that version's head, which is what
+	// landed.
 	var want []string
 	for ref, oid := range o.refs {
 		if strings.HasPrefix(ref, outcomePrefix) || ref == rebase.RestackPrefix+n.id {
@@ -284,6 +289,16 @@ func readRecorded(g git, o origin, n recorded, stderr io.Writer) (*status, error
 	}
 	snap := newSnapshot(g, o, nil, newVerifier())
 	s.recorded.landing, _ = snap.landing(n.id, v)
+	if as, landed := snap.landedAs(n); landed {
+		s.recorded.landing, _ = snap.landing(n.id, as)
+		s.recorded.landedAs = as.N
+		if as.N != v.N {
+			s.head = headOf(as)
+			if err := s.settle(g, o.refs); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if r, found := snap.report(n.id); found {
 		s.restack = restackView(r, found)
 		s.restackSays = restackSays(r.Report, o.handle)

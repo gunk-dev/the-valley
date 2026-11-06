@@ -18,7 +18,11 @@ func writeHuman(g git, s *status, w io.Writer) int {
 	p := func(format string, args ...any) { fmt.Fprintf(w, format, args...) }
 	if r := s.recorded; r != nil {
 		p("Change %s v%d on %s, owned by %s: %s\n", r.handle, r.version, s.branch, r.owner, r.title)
-		p("Its landing: %s.\n", r.landing)
+		if r.landedAs != 0 && r.landedAs != r.version {
+			p("Its landing: %s, as v%d.\n", r.landing, r.landedAs)
+		} else {
+			p("Its landing: %s.\n", r.landing)
+		}
 		writeRestack(s, w)
 	}
 	switch s.state {
@@ -166,6 +170,7 @@ type jsonStatus struct {
 	Title       *string      `json:"title"`
 	Owner       *string      `json:"owner"`
 	Landing     *string      `json:"landing"`
+	LandedAs    *int         `json:"landed_version"`
 	Restack     *jsonRestack `json:"restack"`
 	Knots       []knotRef    `json:"knots"`
 }
@@ -208,6 +213,9 @@ func writeJSON(s *status, w, stderr io.Writer) int {
 	if r := s.recorded; r != nil {
 		out.ChangeID, out.Handle, out.Version = &r.id, &r.handle, &r.version
 		out.Title, out.Owner, out.Landing = &r.title, &r.owner, &r.landing
+		if r.landedAs != 0 {
+			out.LandedAs = &r.landedAs
+		}
 	}
 	out.Restack = s.restack
 	if s.outcome != "" {

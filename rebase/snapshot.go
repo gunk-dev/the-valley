@@ -342,10 +342,34 @@ func (s *Snapshot) IsLanded(id string, v change.Version) bool {
 	return kind == Landed || kind == LandedRecorded
 }
 
-// Unlanded reports whether a change, in any state, has an active version
-// that has not landed: the changes a stack's layers are among.
+// LandedAs is the version a change landed as, and whether it has: the
+// newest of its versions that landed by the first two rules. A change
+// counts as landed once any of its versions has, so a version restacked
+// while an earlier one was approved, and still active when that one
+// landed, is no work left to land. An active version whose head reaches
+// that landing was made on a main that holds it, and is the change's next
+// round: the change reads unlanded until that version lands.
+func (s *Snapshot) LandedAs(n Recorded) (change.Version, bool) {
+	active := n.Record.ActiveVersion()
+	for i := len(n.Record.Versions) - 1; i >= 0; i-- {
+		v := n.Record.Versions[i]
+		kind, commit := s.Landing(n.ID, v)
+		if kind != Landed && kind != LandedRecorded {
+			continue
+		}
+		if v.N != active.N && s.StrictAncestor(commit, HeadOf(active)) {
+			return change.Version{}, false
+		}
+		return v, true
+	}
+	return change.Version{}, false
+}
+
+// Unlanded reports whether a change, in any state, has not landed as any
+// of its versions (LandedAs): the changes a stack's layers are among.
 func (s *Snapshot) Unlanded(n Recorded) bool {
-	return !s.IsLanded(n.ID, n.Record.ActiveVersion())
+	_, landed := s.LandedAs(n)
+	return !landed
 }
 
 // recordedLanding looks for a transfer statement that records the version

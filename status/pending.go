@@ -98,9 +98,9 @@ import (
 	"the-valley/rebase"
 )
 
-// pendingChange is a ready change whose active version has not landed.
+// pendingChange is a ready change that has not landed as any version.
 func pendingChange(s *snapshot, n recorded) bool {
-	return n.record.State == change.Ready && !s.isLanded(n.id, n.record.ActiveVersion())
+	return n.record.State == change.Ready && !s.isLanded(n)
 }
 
 // approvedVersion reports whether a ready change's active version has an
@@ -113,10 +113,10 @@ func (s *snapshot) approvedVersion(id string, r *change.Record) bool {
 	return r.State == change.Ready && s.request(id, r.ActiveVersion()) != nil
 }
 
-// unlanded is a change in any state whose active version has not landed:
+// unlanded is a change in any state that has not landed as any version:
 // the changes a pending change may include.
 func unlanded(s *snapshot, n recorded) bool {
-	return !s.isLanded(n.id, n.record.ActiveVersion())
+	return !s.isLanded(n)
 }
 
 func isDraft(_ *snapshot, n recorded) bool {

@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"the-valley/change"
-	"the-valley/rebase"
 )
 
 // runStanding prints where a change stands now: one line of fields
@@ -28,9 +27,9 @@ import (
 // active version and its head as a full object ID; since, the time the
 // record last changed, read from the record commit's committer date, in
 // UTC, as hours and minutes on the current day and with the date before
-// them otherwise; landed, "landed" when the active version has landed on
-// main, by its head on main or a verified landing record, and empty
-// otherwise; and restack, "conflict" when the change's
+// them otherwise; landed, v<n> when the change landed as version n
+// (rebase.Snapshot.LandedAs), by its head on main or a verified landing
+// record, and empty otherwise; and restack, "conflict" when the change's
 // restack report is current and says rebasing it onto main conflicted,
 // and empty otherwise. It fails when origin holds no record of the
 // change.
@@ -61,8 +60,8 @@ func runStanding(g git, args []string, w io.Writer) error {
 		return failure("the record commit of change " + args[0] + " has no committer date")
 	}
 	landed, conflict := "", ""
-	if s.recorded.landing == rebase.Landed || s.recorded.landing == rebase.LandedRecorded {
-		landed = "landed"
+	if s.recorded.landedAs != 0 {
+		landed = fmt.Sprintf("v%d", s.recorded.landedAs)
 	}
 	if s.restack != nil && s.restack.Current && s.restack.Report.Result == change.RestackConflict {
 		conflict = "conflict"

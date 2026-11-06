@@ -32,7 +32,9 @@
 // of a change that is not ready, and it voids a withdrawn change's
 // requests. The integration request stays the only way
 // to main. versions lists a change's versions, for approve, and standing
-// says where a change stands now, for review (standing.go).
+// says where a change stands now, for review (standing.go). carry says
+// whether review's answer about the version it showed carries to the
+// version the change moved to (carry.go).
 //
 // A change is named by its full change ID, by its handle (the shortest
 // prefix of the ID, four letters at least, that no other change on origin
@@ -64,6 +66,7 @@ const usage = `usage: valley-go status [--json] [-v] <change>
        valley-go versions <change ID>
        valley-go standing <change ID>
        valley-go compare --tip <commit> <change ID> <version> <head>
+       valley-go carry <change ID> <version shown> <later version>
        valley-go checks [--schema <file>] --instance <dir> --project <dir> <base> <head>
        valley-go coverage --head <sha> [--check <name>=<attribute>]...
        valley-go work --repo <name>... --key <file> [--name <name>] [--state <dir>]
@@ -135,6 +138,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runStanding(g, args, stdout)
 	case "compare":
 		err = runCompare(g, args, stdout)
+	case "carry":
+		err = runCarry(g, args, stdout)
 	case "checks":
 		err = runChecks(g, args, stdout)
 	case "coverage":

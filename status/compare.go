@@ -131,6 +131,7 @@ func runCompare(g git, args []string, w io.Writer) error {
 // history is what origin holds about one change's approvals, read once.
 type history struct {
 	id, handle string
+	tip        string // main on origin; "" when origin has none
 	versions   []change.Version
 	requests   map[string]string  // request name → the head its ref names
 	outcomes   map[string]outcome // request name → its outcome record
@@ -194,6 +195,9 @@ func readHistory(g git, id string) (*history, error) {
 		}
 	}
 	for ref, oid := range o.refs {
+		if ref == "refs/heads/"+recordTarget {
+			h.tip = oid
+		}
 		if branch, ok := strings.CutPrefix(ref, "refs/heads/"); ok && !ours[branch] {
 			h.others[changeName(branch)] = true
 		}
@@ -248,11 +252,20 @@ func (h *history) ambiguous(name string) bool {
 	return name != change.RequestName(h.id) && (h.unread || h.others[name])
 }
 
-// reference is the approved version a version is compared with.
+// reference is the earlier version a version is compared with: the
+// approved one, or for carry the one review showed.
 type reference struct {
 	version int    // the approved version; 0 for none
-	by      string // the ref that names its head as approved
+	by      string // the ref that names its head as approved; "" when it is not an approval
 	unclear string // when there is none: why the approved version is not known, if it may exist
+}
+
+// comparison is what comparing a version with its reference found.
+type comparison struct {
+	kind, text string
+	meta       bool     // the commits' messages or authors differ
+	base, head string   // the shown version's base and head
+	landings   []string // main's first-parent history from the shown version's base down to the reference's, both included
 }
 
 // reference finds the approved version below the version shown, as the
@@ -297,20 +310,32 @@ func compareVersion(g git, h *history, a compareArgs) (kind, text string, err er
 	if got := h.head(a.version); got != a.head {
 		return "", "", failure(fmt.Sprintf("v%d of change %s records the head %s, not %s", a.version, h.handle, got, a.head))
 	}
-	shown := fmt.Sprintf("%s v%d at %s", h.handle, a.version, short(a.head))
 	ref := h.reference(a.version)
 	if ref.version == 0 {
 		if ref.unclear == "" {
 			return compareNone, "", nil
 		}
+		shown := fmt.Sprintf("%s v%d at %s", h.handle, a.version, short(a.head))
 		return compareNone, fmt.Sprintf("%s: %s; reviewing it in full.\n", shown, ref.unclear), nil
 	}
+	c, err := compareWith(g, h, a.tip, ref, a.version)
+	return c.kind, c.text, err
+}
+
+// compareWith compares version n with the reference, against main's tip,
+// as the file's comment describes.
+func compareWith(g git, h *history, tip string, ref reference, n int) (comparison, error) {
+	a := compareArgs{tip: tip, id: h.id, version: n, head: h.head(n)}
+	shown := fmt.Sprintf("%s v%d at %s", h.handle, a.version, short(a.head))
 	old := ref.version
 	h0 := h.head(old)
-	approved := fmt.Sprintf("approved v%d at %s", old, short(h0))
-	withheld := func(why string) (string, string, error) {
-		return compareNone, fmt.Sprintf("%s: %s (%s) is not compared, since %s; reviewing it in full.\n",
-			shown, approved, ref.by, why), nil
+	since, approved, by := fmt.Sprintf("v%d", old), fmt.Sprintf("v%d at %s", old, short(h0)), ""
+	if ref.by != "" {
+		since, approved, by = "approved "+since, "approved "+approved, " ("+ref.by+")"
+	}
+	withheld := func(why string) (comparison, error) {
+		return comparison{kind: compareNone, text: fmt.Sprintf("%s: %s%s is not compared, since %s; reviewing it in full.\n",
+			shown, approved, by, why)}, nil
 	}
 
 	b0, ok := uniqueBase(g, a.tip, h0)
@@ -323,7 +348,7 @@ func compareVersion(g git, h *history, a compareArgs) (kind, text string, err er
 	}
 	line, err := g.output(true, "rev-list", "--first-parent", a.tip)
 	if err != nil {
-		return "", "", failure("could not read main's history")
+		return comparison{}, failure("could not read main's history")
 	}
 	firstParent := strings.Fields(line)
 	i0, i1 := indexOf(firstParent, b0), indexOf(firstParent, b1)
@@ -346,36 +371,39 @@ func compareVersion(g git, h *history, a compareArgs) (kind, text string, err er
 	}
 	c0, err := rangeCommits(g, b0, h0)
 	if err != nil {
-		return "", "", err
+		return comparison{}, err
 	}
 	c1, err := rangeCommits(g, b1, a.head)
 	if err != nil {
-		return "", "", err
+		return comparison{}, err
 	}
-	meta := metadataChanges(c0, c1, old, a.version)
+	meta := metadataChanges(c0, c1, since, old, a.version)
+	c := comparison{meta: meta != "", base: b1, head: a.head, landings: firstParent[i1 : i0+1]}
 
 	var b strings.Builder
 	if d0.Digest() == d1.Digest() {
-		kind = compareClean
+		c.kind = compareClean
 		fmt.Fprintf(&b, "%s: clean restack of %s.\n", shown, approved)
 		fmt.Fprintf(&b, "File delta unchanged. Base %s -> %s.\n", short(b0), short(b1))
 		b.WriteString(meta)
 		landings := firstParent[i1:i0]
 		if len(landings) == 0 {
 			b.WriteString("Landings between bases: none.\n")
-			return kind, b.String(), nil
+			c.text = b.String()
+			return c, nil
 		}
 		b.WriteString("Landings between bases:\n")
 		commits, err := readCommits(g, landings)
 		if err != nil {
-			return "", "", err
+			return comparison{}, err
 		}
 		for i := len(commits) - 1; i >= 0; i-- {
 			fmt.Fprintf(&b, "  %s %s\n", short(commits[i].oid), visible(commits[i].subject()))
 		}
-		return kind, b.String(), nil
+		c.text = b.String()
+		return c, nil
 	}
-	kind = compareChanged
+	c.kind = compareChanged
 	fmt.Fprintf(&b, "%s: changed since %s.\n", shown, approved)
 	b.WriteString("Review the range-diff before approving.\n")
 	b.WriteString(meta)
@@ -406,7 +434,8 @@ func compareVersion(g git, h *history, a compareArgs) (kind, text string, err er
 	default:
 		b.WriteString(out + "\n")
 	}
-	return kind, b.String(), nil
+	c.text = b.String()
+	return c, nil
 }
 
 // uniqueBase is head's merge base with tip, when there is exactly one.
@@ -555,12 +584,13 @@ func parseCommit(oid string, data []byte) commitText {
 }
 
 // metadataChanges says how the shown version's commits' messages and
-// authors differ from the approved version's, from each base to its head:
-// nothing when they are the same. With as many commits on each side, each
+// authors differ from the earlier version's, from each base to its head:
+// nothing when they are the same. since names the earlier version, as
+// "approved v<n>" or "v<n>". With as many commits on each side, each
 // commit is set against the one in its place, and only those whose
 // message or author differs are shown. Otherwise every commit on each
 // side is, with its author and its message.
-func metadataChanges(c0, c1 []commitText, old, shown int) string {
+func metadataChanges(c0, c1 []commitText, since string, old, shown int) string {
 	var b strings.Builder
 	author := func(c commitText) string { return " " + visible(c.author) }
 	message := func(c commitText) string {
@@ -577,8 +607,8 @@ func metadataChanges(c0, c1 []commitText, old, shown int) string {
 		fmt.Fprintf(&b, "  v%d, commit %d of %d, %s:%s\n", v, i+1, len(list), short(list[i].oid), show(list[i]))
 	}
 	if len(c0) != len(c1) {
-		fmt.Fprintf(&b, "Commits changed since approved v%d: v%d has %s, and v%d has %s. Read their authors and messages before approving:\n",
-			old, old, counted(len(c0), "commit"), shown, counted(len(c1), "commit"))
+		fmt.Fprintf(&b, "Commits changed since %s: v%d has %s, and v%d has %s. Read their authors and messages before approving:\n",
+			since, old, counted(len(c0), "commit"), shown, counted(len(c1), "commit"))
 		both := func(c commitText) string { return author(c) + message(c) }
 		for i := range c0 {
 			entry(old, c0, i, both)
@@ -593,9 +623,9 @@ func metadataChanges(c0, c1 []commitText, old, shown int) string {
 		of      func(commitText) string
 		show    func(commitText) string
 	}{
-		{"Commit messages changed since approved v%d. Read them before approving:\n",
+		{"Commit messages changed since %s. Read them before approving:\n",
 			func(c commitText) string { return c.encoding + "\x00" + c.message }, message},
-		{"Commit authors changed since approved v%d:\n",
+		{"Commit authors changed since %s:\n",
 			func(c commitText) string { return c.author }, author},
 	} {
 		headed := false
@@ -604,7 +634,7 @@ func metadataChanges(c0, c1 []commitText, old, shown int) string {
 				continue
 			}
 			if !headed {
-				fmt.Fprintf(&b, field.heading, old)
+				fmt.Fprintf(&b, field.heading, since)
 				headed = true
 			}
 			entry(old, c0, i, field.show)

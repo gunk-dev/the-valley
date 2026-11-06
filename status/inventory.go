@@ -117,8 +117,15 @@ func (s *snapshot) landing(id string, v change.Version) (kind, commit string) {
 	return s.land.Landing(id, v)
 }
 
-// isLanded reports whether a version has landed by the first two rules.
-func (s *snapshot) isLanded(id string, v change.Version) bool { return s.land.IsLanded(id, v) }
+// landedAs is the version a change landed as, and whether it has
+// (rebase.Snapshot.LandedAs).
+func (s *snapshot) landedAs(n recorded) (change.Version, bool) { return s.land.LandedAs(n.engine()) }
+
+// isLanded reports whether a change has landed as any of its versions.
+func (s *snapshot) isLanded(n recorded) bool {
+	_, landed := s.landedAs(n)
+	return landed
+}
 
 // reach is every commit reachable from oid that main does not reach.
 func (s *snapshot) reach(oid string) map[string]bool { return s.land.Reach(oid) }

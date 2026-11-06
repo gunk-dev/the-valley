@@ -239,8 +239,11 @@ instead. Review offers no rebase; an author rebases their own change with `valle
 
 A change can move while you read it: its owner may return it to draft, ready a new version, or
 withdraw it, and it may land. Review reads the change again before `[a]pprove` or `[r]eject` acts.
-When the change has moved, review says what changed in one line, does nothing, and moves on. For
-example: `kqxm moved to v4 while you were reviewing; review it again to approve what would land.`
+When the change has moved, review says what changed in one line, does nothing, and moves on, and for
+a new version it offers what changed since the version you read. A restack that brings the same
+changes keeps your answer instead:
+`kqxm moved to v4 while you were reviewing (a restack of v3; same changes) · your answer about v3 stands`,
+and approving v3 lands those changes.
 
 For a revised change, review automatically compares it with an earlier approved version when one can
 be identified. A clean restack gets a short summary. Use `[v]iew full diff` to see the whole change.

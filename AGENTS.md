@@ -100,10 +100,7 @@ answers in docs and link the change from the knot.
 5. One light Taoist threshold sentence may introduce the valley or knots; keep metaphor out of
    procedures, error messages, and security invariants.
 
-`prose-format` enforces what a pattern can catch of rules 2 to 4. It fails on a source path followed
-by a line number anywhere, and outside fenced code on transition phrases and the words rule 4 bans.
-Outside inline code, which quotes values, its `provenance` rule fails on an ISO date, a knot ID, a
-change ID, a short commit hash, and an opinion or quote attributed to a person. Allow single-line
-exceptions with `<!-- prose-allow: line-number -->`, `narration`, `provenance`, or `vocabulary`. A
-knot ID may stand, with the marker, only where it names the open knot for something the doc labels
-**not built**.
+Run `prose-format` on changed docs; it fails on what a pattern can catch of rules 2 to 4. Allow
+single-line exceptions with `<!-- prose-allow: line-number -->`, `narration`, `provenance`, or
+`vocabulary`. A knot ID may stand, with the marker, only where it names the open knot for something
+the doc labels **not built**.

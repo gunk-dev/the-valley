@@ -21,6 +21,11 @@ All three share these rules:
 - when behaviour changes, rewrite the affected text as if it had been designed that way;
 - prefer merging and deleting to adding.
 
+Guidance for agents gives instructions, not lessons: name the command to run and the outcome to
+expect, and leave how the machinery works to the tools and their reference docs. Write "list the
+checks your change requires with `valley checks --names origin/main HEAD`", not an account of which
+policy layer requires which check.
+
 ## Tests
 
 Tests let the author verify that a module behaves correctly, without mirroring its implementation or

@@ -1967,10 +1967,10 @@ jq -e --arg p "$p31" '[.repos[].branches[] | select(.head == $p)] == []' "$work/
   || die "valley pending --json lists the plain branch below the landed change"
 h31b="$(jq -r --arg id "$id31b" '.repos[].changes[] | select(.change_id == $id) | .handle' "$work/pending31.json")"
 [ -n "$h31b" ] || die "valley pending does not list c-$id31b"
-valley pending > "$work/pending31.out"
+valley pending -v --branches > "$work/pending31.out"
 grep -q "c31-p" "$work/pending31.out" && die "valley pending lists the plain branch below the landed change: $(cat "$work/pending31.out")"
-grep -A2 "^$h31b v1\( \|$\)" "$work/pending31.out" | tail -n1 | grep -qx '  1 commit · 1 file +1 −0' \
-  || die "valley pending does not measure b from a's landing: $(grep -A3 "^$h31b v1" "$work/pending31.out")"
+grep -E -A2 "^  [0-9]+  $h31b v1( |$)" "$work/pending31.out" | tail -n1 | grep -qx '     1 commit · 1 file +1 −0' \
+  || die "valley pending does not measure b from a's landing: $(grep -E -A3 "^  [0-9]+  $h31b v1" "$work/pending31.out")"
 holds "valley changes and valley pending leave out the plain branch, and pending counts b's own commit alone"
 
 valley rebase "$id31b" > "$work/rebase31.out" 2>&1 || die "the rebase of b failed: $(cat "$work/rebase31.out")"

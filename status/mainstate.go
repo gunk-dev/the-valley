@@ -198,10 +198,11 @@ type mainRun struct {
 	ended              bool
 }
 
-// mainLines is a project's main state as valley pending's first lines:
-// the state, and a see: line when a check failed. h names the landings
-// covered, and builds and runs are the worker's telemetry, newest first.
-func (t terminal) mainLines(w mainWalk, project string, h handleMap, builds []checkBuild, runs []mainRun) []string {
+// mainLines is a project's main state as valley pending's first lines,
+// the first led by lead: the state, and a see: line when a check failed.
+// h names the landings covered, and builds and runs are the worker's
+// telemetry, newest first.
+func (t terminal) mainLines(w mainWalk, lead, project string, h handleMap, builds []checkBuild, runs []mainRun) []string {
 	index := map[string]int{}
 	for i, c := range w.walked {
 		index[c] = i
@@ -249,7 +250,6 @@ func (t terminal) mainLines(w mainWalk, project string, h handleMap, builds []ch
 		}
 	}
 	shown := w.landings(h, project)
-	lead := "main  "
 	switch {
 	case len(failed) > 0:
 		line := t.coverage(lead+t.tint(colourRefused, "✗")+" muddy · "+strings.Join(failed, ", ")+" failed at "+short(failedAt), shown)

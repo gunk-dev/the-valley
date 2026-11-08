@@ -424,6 +424,9 @@ jq -e --arg id "$restack_id" --arg commit "$conflict" '
 ' "$w/changes.json" > /dev/null || fail 'changes --json did not carry the current report'
 (cd "$repo" && valley pending) > "$w/status.out" || fail 'pending failed'
 contains 'restack: a conflict rebasing qqqq onto main' 'pending did not show a current report'
+grep -qx 'moving (1)' "$w/status.out" || fail 'pending did not list the change a restack holds as moving'
+grep -q '^  ✗ qqqq v1  restack: a conflict rebasing qqqq onto main' "$w/status.out" || fail 'pending did not give a restack conflict its own row'
+contains 'nothing needs you' 'pending listed a change a restack holds as needing an approval'
 
 # Each ref it observed changing makes it historical: the branch, the
 # branch gone, main, and the record. Status says so, and pending leaves it
@@ -483,6 +486,7 @@ contains "Its restack report: held before rebasing onto main at ${base:0:7}: qqq
   'a current report of a missing branch was not reported'
 (cd "$repo" && valley pending) > "$w/status.out" || fail 'pending failed'
 contains 'restack: held before rebasing onto main' 'pending did not show a current report of a missing branch'
+grep -q '^  ◇ qqqq v1  restack: held before rebasing onto main' "$w/status.out" || fail 'pending did not give a held restack its own row'
 git -C "$origin" update-ref refs/heads/topic "$head"
 historical 'a missing branch created' 'held before rebasing'
 

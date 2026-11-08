@@ -10,7 +10,7 @@
 
 _valley() {
   local -a topics=(
-    'pending:list the changes not yet landed, the unrecorded branches, and the drafts'
+    'pending:list what needs an approval, in landing order, and what moves'
     'changes:print every change, across the host, as valley-changes/v1 JSON'
     'review:page through a change, or a stack bottom-up, then approve, reject, or skip'
     'approve:approve a change without paging it, filing its integration request'
@@ -126,8 +126,10 @@ _valley() {
       '--all:every project the serving host publishes'
       '--repo:that one project'
       '--checks:the checks each change requires, by cost, and their state'
+      '--drafts:list the drafts in full'
+      '--branches:list the branches no change is on in full'
       '--json:print valley-pending/v1 JSON'
-      '-v:say why no change shows a knot'
+      '-v:each row in full, and why no change shows a knot'
       '--known-signers:the known-signers file a transfer statement is verified with'
       '--integrator-name:the name the integrator signs transfer statements under'
     )

@@ -108,9 +108,11 @@ type jsonBranch struct {
 }
 
 // listing holds the flags parsed for changes or pending. verbose warns on
-// stderr when a repository's plan graph is missing or unreadable.
+// stderr when a repository's plan graph is missing or unreadable. drafts
+// and branches are pending's alone.
 type listing struct {
 	asJSON, all, checks, verbose bool
+	drafts, branches             bool
 	repo                         string
 }
 
@@ -126,6 +128,10 @@ func parseListing(verb string, args []string, checks bool) (listing, error) {
 			l.checks = true
 		case a == "-v":
 			l.verbose = true
+		case a == "--drafts" && verb == "pending":
+			l.drafts = true
+		case a == "--branches" && verb == "pending":
+			l.branches = true
 		case a == "--repo" && i+1 < len(args):
 			i++
 			l.repo = args[i]

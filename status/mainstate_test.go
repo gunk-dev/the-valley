@@ -53,7 +53,7 @@ func TestMainLines(t *testing.T) {
 		{"failed before its pass", walk(due), failedAt("t1"), nil,
 			[]string{"main  ◐ clearing · worker-e2e due · covers kk, c200000"}},
 	} {
-		if got := term.mainLines(tc.walk, "app", h, tc.builds, tc.runs); !reflect.DeepEqual(got, tc.want) {
+		if got := term.mainLines(tc.walk, "main  ", "app", h, tc.builds, tc.runs); !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}

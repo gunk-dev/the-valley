@@ -112,26 +112,26 @@ grep -q '^diff --git a/alpha.md b/alpha.md$' piped.log
 grep -q 'skipped scratch; nothing done' piped.log
 if grep -q 'note(s) on scratch' piped.log; then exit 1; fi
 
-# The pending list titles each branch by the subject of its first own
-# commit, on the line under its name, and cuts a long one short with … to
-# fit 80 columns when stdout is no terminal. Nothing it prints there is an
-# escape code.
-valley pending > pending.log
+# The pending list of branches titles each by the subject of its first
+# own commit, on the line under its name, and cuts a long one short with …
+# to fit 80 columns when stdout is no terminal. Nothing it prints there is
+# an escape code.
+valley pending --branches > pending.log
 grep -A1 '^scratch  ' pending.log | grep -q '^  touch both files$'
 git checkout --quiet -b longsubject origin/main
 git commit --quiet --allow-empty -m "$(printf 'x%.0s' $(seq 1 80))"
 git push --quiet origin longsubject
 git checkout --quiet main
-valley pending > pending.log
+valley pending --branches > pending.log
 grep -A1 '^longsubject  ' pending.log | grep -qE '^  x{77}…$'
 if grep -q $'\x1b' pending.log; then exit 1; fi
 
 # On a terminal, pending fits the terminal's width and sets each name in
 # bold. With NO_COLOR set, it prints no escape code.
-script -qec "stty cols 100; valley pending" /dev/null < /dev/null > tty.log 2>&1
+script -qec "stty cols 100; valley pending --branches" /dev/null < /dev/null > tty.log 2>&1
 grep -q $'^\x1b\\[1mlongsubject\x1b\\[0m ' tty.log
 grep -qE $'^  x{80}\r?$' tty.log
-NO_COLOR=1 script -qec "stty cols 100; valley pending" /dev/null < /dev/null > tty.log 2>&1
+NO_COLOR=1 script -qec "stty cols 100; valley pending --branches" /dev/null < /dev/null > tty.log 2>&1
 grep -q '^longsubject ' tty.log
 if grep -q $'\x1b' tty.log; then exit 1; fi
 

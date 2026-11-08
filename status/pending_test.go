@@ -10,9 +10,9 @@ import (
 
 // pending fits its text to 80 columns when stdout is no terminal: a long
 // title is cut short with …, and a branch or a handle is printed whole,
-// even where the line it is on cannot fit. A stack four deep is listed at
-// one indentation, so its deepest entry has the room its second has.
-// Nothing it prints is an escape code.
+// even where the line it is on cannot fit. A stack of branches four deep
+// is listed at one indentation, so its deepest entry has the room its
+// second has. Nothing it prints is an escape code.
 func TestPendingFitsEightyColumnsAndKeepsNamesWhole(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
@@ -63,7 +63,7 @@ func TestPendingFitsEightyColumnsAndKeepsNamesWhole(t *testing.T) {
 		t.Fatalf("ready: %s", stderr.String())
 	}
 	stdout.Reset()
-	if code := run([]string{"pending"}, &stdout, &stderr); code != 0 {
+	if code := run([]string{"pending", "--branches"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("pending: %s", stderr.String())
 	}
 	out := stdout.String()
@@ -73,7 +73,7 @@ func TestPendingFitsEightyColumnsAndKeepsNamesWhole(t *testing.T) {
 	if !strings.Contains(out, "\n"+long+"\n") {
 		t.Errorf("the long branch is not whole, on a line of its own:\n%s", out)
 	}
-	if !strings.Contains(out, "\nqqqq v1  ") {
+	if !strings.Contains(out, "\n  1  qqqq v1") {
 		t.Errorf("the change is not named by its whole handle and version:\n%s", out)
 	}
 	cut := 0
@@ -84,13 +84,13 @@ func TestPendingFitsEightyColumnsAndKeepsNamesWhole(t *testing.T) {
 		if columns(line) > 80 {
 			t.Errorf("a line is %d columns wide: %q", columns(line), line)
 		}
-		if strings.HasPrefix(line, "  a subject that says") {
+		if strings.HasPrefix(strings.TrimLeft(line, " "), "a subject that says") {
 			if columns(line) != 80 || !strings.HasSuffix(line, "…") {
 				t.Errorf("a long title is not cut to 80 columns with …: %q", line)
 			}
 			cut++
 		}
-		if strings.HasPrefix(line, "qqqq v1") && !strings.HasSuffix(line, "…") {
+		if strings.HasPrefix(line, "layer-4 ") && !strings.HasSuffix(line, "…") {
 			t.Errorf("the author is not cut short to keep the line within 80 columns: %q", line)
 		}
 	}

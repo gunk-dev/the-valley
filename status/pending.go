@@ -1,42 +1,66 @@
-// valley pending: what is waiting to land, for a person to read.
+// valley pending: what waits on the operator, and what is moving, for a
+// person to read.
 //
-// A project whose policy has classes that checks follow opens with one
-// line on main's state (mainstate.go): clear, clearing or muddy.
+// It opens with main's state (mainstate.go), one line for each project
+// whose policy has classes that checks follow: clear, clearing or muddy.
+// A project with no follow check has no line. A project that did not read
+// says why on a line of its own.
 //
-// It prints four sections, in this order. ready holds the ready changes
-// whose active version has not landed, by the first two landing rules
-// (inventory.go), and that wait on an approval. approved holds those that
-// have an integration request at the active version's head. They wait on
-// their checks and the integrator, so each is one line: its name and
-// version, its title, and with --checks its check state. A request that
-// names an earlier head whose approval carries to the active version is
-// not counted: judging carry needs the delta between the two heads and
-// the policy's carry mode, so a version approved only by carry is listed
-// under ready. A stack that holds a ready change or a draft is drawn in
-// full wherever its top is, its approved layers marked "(approved)".
-// branches holds each branch on origin, other than main,
-// that main does not reach, that is no change's active head, and that no
-// landed version's head reaches. drafts
-// holds the changes whose record says they are drafts. When no ready
-// change is at the top of a stack, one line says so in place of ready,
-// and says where any ready change inside another section's stack is.
+// Then come two sections over every project listed, from the queue
+// (queue.go). needs you holds the ready changes that wait on an approval,
+// one row each, numbered in landing order. A stack of them is one row, its
+// top's, which says how many changes it holds: approving the top lands
+// every layer. Each row gives the change's handle and active version, its
+// checks, and how long it has been ready, and its title goes on the line
+// under it:
 //
-// Each entry is a block. Its first line is its name, with the age and
-// author of its head: the handle and version of a change, the name of a
-// branch, and for a draft its handle and version on its branch. The lines
+//	needs you (2, in landing order)
+//	  1  smuk v4  checks 18/18 · stack of 2                              19m
+//	     each ready change shows its active version's checks · oc-6335749
+//	  2  wnzs v2  2 checks pending                                       42m
+//	     the guest's tools follow main
+//
+// moving holds the ready changes that need no approval now, one line each,
+// in the same order: an approved change, which waits on its checks and the
+// integrator, with its checks; a change whose checks failed, naming them;
+// and a change a restack holds, saying what its report says:
+//
+//	moving (3)
+//	  ◐ mytm v5  approved · 6 checks pending
+//	  ✗ rwzt v2  worker-e2e failed
+//	  ✗ xzus v3  restack: a conflict rebasing xzus onto main at a1b2c3d
+//
+// Checks are counted as valley changes --checks reads them
+// (versionchecks.go), which costs seconds for each project with a ready
+// change and nothing for one without. When nothing waits on an approval,
+// one line says so in place of needs you, and moving is left out when
+// nothing moves. Older versions of a change are never listed.
+//
+// A last line counts the drafts and the branches on origin that no change
+// is on, with the flags that list them in full. --drafts and --branches
+// each print a section of blocks in place of their count. A block's first
+// line is its name, with the age and author of its head: the handle and
+// version of a draft on its branch, or the name of a branch. The lines
 // indented under it give its title, then the commits and the diff the
 // entry adds to its base:
 //
-//	act-on-a-change-by-handle-key-its-1902807a          9 hours ago · alice-agent-vm
-//	  change: share the record bounds and the c-<change ID> request name
+//	deep-4                                    3 weeks ago · alice-agent-vm
+//	  share the record bounds and the c-<change ID> request name
 //	  10 commits · 31 files +2412 −404
 //	  approving it lands the 2 below too
-//	  ├ find-changes-across-repos-valley-changes-1e788c4f  10 hours ago · alice-…
+//	  ├ deep-3                                3 weeks ago · alice-agent-vm
 //	  │   valley: changes --json and pending by handle, across a host's projects
 //	  │   9 commits · 17 files +2701 −137
-//	  └ a-draft-state-valley-unready-and-what-56ed34ac  12 hours ago · alice-ag…
+//	  └ deep-2                                3 weeks ago · alice-agent-vm
 //	      change: read a draft as a third state
 //	      14 commits · 20 files +1207 −219
+//
+// With -v, each row of needs you and moving is followed by its block,
+// without the name line the row already gives, and a row's stack is
+// drawn in full. branches holds each branch on origin, other than main,
+// that main does not reach, that is no change's active head, and that no
+// landed version's head reaches. drafts holds the changes whose record
+// says they are drafts.
 //
 // A change's title is its record's, for the active version. A branch's
 // title is the subject of its first own commit: the oldest commit on its
@@ -44,46 +68,49 @@
 // graph links a change, the first knot's ID follows the title, as
 // "<title> · oc-6335749" (does.go).
 //
-// An entry's base is the nearest other entry its head strictly contains,
-// or main when there is none. That is the ancestry includes reads
+// Each listing stacks the entries it lists, and only those. An entry's
+// base is the nearest other listed entry its head strictly contains, or
+// main when there is none. That is the ancestry includes reads
 // (inventory.go). Its commits and diff are counted from the nearer of its
 // base and the head of a landed version its head contains: a landed
 // version's commits are not on main, since it landed as one new commit,
-// and its content is. A stack is an entry that no other entry contains, the
-// top, then every entry the top contains, as one list at one indentation,
-// however deep the stack is. Each entry is listed before the entries it
-// contains. The top's block says how many entries approving it lands with
-// it. Each entry is on the entry listed right after it, and says
-// "on <base>" where it is not, as at a fork, where two entries are on one
-// base and the base is listed under only one of them. An entry the top
-// does not contain is never listed under it. A stack is printed in the
-// section of its top, and a listed entry from another section says which
-// it is in.
+// and its content is. A stack is an entry that no other entry contains,
+// the top, then every entry the top contains, as one list at one
+// indentation, however deep the stack is. Each entry is listed before the
+// entries it contains. The top's block says how many entries approving it
+// lands with it. Each entry is on the entry listed right after it, and
+// says "on <base>" where it is not, as at a fork, where two entries are on
+// one base and the base is listed under only one of them. In drafts and
+// branches, the stack with the latest commit comes first, and within a
+// stack the entry with the latest commit does.
 //
-// A change may say more, each on a line of its own. includes <handle>
-// names a change its head contains that is not an entry here, such as a
-// withdrawn one. uncertain says the active version may have landed without
-// its evidence being stored. With --checks, it says how many checks the
-// policy requires of the change, by cost, and for a ready change how many
-// of its required checks passed, failed and are pending, as valley
-// changes --checks lists them (versionchecks.go), naming those that
-// failed: "checks: 18 passed, 1 failed (valley-request)". When the host's
-// worker telemetry holds the version's builds, the line goes on with what
-// they cost and the checks that grew against their recent cost on the
-// same capacity
+// A block may say more, each on a line of its own. includes <handle>
+// names a change its head contains that is not listed, such as a
+// withdrawn one. uncertain says the active version may have landed
+// without its evidence being stored, and restack what a current restack
+// report says. With --checks, a row says how many checks the policy
+// requires of the change, by cost, and the full check state, as valley
+// changes --checks lists it, naming those that failed: "checks: 18
+// passed, 1 failed (valley-request)". When the host's worker telemetry
+// holds the version's builds, the line goes on with what they cost and
+// the checks that grew against their recent cost on the same capacity
 // (checkcost.go): "checks: 21 passed in 9m10s (eval 24s); worker-e2e
-// 431s, +68s against its recent 363s". --json then carries the same
-// checks objects.
+// 431s, +68s against its recent 363s". -v gives the full check state
+// with or without --checks.
 //
-// Within a section, the stack with the latest commit comes first, and
-// within a stack the entry with the latest commit does. Every line fits
-// stdout's terminal, or 80 columns when stdout is no terminal or does not
-// know its width. A title or an author is cut short with …; a handle or a
-// branch never is. On a terminal, names are bold, unless NO_COLOR is set.
+// Several projects, as --all or --repo lists them, make one listing: each
+// main line and each row names its project, and the rows of every project
+// are numbered in one landing order.
+//
+// Every line fits stdout's terminal, or 80 columns when stdout is no
+// terminal or does not know its width. A title or an author is cut short
+// with …; a handle or a branch never is. On a terminal, names are bold and
+// glyphs coloured, unless NO_COLOR is set.
 //
 // With --json it prints valley-pending/v1: valley-changes/v1's shape, with
 // the pending changes alone in changes, each marked approved or not, the
-// drafts in an array of their own, drafts, and the same branches.
+// drafts in an array of their own, drafts, and the same branches. --checks
+// gives each pending change its checks object.
 
 package main
 
@@ -95,6 +122,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"the-valley/change"
@@ -172,37 +200,32 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 		}
 		return writeDocument(stdout, doc)
 	}
-	t := terminalOf(stdout)
-	c := newCosts()
-	for i, r := range repos {
-		if i > 0 {
-			fmt.Fprintln(stdout)
-		}
-		writePending(r, h, l, c, stdout, stderr, len(repos) > 1 || l.all || l.repo != "", t)
-	}
+	writePending(repos, h, l, newCosts(), stdout, stderr, terminalOf(stdout), len(repos) > 1 || l.all || l.repo != "")
 	return nil
 }
 
-// sections are valley pending's sections, in the order they are printed,
-// each with the word a nested entry from it is marked with.
-var sections = []struct{ name, kind string }{
-	{"ready", "ready"}, {"approved", "approved"}, {"branches", "branch"}, {"drafts", "draft"},
-}
-
-// entry is one block of valley pending: a ready change, a branch no record
-// is on, or a draft.
+// entry is one row or block of valley pending: a ready change, a draft,
+// or a branch no record is on.
 type entry struct {
 	section  string
-	name     string   // what the block's first line names
-	ref      string   // what the entry is typed as: its handle, or its branch
-	head     string   // the head commit
-	title    string   // the record's title; for a branch, read by measure
-	knot     string   // ID of the first knot that links the change (does.go)
-	includes []string // what includes names that is no entry here
-	notes    []string // uncertain and checks
-	checks   string   // the check state line of a change, with --checks
+	repo     string             // the project it is in
+	id       string             // the change ID, for a change
+	record   string             // the change's record commit
+	name     string             // what the block's first line names
+	ref      string             // what the entry is typed as: its handle, or its branch
+	head     string             // the head commit
+	title    string             // the record's title; for a branch, read by measure
+	knot     string             // ID of the first knot that links the change (does.go)
+	includes []string           // what includes names that is no entry here
+	notes    []string           // uncertain and restack
+	requires string             // with --checks, the checks the policy requires of it, by cost
+	checks   string             // the check state line of a ready change
+	state    *jsonVersionChecks // the check state its row counts, or nil when its checks were not read
+
+	glyph, colour, says string // for a moving change, its glyph and what its row says
 
 	when        int64 // the head's commit time
+	since       int64 // for a change, its record's commit time: when its active version became ready
 	age, author string
 	layer       string // the commits and the diff it adds to its base
 
@@ -214,75 +237,221 @@ type entry struct {
 	latest int64    // for the top of a stack, the latest commit time in it
 }
 
-// writePending prints one repository's entries, section by section.
-// Several repositories are each headed by their name.
-func writePending(r listed, h handleMap, l listing, c *costs, w, stderr io.Writer, headed bool, t terminal) {
+// writePending prints the listing of every repository: the main lines,
+// needs you, moving, and the drafts and branches. named says whether each
+// line names its project.
+func writePending(repos []listed, h handleMap, l listing, c *costs, w, stderr io.Writer, t terminal, named bool) {
 	p := func(format string, args ...any) { fmt.Fprintf(w, format, args...) }
-	if r.err != nil {
-		p("%s: %v\n", r.name, r.err)
-		return
-	}
-	if headed {
-		p("%s\n%s\n", r.name, strings.Repeat("─", min(columns(r.name), t.width)))
-	}
-	if lines := r.mainState(h, c, stderr, t); len(lines) > 0 {
-		for _, line := range lines {
-			p("%s\n", line)
+	head := false
+	for _, r := range repos {
+		if r.err != nil {
+			p("%s: %v\n", r.name, r.err)
+			head = true
+			continue
 		}
+		for _, line := range r.mainState(h, c, stderr, t, named) {
+			p("%s\n", line)
+			head = true
+		}
+	}
+	if head {
 		p("\n")
 	}
-	view := r.pendingView(h)
-	if l.checks {
+	var waiting, moving []*entry
+	var drafts, branches []block
+	nDrafts, nBranches := 0, 0
+	for _, r := range repos {
+		if r.err != nil {
+			continue
+		}
+		view := r.pendingView(h)
 		r.addChecks(&view, c, stderr)
+		wa, mo := r.queue(view, h, l, l.verbose)
+		waiting, moving = append(waiting, wa...), append(moving, mo...)
+		nDrafts, nBranches = nDrafts+len(*view.Drafts), nBranches+len(view.Branches)
+		if l.drafts && len(*view.Drafts) > 0 {
+			drafts = append(drafts, block{r.name, r.draftStacks(view, h, l)})
+		}
+		if l.branches && len(view.Branches) > 0 {
+			branches = append(branches, block{r.name, r.branchStacks(view)})
+		}
 	}
-	all := r.entries(view, h, l)
-	tops := r.snap.stack(all)
-	gap := false
-	for _, sec := range sections {
-		var here []*entry
-		for _, e := range tops {
-			if e.section == sec.name {
-				here = append(here, e)
+	byLanding(waiting)
+	byLanding(moving)
+	for _, line := range t.rows(waiting, moving, l, named) {
+		p("%s\n", line)
+	}
+	for _, b := range []struct {
+		name   string
+		blocks []block
+	}{{"drafts", drafts}, {"branches", branches}} {
+		for _, bl := range b.blocks {
+			header := b.name
+			if named {
+				header += " · " + bl.repo
 			}
-		}
-		if sec.name == "ready" && len(here) == 0 {
-			p("%s\n", readyElsewhere(tops))
-			gap = true
-			continue
-		}
-		if len(here) == 0 {
-			continue
-		}
-		if gap {
-			p("\n")
-		}
-		p("%s\n", sec.name)
-		if sec.name == "approved" {
-			for _, e := range here {
-				for _, line := range t.approvedLines(e) {
+			p("\n%s\n", header)
+			for i, top := range bl.tops {
+				if i > 0 {
+					p("\n")
+				}
+				for _, line := range t.drawStack(top, "", true) {
 					p("%s\n", line)
 				}
 			}
-			gap = true
-			continue
 		}
-		for i, e := range here {
-			if i > 0 {
-				p("\n")
-			}
-			for _, line := range t.drawStack(e) {
-				p("%s\n", line)
-			}
-		}
-		gap = true
 	}
+	var counts, flags []string
+	if n := nDrafts; n > 0 && !l.drafts {
+		counts, flags = append(counts, counted(n, "draft")), append(flags, "--drafts")
+	}
+	if n := nBranches; n > 0 && !l.branches {
+		noun := "branches"
+		if n == 1 {
+			noun = "branch"
+		}
+		counts, flags = append(counts, fmt.Sprintf("%d %s no change is on", n, noun)), append(flags, "--branches")
+	}
+	if len(counts) > 0 {
+		p("\n%s\n", strings.Join(counts, " · ")+" · valley pending "+strings.Join(flags, " "))
+	}
+}
+
+// block is one project's stacks of drafts or of branches.
+type block struct {
+	repo string
+	tops []*entry
+}
+
+// rows is needs you and moving as lines: each section's heading, then its
+// rows. A row of needs you is numbered and has its title under it; with
+// -v, a row of either is followed by its block.
+func (t terminal) rows(waiting, moving []*entry, l listing, named bool) []string {
+	var lines []string
+	projects, names := 0, 0
+	for _, e := range append(append([]*entry{}, waiting...), moving...) {
+		projects, names = max(projects, columns(e.repo)), max(names, columns(e.name))
+	}
+	// lead is a row's project and name, each padded to its column.
+	lead := func(e *entry) string {
+		s := t.strong(e.name) + strings.Repeat(" ", names-columns(e.name))
+		if named {
+			s = e.repo + strings.Repeat(" ", projects-columns(e.repo)) + "  " + s
+		}
+		return s
+	}
+	width := names
+	if named {
+		width += projects + 2
+	}
+	if len(waiting) == 0 {
+		lines = append(lines, "nothing needs you")
+	} else {
+		lines = append(lines, fmt.Sprintf("needs you (%d, in landing order)", len(waiting)))
+	}
+	digits := len(strconv.Itoa(len(waiting)))
+	now := time.Now().Unix()
+	for i, e := range waiting {
+		num := fmt.Sprintf("  %*d  ", digits, i+1)
+		under := strings.Repeat(" ", columns(num))
+		says := checkCount(e.state)
+		if len(e.below) > 0 {
+			says = strings.TrimPrefix(says+" · stack of "+strconv.Itoa(len(e.below)+1), " · ")
+		}
+		left := num + lead(e) + "  " + says
+		used := columns(num) + width + 2 + columns(says)
+		age := ago(now, e.since)
+		if pad := t.width - used - columns(age); pad >= 2 && e.since > 0 {
+			left += strings.Repeat(" ", pad) + age
+		} else if e.since > 0 {
+			left += "  " + age
+		}
+		lines = append(lines, strings.TrimRight(left, " "))
+		lines = append(lines, t.details(e, under, l)...)
+	}
+	if len(moving) == 0 {
+		return lines
+	}
+	lines = append(lines, "", fmt.Sprintf("moving (%d)", len(moving)))
+	for _, e := range moving {
+		first := "  " + t.tint(e.colour, e.glyph) + " "
+		used := columns("  "+e.glyph+" ") + width + 2
+		lines = append(lines, first+lead(e)+"  "+fit(e.says, t.width-used))
+		lines = append(lines, t.details(e, "    ", l)...)
+	}
+	return lines
+}
+
+// details are the lines under a row, each led by under: for a row of
+// needs you, its title; with --checks, its checks; with -v, its block in
+// place of both.
+func (t terminal) details(e *entry, under string, l listing) []string {
+	if l.verbose {
+		return t.drawStack(e, under, false)
+	}
+	var lines []string
+	if e.section == "ready" && e.glyph == "" {
+		lines = append(lines, under+t.titled(e, under))
+	}
+	if l.checks {
+		for _, s := range []string{e.requires, e.checks} {
+			if s != "" {
+				lines = append(lines, under+t.fit(s, under))
+			}
+		}
+	}
+	return lines
+}
+
+// ago is how long ago then was, from now, in its largest whole unit: 40s,
+// 19m, 5h, 3d.
+func ago(now, then int64) string {
+	d := max(now-then, 0)
+	switch {
+	case d < 60:
+		return fmt.Sprintf("%ds", d)
+	case d < 3600:
+		return fmt.Sprintf("%dm", d/60)
+	case d < 2*86400:
+		return fmt.Sprintf("%dh", d/3600)
+	}
+	return fmt.Sprintf("%dd", d/86400)
+}
+
+func parseUnix(s string) int64 {
+	n, _ := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	return n
+}
+
+// draftStacks are a repository's drafts as stacks, measured, the stack
+// with the latest commit first.
+func (r listed) draftStacks(view jsonRepo, h handleMap, l listing) []*entry {
+	states := r.states()
+	var all []*entry
+	for _, c := range *view.Drafts {
+		all = append(all, r.changeEntry("drafts", c, h, l, states))
+	}
+	r.dated(all)
+	return r.snap.stack(all, true)
+}
+
+// branchStacks are a repository's branches that no change is on as
+// stacks, measured, the stack with the latest commit first.
+func (r listed) branchStacks(view jsonRepo) []*entry {
+	var all []*entry
+	for _, b := range view.Branches {
+		name := branchName(b.Branch)
+		all = append(all, &entry{section: "branches", repo: r.name, name: name, ref: name, head: b.Head})
+	}
+	r.dated(all)
+	return r.snap.stack(all, true)
 }
 
 // mainState is the project's main state (mainstate.go) as lines, or none
 // when origin has no main or the policy at its tip declares no nix follow
-// check. A policy or a walk that did not read, or worker telemetry that
-// did not, is said on stderr.
-func (r listed) mainState(h handleMap, c *costs, stderr io.Writer, t terminal) []string {
+// check. named puts the project's name after main. A policy or a walk that
+// did not read, or worker telemetry that did not, is said on stderr.
+func (r listed) mainState(h handleMap, c *costs, stderr io.Writer, t terminal, named bool) []string {
 	if r.snap.tip == "" {
 		return nil
 	}
@@ -305,98 +474,11 @@ func (r listed) mainState(h handleMap, c *costs, stderr io.Writer, t terminal) [
 	if read.why != "" {
 		fmt.Fprintf(stderr, "valley: %s: main's state shows no worker runs: %s\n", r.name, read.why)
 	}
-	return t.mainLines(walk, r.name, h, read.builds, read.mains)
-}
-
-// approvedLines is an approved stack, one line for each approved change:
-// its name, its title, and its check state when --checks gave one. These
-// changes wait on the checks and the integrator, not on the reader. A
-// branch in the stack is landed by the top's request and gets no line. A
-// stack that holds a ready change or a draft is drawn in full, since the
-// reader has something to do in it.
-func (t terminal) approvedLines(top *entry) []string {
-	list := append([]*entry{top}, top.below...)
-	var lines []string
-	for _, e := range list {
-		switch e.section {
-		case "approved":
-		case "branches":
-			continue
-		default:
-			return t.drawStack(top)
-		}
-		tail := ""
-		if e.checks != "" {
-			tail = "  " + e.checks
-		}
-		lead := e.name + "  "
-		lines = append(lines, t.strong(e.name)+"  "+fit(e.title, t.width-columns(lead+tail))+tail)
+	lead := "main  "
+	if named {
+		lead += r.name + "  "
 	}
-	return lines
-}
-
-// entries are a repository's entries, as its pending view lists them, each
-// with its head's commit time, age and author.
-func (r listed) entries(view jsonRepo, h handleMap, l listing) []*entry {
-	s := r.snap
-	states := map[handleKey]string{}
-	for _, n := range s.all {
-		states[handleKey{r.name, n.record.Target, n.id}] = n.record.State
-	}
-	var all []*entry
-	recorded := func(section string, c jsonChange) {
-		v := c.Versions[c.Active-1]
-		e := &entry{section: section, name: fmt.Sprintf("%s v%d", c.Handle, v.N), ref: c.Handle, head: v.Head, title: readable(v.Title)}
-		if len(c.Knots) > 0 {
-			e.knot = readable(c.Knots[0].ID)
-		}
-		if section == "drafts" && v.Branch != "" {
-			e.name += " on " + branchName(v.Branch)
-		}
-		for _, id := range c.Includes {
-			k := handleKey{r.name, c.Target, id}
-			if st := states[k]; st != change.Ready && st != change.Draft {
-				e.includes = append(e.includes, fmt.Sprintf("includes %s (%s)", h[k], st))
-			}
-		}
-		if v.Landing == uncertain {
-			e.notes = append(e.notes, "uncertain: it may have landed without its evidence being stored")
-		}
-		if c.Restack != nil && c.Restack.Current {
-			name := func(id string) string { return h[handleKey{r.name, c.Target, id}] }
-			e.notes = append(e.notes, "restack: "+readable(restackSays(c.Restack.Report, name)))
-		}
-		if l.checks {
-			e.notes = append(e.notes, s.checks(v.Head))
-		}
-		if v.Checks != nil {
-			e.checks = checksLine(v.Checks)
-			e.notes = append(e.notes, e.checks)
-		}
-		all = append(all, e)
-	}
-	for _, c := range view.Changes {
-		if c.Approved != nil && *c.Approved {
-			recorded("approved", c)
-		} else {
-			recorded("ready", c)
-		}
-	}
-	for _, b := range view.Branches {
-		name := branchName(b.Branch)
-		all = append(all, &entry{section: "branches", name: name, ref: name, head: b.Head})
-	}
-	for _, c := range *view.Drafts {
-		recorded("drafts", c)
-	}
-	for _, e := range all {
-		out, _ := s.g.output(true, "log", "-1", "--format=%ct%x00%cr%x00%an", e.head)
-		if fields := strings.SplitN(out, "\x00", 3); len(fields) == 3 {
-			e.when, _ = strconv.ParseInt(fields[0], 10, 64)
-			e.age, e.author = fields[1], readable(fields[2])
-		}
-	}
-	return all
+	return t.mainLines(walk, lead, r.name, h, read.builds, read.mains)
 }
 
 // stack nests each entry under the nearest entry whose head strictly
@@ -405,8 +487,9 @@ func (r listed) entries(view jsonRepo, h handleMap, l listing) []*entry {
 // (rebase.Snapshot.Nest). Where two are equally near, the one with the
 // later commit is taken. It returns the entries nested under none, each the
 // top of a stack, the stack with the latest commit first. Each top lists
-// every entry nested under it, at any depth, in its below.
-func (s *snapshot) stack(all []*entry) []*entry {
+// every entry nested under it, at any depth, in its below. With measured,
+// each entry is measured for its block.
+func (s *snapshot) stack(all []*entry, measured bool) []*entry {
 	nodes := make([]rebase.Node, len(all))
 	for i, e := range all {
 		nodes[i] = rebase.Node{Name: e.name, Head: e.head, When: e.when}
@@ -426,7 +509,9 @@ func (s *snapshot) stack(all []*entry) []*entry {
 		if b := nest.Base[i]; b >= 0 {
 			e.base = all[b]
 		}
-		s.measure(e)
+		if measured {
+			s.measure(e)
+		}
 		if e.parent == nil {
 			tops = append(tops, e)
 		}
@@ -477,42 +562,6 @@ func (top *entry) list() {
 		top.latest = max(top.latest, next.when)
 		last = next
 	}
-}
-
-// readyElsewhere is what the ready section says when no ready change is at
-// the top of a stack: that nothing is ready, or where the ready changes in
-// other sections' stacks are.
-func readyElsewhere(tops []*entry) string {
-	n, stacks := 0, 0
-	var where []string
-	for _, sec := range sections {
-		found := false
-		for _, top := range tops {
-			held := 0
-			for _, e := range top.below {
-				if e.section == "ready" {
-					held++
-				}
-			}
-			if top.section == sec.name && held > 0 {
-				n, stacks, found = n+held, stacks+1, true
-			}
-		}
-		if found {
-			where = append(where, sec.name)
-		}
-	}
-	if n == 0 {
-		return "nothing is ready"
-	}
-	verb, in := "are", fmt.Sprintf("%d stacks", stacks)
-	if n == 1 {
-		verb = "is"
-	}
-	if stacks == 1 {
-		in = "a stack"
-	}
-	return fmt.Sprintf("nothing is ready on its own; %s %s in %s under %s", counted(n, "ready change"), verb, in, strings.Join(where, " and "))
 }
 
 // byActivity orders entries latest first, and then by name.
@@ -602,34 +651,34 @@ func counted(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
-// drawStack is the lines of a stack: the top entry's block, then the
-// block of each entry listed under it, at one indentation however deep the
-// stack is. Each listed entry is on the entry listed right after it, and
-// says "on <base>" where it is not.
-func (t terminal) drawStack(top *entry) []string {
+// drawStack is the lines of a stack, each led by lead: the top entry's
+// block, then the block of each entry listed under it, at one indentation
+// however deep the stack is. Each listed entry is on the entry listed
+// right after it, and says "on <base>" where it is not. With named false,
+// the top's name line is left out, and its other lines are at lead
+// itself, for a row that already names it.
+func (t terminal) drawStack(top *entry, lead string, named bool) []string {
 	list := append([]*entry{top}, top.below...)
+	in := lead
+	if named {
+		in = lead + "  "
+	}
 	var lines []string
 	for i, e := range list {
 		var next *entry
 		if i+1 < len(list) {
 			next = list[i+1]
 		}
-		first, rest := "", "  "
+		first, rest := lead, in
 		switch {
 		case i > 0 && next != nil:
-			first, rest = "  ├ ", "  │   "
+			first, rest = in+"├ ", in+"│   "
 		case i > 0:
-			first, rest = "  └ ", "      "
+			first, rest = in+"└ ", in+"    "
 		}
-		suffix := ""
-		if e.section != top.section {
-			for _, sec := range sections {
-				if sec.name == e.section {
-					suffix = " (" + sec.kind + ")"
-				}
-			}
+		if i > 0 || named {
+			lines = append(lines, t.nameLine(first, e.name, e, rest)...)
 		}
-		lines = append(lines, t.nameLine(first, e.name, suffix, e, rest)...)
 		lines = append(lines, rest+t.titled(e, rest), rest+t.fit(e.layer, rest))
 		switch {
 		case e.base == next:
@@ -639,8 +688,10 @@ func (t terminal) drawStack(top *entry) []string {
 			lines = append(lines, rest+"on "+recordTarget)
 		}
 		lines = append(lines, prefixed(rest, e.includes)...)
-		for _, note := range e.notes {
-			lines = append(lines, rest+t.fit(note, rest))
+		for _, note := range append(append([]string{}, e.notes...), e.requires, e.checks) {
+			if note != "" {
+				lines = append(lines, rest+t.fit(note, rest))
+			}
 		}
 		if i == 0 && len(top.below) > 0 {
 			lands := fmt.Sprintf("approving it lands the %d below too", len(top.below))
@@ -676,9 +727,9 @@ func prefixed(lead string, lines []string) []string {
 // the head's age and author at the right margin. When that leaves too
 // little room, the author is cut short. When even that leaves too little,
 // the age and author go on a line of their own, indented as rest is.
-func (t terminal) nameLine(lead, name, suffix string, e *entry, rest string) []string {
-	left := lead + t.strong(name) + suffix
-	used := columns(lead + name + suffix)
+func (t terminal) nameLine(lead, name string, e *entry, rest string) []string {
+	left := lead + t.strong(name)
+	used := columns(lead + name)
 	if e.age == "" && e.author == "" {
 		return []string{left}
 	}

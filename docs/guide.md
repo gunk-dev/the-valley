@@ -131,8 +131,8 @@ valley status greeting
 
 `ready` prints a handle and version, such as `demo kqxm v1 ready`. Use the handle it actually prints
 in later commands. The handle identifies the change even when its commit changes. `status` reports
-readiness, any request, and the latest integration result. To see the required checks alongside
-pending changes, run `valley pending --checks`.
+readiness, any request, and the latest integration result. `valley pending` counts each ready
+change's checks; `valley pending --checks` names the ones that failed and what they cost.
 
 If the commit already carries a `Change-Id` trailer or a jj `change-id` header, push it first and
 run `valley ready` without `--stamp`:
@@ -225,9 +225,12 @@ A change can land on its fast checks while slower ones follow it: the host's wor
 with whether `main` is `clear`, `clearing` while they run, or `muddy` when one failed, with the
 landings it covers.
 
-`pending` lists the changes waiting on an approval under `ready`. A change that already has an
-integration request is under `approved`, one line each, with its check state when you pass
-`--checks`. It waits on its checks and the integrator, not on you, so there is nothing to review.
+`pending` lists the changes waiting on your approval under `needs you`, one row each, numbered in
+the order they would land, with their checks and how long they have been ready. A stack is one row,
+its top's, since approving the top lands every layer. Changes that need nothing from you are under
+`moving`: approved ones waiting on their checks and the integrator, and those whose check failed or
+whose restack stopped, which their author fixes. A last line counts the drafts and stray branches;
+`--drafts` and `--branches` list them, and `-v` shows each row's commits and diff.
 
 Use a handle from `pending`. Review pages the diff and offers actions at the terminal. Choose
 `[s]kip` to leave it alone or `[a]pprove` to approve the head you saw. A draft or withdrawn layer

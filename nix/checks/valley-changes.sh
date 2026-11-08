@@ -464,13 +464,17 @@ for url in "--upload-pack=touch $w/pwned; git-upload-pack" "ext::sh -c touch% $w
 done
 
 # ----------------------------------------------------------------------
-# pending: a block per entry, in three sections. A stack is its top
-# entry, then every entry the top contains, as one list, each counted from
-# the entry it contains. atop-lost is a branch no record is on, holding U,
-# a ready change. a-parked is a branch last committed to eleven days ago.
-# deep-4 tops a chain of four branches. fork-left and fork-right are two
-# branches on one base, fork-base. The chain and the fork were last
-# committed to twenty days ago.
+# pending: the ready changes that need the operator, one row each in
+# landing order, then those moving without them, then a count of the
+# drafts and the branches no change is on. The changes that wait on an
+# approval are stacked among themselves, a stack folded into its top's
+# row. atop-lost is a branch no record is on, holding U, a ready change.
+# a-parked is a branch last committed to eleven days ago. deep-4 tops a
+# chain of four branches. fork-left and fork-right are two branches on one
+# base, fork-base. The chain and the fork were last committed to twenty
+# days ago. W is readied again as v2, dated an hour on, so it became ready
+# last: its row is the last, though its change ID sorts before U's and
+# H's, and its v1 is listed nowhere.
 branch atop-lost lost atop-lost
 parked="@$(($(date +%s) - 11 * 86400))"
 GIT_AUTHOR_DATE="$parked" GIT_COMMITTER_DATE="$parked" branch a-parked "$base" a-parked
@@ -484,6 +488,13 @@ branch fork-base "$base" fork-base
 branch fork-left fork-base fork-left
 branch fork-right fork-base fork-right
 unset GIT_AUTHOR_DATE GIT_COMMITTER_DATE
+cd "$w/open"
+git checkout --quiet atop-gone
+echo atop-gone-v2 > atop-gone-v2.txt
+git add atop-gone-v2.txt
+git commit --quiet -m atop-gone-v2
+git push --quiet origin atop-gone
+GIT_COMMITTER_DATE="@$(($(date +%s) + 3600))" ok valley ready --change "$W" atop-gone
 ok valley pending
 no_line $'\x1b'
 # pending also writes the handle cache completion reads: one line for each
@@ -496,32 +507,44 @@ cut -f1,2 "$cache" > "$w/out"
 grep -qE "^pppp"$'\t'"ready"$'\t'"[^"$'\t'"]*"$'\t'"stack-c$" "$cache" || fail "the handle cache has no line for pppp with its title"
 grep -qE "^qqqq"$'\t'"draft"$'\t'"paused"$'\t' "$cache" || fail "the handle cache has no line for qqqq with its branch"
 ok valley pending
-line '^ready$'
-# K is approved, so it is not under ready. It is one line under approved,
-# which follows ready and comes before the branches.
-no_line '^kkkk v1 .* ago'
-after '^approved$' '^kkkk v1  after-landing$' '^$' '^branches$'
-[ "$(grep -n '^ready$' "$w/out" | cut -d: -f1)" -lt "$(grep -n '^approved$' "$w/out" | cut -d: -f1)" ] ||
-  fail "pending listed the approved changes before the ready ones"
-[ "$(grep -n '^approved$' "$w/out" | cut -d: -f1)" -lt "$(grep -n '^branches$' "$w/out" | cut -d: -f1)" ] ||
-  fail "pending listed the branches before the approved changes"
-# The stack of three, outermost first, each layer counted on its own.
-after '^pppp v1  +[0-9]+ [a-z]+ ago · valley-changes-check$' '^  stack-c$' '^  1 commit · 1 file \+1 −0$' \
-  '^  approving it lands the 2 below too$' \
-  '^  ├ mmmm v1  +.* ago · valley-changes-check$' '^  │   stack-b$' '^  │   1 commit · 1 file \+1 −0$' \
-  '^  └ nxvp v1 \(approved\)  +.* ago · valley-changes-check$' '^      stack-a$' '^      1 commit · 1 file \+1 −0$' '^$'
-# W includes E, which is withdrawn, so it is counted from main.
-after '^ssss v1  ' '^  atop-gone$' '^  2 commits · 2 files \+2 −0$' '^  includes rrrr \(withdrawn\)$' '^$'
-after '^wwww v1  ' '^  forged$' '^  1 commit · 1 file \+1 −0$' '^  uncertain: it may have landed without its evidence being stored$'
-no_line '(tttt|uuuu|rrrr) v1'
-no_line 'qqqq v1  '
-# The branches, latest first, and atop-lost with U listed under it,
-# marked as ready.
-after '^branches$' '^atop-lost  +.* ago · valley-changes-check$' '^  atop-lost$' '^  1 commit · 1 file \+1 −0$' \
-  '^  approving it lands the one below too$' \
-  '^  └ vvvv v1 \(ready\)  +.* ago · valley-changes-check$' '^      lost$' '^      1 commit · 1 file \+1 −0$' \
-  '^      uncertain: ' '^$' '^loose  +.* ago · valley-changes-check$' '^  loose$' '^  1 commit · 1 file \+1 −0$' '^$' \
+# pppp folds mmmm, which it is on, into its row. Its approved layer nxvp
+# moves on its own, as K does. The rows are in the order their active
+# versions became ready.
+after '^needs you \(4, in landing order\)$' \
+  '^  1  pppp v1  stack of 2 +[0-9]+[smhd]$' '^     stack-c$' \
+  '^  2  vvvv v1  +[0-9]+[smhd]$' '^     lost$' \
+  '^  3  wwww v1  +[0-9]+[smhd]$' '^     forged$' \
+  '^  4  ssss v2  +0s$' '^     atop-gone-v2$' '^$' '^moving \(2\)$'
+line '^  ◐ kkkk v1  approved$'
+line '^  ◐ nxvp v1  approved$'
+no_line 'mmmm v1|ssss v1|(tttt|uuuu|rrrr) v1|qqqq v1|lmlm v|zzzz v'
+no_line ' ago · '
+[ "$(tail -1 "$w/out")" = '3 drafts · 10 branches no change is on · valley pending --drafts --branches' ] ||
+  fail "pending did not end with the counts of the drafts and the branches"
+# -v follows each row with its block: the stack in full, each layer
+# counted from the one it is on, and what the change includes.
+ok valley pending -v
+after '^  1  pppp v1  stack of 2 ' '^     stack-c$' '^     1 commit · 1 file \+1 −0$' \
+  '^     approving it lands the one below too$' '^     └ mmmm v1  +.* ago · valley-changes-check$' \
+  '^         stack-b$' '^         2 commits · 2 files \+2 −0$' '^  2  vvvv v1  '
+after '^  3  wwww v1  ' '^     forged$' '^     1 commit · 1 file \+1 −0$' \
+  '^     uncertain: it may have landed without its evidence being stored$' '^  4  ssss v2  '
+after '^  4  ssss v2  ' '^     atop-gone-v2$' '^     3 commits · 3 files \+3 −0$' '^     includes rrrr \(withdrawn\)$' '^$'
+after '^  ◐ kkkk v1  approved$' '^    after-landing$' '^    1 commit · 1 file \+1 −0$'
+# --drafts and --branches list them in full, as blocks, in place of their
+# counts. Each listing stacks its own entries.
+ok valley pending --drafts --branches
+no_line ' no change is on'
+after '^drafts$' '^lmlm v2 on ffrec  +.* ago · valley-changes-check$' '^  ffrec$' '^  1 commit · 1 file \+0 −1$'
+after '^qqqq v1 on paused  +.* ago · valley-changes-check$' '^  paused$' '^  1 commit · 1 file \+1 −0$'
+after '^zzzz v2 on again  ' '^  again$' '^  1 commit · '
+# The branches, latest first. atop-lost holds U's commit as well as its
+# own, since U is no branch, and so is titled by U's commit.
+after '^branches$' '^atop-lost  +.* ago · valley-changes-check$' '^  lost$' '^  2 commits · 2 files \+2 −0$' \
+  '^$' '^loose  +.* ago · valley-changes-check$' '^  loose$' '^  1 commit · 1 file \+1 −0$' '^$' \
   '^a-parked  +11 days ago · valley-changes-check$' '^  a-parked$' '^  1 commit · 1 file \+1 −0$' '^$' '^deep-4  '
+[ "$(grep -n '^drafts$' "$w/out" | cut -d: -f1)" -lt "$(grep -n '^branches$' "$w/out" | cut -d: -f1)" ] ||
+  fail "pending listed the branches before the drafts"
 # A chain four deep is one flat list, with no on line: each entry is on
 # the one listed after it.
 after '^deep-4  +3 weeks ago · valley-changes-check$' '^  deep-4$' '^  1 commit · 1 file \+1 −0$' \
@@ -536,12 +559,7 @@ no_line '^ *(│ *)?on deep-'
 [ "$(grep -cx '  on fork-base' "$w/out")" = 1 ] || fail "not exactly one of the fork says it is on fork-base"
 after '^fork-left  ' '^  fork-left$' '^  1 commit · 1 file \+1 −0$' '^  approving it lands the one below too$' \
   '^  └ fork-base  ' '^      fork-base$' '^      1 commit · 1 file \+1 −0$' '^$'
-after '^fork-right  ' '^  fork-right$' '^  1 commit · 1 file \+1 −0$' '^  on fork-base$' '^$' '^drafts$'
-after '^qqqq v1 on paused  +.* ago · valley-changes-check$' '^  paused$' '^  1 commit · 1 file \+1 −0$'
-after '^zzzz v2 on again  ' '^  again$' '^  1 commit · '
-after '^lmlm v2 on ffrec  ' '^  ffrec$' '^  1 commit · 1 file \+0 −1$'
-[ "$(grep -n '^ready$' "$w/out" | cut -d: -f1)" -lt "$(grep -n '^branches$' "$w/out" | cut -d: -f1)" ] ||
-  fail "pending listed the branches before the ready changes"
+after '^fork-right  ' '^  fork-right$' '^  1 commit · 1 file \+1 −0$' '^  on fork-base$'
 # --json is the same listing in valley-changes/v1's shape: the pending
 # changes alone in changes, and the drafts in drafts.
 ok valley pending --json
@@ -553,26 +571,27 @@ holds '.schema == "valley-pending/v1"' \
   '[.repos[0].changes[].state] | unique == ["ready"]' \
   '[.repos[0].drafts[] | [.handle, .state]] == [["lmlm", "draft"], ["qqqq", "draft"], ["zzzz", "draft"]]' \
   '[.repos[0].branches[].branch] == ["a-parked", "atop-lost", "deep-1", "deep-2", "deep-3", "deep-4", "fork-base", "fork-left", "fork-right", "loose"]'
-# Across the host, each repository is headed by its name, and handles
-# are qualified where a change ID is recorded in more than one. In origin,
-# a branch no record is on holds the one ready change, so the ready
-# section says where it is.
+# Across the host, one listing: each row names its project, and the rows
+# of every project are numbered in one landing order. Handles are
+# qualified where a change ID is recorded in more than one project. A
+# project that cannot be read says so first.
 (cd "$w/origin" && branch atop-dup o-dup atop-dup)
 ok valley pending --all
-after '^guarded$' '^(─)+$' '^ready$'
-after '^nxvpwlkz v1  ' '^  g-ready$' '^  1 commit · 1 file \+1 −0$'
-after '^guarded:mmmm v1  ' '^  g-dup$'
-after '^pqpq v1  ' '^  reversed$' '^  no commits · ' '^  approving it lands the one below too$' '^  └ oooo v1  ' \
-  '^      dropped$' '^      no commits · no file changes$'
-line '^xxxx v1 on g-draft  '
-line '^open$'
-after '^pppp v1  ' '^  stack-c$' '^  1 commit · ' '^  approving it lands the 2 below too$' '^  ├ open:mmmm v1  ' \
-  '^  │   stack-b$' '^  │   1 commit · ' '^  └ nxvpwlkm v1 \(approved\)  ' '^      stack-a$'
-after '^origin$' '^(─)+$' '^nothing is ready on its own; 1 ready change is in a stack under branches$' '^$' \
-  '^branches$' '^atop-dup  ' '^  atop-dup$' '^  1 commit · ' '^  approving it lands the one below too$' \
-  '^  └ origin:mmmm v1 \(ready\)  ' '^      o-dup$'
-line '^released: could not read '
-after '^sealed$' '^(─)+$' '^nothing is ready$'
+[ "$(head -1 "$w/out" | cut -c1-25)" = 'released: could not read ' ] || fail "pending --all did not open with the project it could not read"
+line '^needs you \(8, in landing order\)$'
+line '^  [1-8]  guarded  nxvpwlkz v1  +[0-9]+[smhd]$'
+line '^  [1-8]  guarded  guarded:mmmm v1  +[0-9]+[smhd]$'
+line '^  [1-8]  guarded  pqpq v1  +stack of 2 +[0-9]+[smhd]$'
+line '^  [1-8]  open     pppp v1  +stack of 2 +[0-9]+[smhd]$'
+line '^  [1-8]  origin   origin:mmmm v1  +[0-9]+[smhd]$'
+line '^  8  open     ssss v2  +0s$'
+line '^  ◐ open     nxvpwlkm v1  +approved$'
+no_line '^(guarded|open|origin|sealed)$'
+no_line 'oooo v1|open:mmmm v1'
+[ "$(tail -1 "$w/out")" = '4 drafts · 11 branches no change is on · valley pending --drafts --branches' ] ||
+  fail "pending --all did not count the drafts and the branches of every project"
+ok valley pending --all --branches
+after '^branches · origin$' '^atop-dup  ' '^  o-dup$' '^  2 commits · '
 
 # --checks adds a line to each change with the checks it requires, by
 # cost, as valley checks derives them, here and in a repository read
@@ -586,14 +605,11 @@ git -C "$w/floor" commit --quiet -m floor
 git -C "$w/floor" push --quiet "$instance" HEAD:refs/heads/floor
 git -C "$instance" update-ref refs/heads/main "$(git -C "$w/floor" rev-parse HEAD)"
 ok valley pending --checks --all
-after '^pppp v1  ' '^  stack-c$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' '^  checks: 1 pending$' \
-  '^  approving it lands the 2 below too$' \
-  '^  ├ open:mmmm v1  ' '^  │   stack-b$' '^  │   1 commit · ' '^  │   requires 1 quick check, 0 slow$' \
-  '^  │   checks: 1 pending$' '^  └ nxvpwlkm v1 \(approved\)  ' \
-  '^      stack-a$' '^      1 commit · ' '^      requires 1 quick check, 0 slow$' '^      checks: 1 pending$'
-after '^nxvpwlkz v1  ' '^  g-ready$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' '^  checks: 1 pending$'
-# An approved change's one line carries its check state.
-line '^(open:)?kkkk v1  after-landing  checks: 1 pending$'
+after '^  [1-8]  open     pppp v1  +1 check pending · stack of 2 ' '^     stack-c$' \
+  '^     requires 1 quick check, 0 slow$' '^     checks: 1 pending$'
+after '^  [1-8]  guarded  nxvpwlkz v1  +1 check pending ' '^     g-ready$' '^     requires 1 quick check, 0 slow$' '^     checks: 1 pending$'
+# An approved change's row carries its check state.
+after '^  ◐ open     (open:)?kkkk v1  +approved · 1 check pending$' '^    requires 1 quick check, 0 slow$' '^    checks: 1 pending$'
 # Without --checks, no change lists its checks.
 ok valley changes --json --all
 holds '[.repos[].changes[].versions[] | select(has("checks"))] == []'
@@ -658,9 +674,10 @@ if grep -q 'plan graph' "$w/err"; then fail 'changes spoke of the plan graph wit
 ok valley pending --json
 holds "$(k changes "$A") == [$goal_ref, $bug_ref]" "$(k changes "$C") == []" "$(k drafts "$D") == [$bug_ref]"
 # pending shows the first knot's ID after the title.
-ok valley pending
-after '^pppp v1  ' '^  stack-c$' '^  1 commit · ' '^  approving it lands the 2 below too$' '^  ├ mmmm v1  ' \
-  "^  │   stack-b · $goal\$" '^  │   1 commit · ' '^  └ nxvp v1 \(approved\)  ' "^      stack-a · $goal\$"
+ok valley pending -v --drafts
+after '^  1  pppp v1  ' '^     stack-c$' '^     1 commit · ' '^     checks: 1 pending$' \
+  '^     approving it lands the one below too$' '^     └ mmmm v1  ' "^         stack-b · $goal\$"
+after '^  ◐ nxvp v1  approved · 1 check pending$' "^    stack-a · $goal\$"
 after '^qqqq v1 on paused  ' "^  paused · $bug\$"
 ok valley status --json nxvp
 holds "[.knots[] | [.id, .type, .status, .title]] == [$goal_ref, $bug_ref]"
@@ -684,8 +701,8 @@ git -C "$data/open.git" update-ref refs/the-valley/knots "$(git -C "$data/open.g
 ok valley changes --json
 holds '(.repos[0].changes | length) == 13' '[.repos[0].changes[].knots] | unique == [[]]'
 if grep -q 'plan graph' "$w/err"; then fail 'changes spoke of a broken plan graph without -v'; fi
-ok valley pending
-line '^      stack-a$'
+ok valley pending -v
+line '^    stack-a$'
 no_line " · ($goal|$bug)\$"
 ok valley status --json nxvp
 holds '.knots == []'
@@ -757,10 +774,22 @@ holds "$(checks "$K1") | .state == \"passed\" and .tree == \"$(tree_digest chk-p
   '[.repos[0].changes[] | .versions[] | select(.landing == "landed" or .landing == "landed-recorded") | select(has("checks"))] == []'
 ok valley pending --json --checks
 holds "$(checks "$K2") | .state == \"failed\""
+# Each row counts its checks, passed out of required when all passed, and
+# otherwise how many are pending. A change whose check failed moves, and
+# says which. The rows are in landing order: pppp, U and H became ready
+# before K1 and K3, and W's v2 last, though K1's and K3's change IDs sort
+# first.
+ok valley pending
+after '^needs you \(6, in landing order\)$' '^  1  pppp v1  1 check pending · stack of 2 ' '^     stack-c$' \
+  '^  2  vvvv v1  1 check pending ' '^     lost$' '^  3  wwww v1  1 check pending ' '^     forged$' \
+  '^  4  klkl v1  checks 1/1 +[0-9]+[smhd]$' '^     chk-pass$' '^  5  knkn v1  1 check pending ' '^     chk-none$' \
+  '^  6  ssss v2  1 check pending +0s$' '^     atop-gone-v2$' '^$' '^moving \(3\)$'
+line '^  ✗ kmkm v1  prose-format failed$'
+line '^  ◐ kkkk v1  approved · 1 check pending$'
 ok valley pending --checks
-after '^klkl v1  ' '^  chk-pass$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' '^  checks: 1 passed$'
-after '^kmkm v1  ' '^  chk-fail$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' '^  checks: 1 failed \(prose-format\)$'
-after '^knkn v1  ' '^  chk-none$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' '^  checks: 1 pending$'
+after '^  4  klkl v1  ' '^     chk-pass$' '^     requires 1 quick check, 0 slow$' '^     checks: 1 passed$'
+after '^  ✗ kmkm v1  prose-format failed$' '^    requires 1 quick check, 0 slow$' '^    checks: 1 failed \(prose-format\)$'
+after '^  5  knkn v1  ' '^     chk-none$' '^     requires 1 quick check, 0 slow$' '^     checks: 1 pending$'
 
 # --checks with the host's worker telemetry: each nix check's build time
 # for the version, the median of its recent uncached, passing builds in
@@ -852,11 +881,11 @@ grep -qx 'valley-telemetry read --source=worker --since=worker=0123456789abcdef:
   fail "the second page did not read on from the first's cursor: $(cat "$tel/ssh.log")"
 rm "$tel/ssh.log"
 ok valley pending --checks
-after '^klkl v1  ' '^  chk-pass$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' \
-  '^  checks: 1 passed in 1m40s \(eval 24s\); prose-format 100s, \+40s against its rec…$'
-after '^kmkm v1  ' '^  chk-fail$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' \
-  '^  checks: 1 failed \(prose-format\) in 1m1s \(eval 23s\)$'
-after '^knkn v1  ' '^  chk-none$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' '^  checks: 1 pending$'
+after '^  4  klkl v1  ' '^     chk-pass$' '^     requires 1 quick check, 0 slow$' \
+  '^     checks: 1 passed in 1m40s \(eval 24s\); prose-format 100s, \+40s against its…$'
+after '^  ✗ kmkm v1  prose-format failed$' '^    requires 1 quick check, 0 slow$' \
+  '^    checks: 1 failed \(prose-format\) in 1m1s \(eval 23s\)$'
+after '^  5  knkn v1  ' '^     chk-none$' '^     requires 1 quick check, 0 slow$' '^     checks: 1 pending$'
 [ "$(wc -l < "$tel/ssh.log")" = 2 ] || fail "pending read the worker's telemetry otherwise than in two pages: $(cat "$tel/ssh.log")"
 # review shows the same line just before its prompt, whole: it is paged,
 # not fitted to a terminal. It reads the line while it shows the diff and
@@ -873,8 +902,8 @@ printf 's\n' | ok env VALLEY_REVIEW_CHECKS_WAIT=120 valley review "$K1"
 ok valley changes --json --checks
 holds "$(pf "$K1") | .build_ms == 100000 and .new == true and (has(\"baseline_ms\") | not) and (has(\"grown\") | not)"
 ok valley pending --checks
-after '^klkl v1  ' '^  chk-pass$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' \
-  '^  checks: 1 passed in 1m40s \(eval 24s\); prose-format 100s, new$'
+after '^  4  klkl v1  ' '^     chk-pass$' '^     requires 1 quick check, 0 slow$' \
+  '^     checks: 1 passed in 1m40s \(eval 24s\); prose-format 100s, new$'
 
 # Builds on another capacity are no baseline: the check of a resized host
 # has no comparable history, and has not grown.
@@ -885,8 +914,8 @@ after '^klkl v1  ' '^  chk-pass$' '^  1 commit · ' '^  requires 1 quick check, 
 ok valley changes --json --checks
 holds "$(pf "$K1") | .new == true and .other_capacity == true and (has(\"baseline_ms\") | not) and (has(\"grown\") | not)"
 ok valley pending --checks
-after '^klkl v1  ' '^  chk-pass$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' \
-  '^  checks: 1 passed in 1m40s \(eval 24s\); prose-format 100s, new on this capacity$'
+after '^  4  klkl v1  ' '^     chk-pass$' '^     requires 1 quick check, 0 slow$' \
+  '^     checks: 1 passed in 1m40s \(eval 24s\); prose-format 100s, new on this capac…$'
 
 # A host that refuses leaves every build time out, says why once, and
 # lists the check states all the same.
@@ -898,7 +927,7 @@ holds "$(checks "$K1") | .required == [{name: \"prose-format\", state: \"passed\
 [ "$(grep -c 'no check lists its build times: .*alice holds no observe grant' "$w/err")" = 1 ] ||
   fail "a refusing host was not said once on stderr: $(cat "$w/err")"
 ok valley pending --checks
-after '^klkl v1  ' '^  chk-pass$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' '^  checks: 1 passed$'
+after '^  4  klkl v1  ' '^     chk-pass$' '^     requires 1 quick check, 0 slow$' '^     checks: 1 passed$'
 
 # valley help names the verbs front ends look for.
 valley help > "$w/out"

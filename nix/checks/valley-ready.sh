@@ -517,13 +517,15 @@ one_parent "$pid"
 if grep -q 'warning' "$w/err"; then fail 'unready warned with no request pending'; fi
 unchanged "$pid" refused 'is a draft already' as contributor valley unready "$ph"
 
-# pending lists the draft under drafts, and not among the branches, since
-# its branch is at the draft's head.
+# pending counts the draft among the drafts, and lists it under drafts and
+# not among the branches, since its branch is at the draft's head.
 ok valley pending
+grep -qE '^[0-9]+ drafts? ' "$w/out" || fail 'pending counted no drafts'
+grep -qE '^  ([0-9]+ |◐|✗|◇)  ?[k-z]{4,32} v[0-9]+' "$w/out" || fail 'pending no longer lists the ready changes'
+ok valley pending --drafts --branches
 grep -qx 'drafts' "$w/out" || fail 'pending listed no drafts'
 grep -A1 "^$ph v1 on drafts/paused  .* ago · " "$w/out" | grep -qx '  paused' || fail 'pending did not list the draft'
 if grep -qE '(^|└ |├ )drafts/paused  ' "$w/out"; then fail 'pending listed a draft among the branches'; fi
-grep -qE '(^|└ |├ )[k-z]{4,32} v[0-9]+  ' "$w/out" || fail 'pending no longer lists the ready changes'
 
 # A draft is not approved or rebased. review says so on the first line it
 # shows, above the diff, and again in place of its prompt, which offers
@@ -927,7 +929,8 @@ jq -e --arg a "$h2" --arg b "$h3" '[.repos[0].changes[] | select(.handle == $a o
   or [.repos[0].changes[] | select(.handle == $a or .handle == $b) | [.handle, .approved]] == [[$a, true], [$b, false]]' "$w/out" > /dev/null \
   || fail 'pending --json did not mark only the middle layer approved'
 ok valley pending
-grep -qE "^  (├|└) $h2 v2 \(approved\)  " "$w/out" || fail 'pending did not mark the approved layer under its top'
+grep -qE "^  ◐ $h2 v2 +approved" "$w/out" || fail 'pending did not list the approved layer as moving'
+grep -qE "^  [0-9]+  $h3 v2 " "$w/out" || fail 'pending did not list the top as needing an approval'
 printf 'n\ns\n' | as requester valley review "$h3" > "$w/out" 2> "$w/err" || fail 'review of the stack failed'
 grep -qF "$h2 (approved, not paged): " "$w/out" || fail 'review did not say it leaves the approved layer unpaged'
 if grep -qF "change 2 of 3: " "$w/out"; then fail 'review paged the approved layer'; fi
@@ -937,13 +940,12 @@ grep -qF "change 3 of 3: $h3 on " "$w/out" || fail 'review did not page the top'
 printf 'n\ns\n' | as requester valley review "$h2" > "$w/out" 2> "$w/err" || fail 'review of the approved change failed'
 grep -qF "change 2 of 2: $h2 on " "$w/out" || fail 'review of a named approved change did not page it'
 # With the top approved too, nothing waits on the reader. pending lists
-# both under approved, one line each, and the top is still paged.
+# both as moving, one line each, and the top is still paged.
 as requester git push --quiet origin "$new3:$req3"
 ok valley pending
-grep -qx 'approved' "$w/out" || fail 'pending listed no approved section'
-grep -qE "^$h3 v2  s1-three-more$" "$w/out" || fail 'pending did not list the approved top on one line'
-grep -qE "^$h2 v2  s1-two$" "$w/out" || fail 'pending did not list the approved layer on one line'
-if grep -qE "^$h3 v2 .* ago · " "$w/out"; then fail 'pending listed an approved change as a block'; fi
+grep -qE "^  ◐ $h3 v2 +approved" "$w/out" || fail 'pending did not list the approved top as moving'
+grep -qE "^  ◐ $h2 v2 +approved" "$w/out" || fail 'pending did not list the approved layer as moving'
+if grep -qE "^  [0-9]+  ($h2|$h3) v2 " "$w/out"; then fail 'pending listed an approved change as needing an approval'; fi
 ok valley pending --json
 jq -e --arg a "$h2" --arg b "$h3" '[.repos[0].changes[] | select(.handle == $a or .handle == $b) | .approved] == [true, true]' "$w/out" > /dev/null || fail 'pending --json did not mark both approved'
 printf 'n\ns\n' | as requester valley review "$h3" > "$w/out" 2> "$w/err" || fail 'review of the approved stack failed'

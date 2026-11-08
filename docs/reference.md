@@ -176,11 +176,9 @@ valley withdraw <change>
 
 ### `valley pending`
 
-`valley pending` lists work waiting to land in four sections: `ready` changes whose active version
-has not landed and has no integration request, which wait on an approval; `approved` changes, which
-have a request and wait on their checks and the integrator; unrecorded `branches` ahead of `main`
-that no landed version's head reaches; and `drafts`. When the project's policy declares follow
-checks, one line on `main`'s state comes first:
+`valley pending` lists what waits on you and what is moving, across one project or, with `--all`,
+every project the host serves. It opens with one line on `main`'s state for each project whose
+policy declares follow checks; a project without them has no line:
 
 ```text
 main  ✓ clear · checks passed at c1620ef
@@ -195,50 +193,91 @@ carries no `Change-Id`. `muddy` names each check whose newest run on `main` fail
 evaluate since its last pass (see
 [Follow runs and main's state](architecture.md#follow-runs-and-mains-state)).
 
+Two sections follow, then one line of counts:
+
+```text
+needs you (2, in landing order)
+  1  kqxm v3  checks 18/18 · stack of 2                                    19m
+     add greeting · oc-6335749
+  2  wnzs v2  6 checks pending                                             42m
+     the guest's tools follow main
+
+moving (3)
+  ◐ mytm v5  approved · 6 checks pending
+  ✗ rwzt v2  worker-e2e failed
+  ✗ xzus v3  restack: a conflict rebasing xzus onto main at a1b2c3d, in go.mod
+
+2 drafts · 5 branches no change is on · valley pending --drafts --branches
+```
+
+- **needs you:** The `ready` changes whose active version has not landed, that wait on an approval.
+  Each row gives the handle and active version, the checks as passed out of required, or how many
+  are pending when not all passed, and how long the version has been ready; the title, and the first
+  linked knot's ID, go under it. A change whose head another waiting change's head contains folds
+  into that change's row, as `stack of N`: approving the top lands every layer. When nothing waits,
+  one line says `nothing needs you`.
+- **Landing order:** Rows are numbered oldest ready first, then by project and Change ID. That is
+  the order the check worker builds versions in, and the integrator lands an approved request once
+  its evidence is complete. A version became ready when its change's record was last written; a
+  record holds no time, so the record commit's time is read. The worker orders by the scan in which
+  it first saw each version, so versions readied between the same two scans may land in either
+  order.
+- **moving:** The `ready` changes that need no approval now, one line each, in the same order: `◐`
+  approved, with its checks, waiting on them and the integrator; `✗` a required check failed, named;
+  `✗` a current restack report says a conflict, or `◇` that the restack held, with what the report
+  says. A change is approved when its active version has an integration request at its head.
+  `valley pending` does not count a request that names an earlier head whose approval carries to the
+  active version, so such a version waits under `needs you` until a request names its own head.
+- **Counts:** The drafts and the unrecorded branches ahead of `main` that no landed version's head
+  reaches, with the flags that list them. Older versions of a change are never listed.
+- **Blocks:** `--drafts`, `--branches` and `-v` print blocks. A block's first line is the name, with
+  its head's age and author; under it come the title, then the commits and diff it adds to the
+  nearest listed entry its head contains, or to `main`. A stack is its top, then every entry the top
+  contains, at one indentation, each before the entries it contains; an entry not on the one listed
+  after it says `on <base>`. A block also says `includes <handle>` for an unlanded change its head
+  contains that is not listed, such as a `withdrawn` one, `uncertain` when the version may have
+  landed without its evidence being stored, and what a current restack report says.
+- **Cost:** Reading the checks costs a few seconds for each project with a ready change, and nothing
+  for a project without one. `valley pending` also writes the shell-completion handle cache for the
+  current repository at `<git-common-dir>/valley/handles`.
+
 ```sh
 valley pending
-valley pending [--all] [--repo <name>] [--checks] [--json] [-v] [--known-signers <file>] [--integrator-name <name>]
+valley pending [--all] [--repo <name>] [--checks] [--drafts] [--branches] [--json] [-v] [--known-signers <file>] [--integrator-name <name>]
 ```
 
 - **Flags:**
   - `--all`: Queries every project listed at `refs/the-valley/projects` in the instance repository
     (discovered via `policy/valley` on `origin/main` or `policy/instance/` when the current repo is
-    the instance repo), keeping clones under `$XDG_CACHE_HOME/valley/repos`. If discovery is
-    unavailable and `--repo` is not set, warns on `stderr` and lists the current repository alone.
-  - `--repo <name>`: Queries that one project. When `<name>` matches the current repository, reads
-    the local repository directly without discovery; when passed together with `--all`, `--repo`
-    takes precedence.
-  - `--checks`: Appends a line to each change in human output showing how many checks the composed
-    verification policy requires of it, grouped by `quick` and `slow` cost. Each ready change also
-    gets a line with the state of those checks, as `valley changes --checks` reads it, naming each
-    check that failed: `checks: 18 passed, 1 failed (valley-request)` or
-    `checks: 12 passed, 7 pending`. When the host's worker telemetry holds the version's builds, the
-    line goes on with their [build times](#build-times): the total, the evaluation, each check that
-    grew against its baseline, and each new check, as in
+    the instance repo), keeping clones under `$XDG_CACHE_HOME/valley/repos`, as one listing: each
+    `main` line and row names its project, and the rows of every project share one landing order. A
+    project that cannot be read says so on the first lines. If discovery is unavailable and `--repo`
+    is not set, warns on `stderr` and lists the current repository alone.
+  - `--repo <name>`: Queries that one project, each line naming it. When `<name>` matches the
+    current repository, reads the local repository directly without discovery; when passed together
+    with `--all`, `--repo` takes precedence.
+  - `--checks`: Adds two lines to each row: how many checks the composed verification policy
+    requires of the change, grouped by `quick` and `slow` cost, and the state of those checks, as
+    `valley changes --checks` reads it, naming each check that failed:
+    `checks: 18 passed, 1 failed (valley-request)` or `checks: 12 passed, 7 pending`. When the
+    host's worker telemetry holds the version's builds, the line goes on with their
+    [build times](#build-times): the total, the evaluation, each check that grew against its
+    baseline, and each new check, as in
     `checks: 21 passed in 9m10s (eval 24s); worker-e2e 431s, +100s against its recent 331s`. With
     `--json`, the active version of each ready change carries the same [`checks`](#version-checks)
     object.
+  - `--drafts`, `--branches`: List the drafts, or the branches no change is on, as blocks in place
+    of their count. Each listing stacks its own entries.
   - `--json`: Emits [`valley-pending/v1`](#valley-changesv1-and-valley-pendingv1) JSON. Each change
     in `changes` has an `approved` field.
-  - `-v`: Warns on `stderr` when a project's plan graph (`refs/the-valley/knots`) cannot be read.
+  - `-v`: Follows each row with its block, with its stack drawn in full and its full check state,
+    and warns on `stderr` when a project's plan graph (`refs/the-valley/knots`) cannot be read.
   - `--known-signers <file>`, `--integrator-name <name>`: The known-signers file and the
     integrator's signing name a transfer statement is verified with. Each takes precedence over its
     environment variable and over the host's publication (see
     [Environment variables](#environment-variables)). When either value comes from the publication,
     its `signer-projects` file is read too. While that file names the integrator name, no transfer
     statement is verified. A publication whose `signer-projects` does not read is not used.
-- **Approved changes:** A change is approved when its active version has an integration request at
-  its head. `valley pending` does not count a request that names an earlier head whose approval
-  carries to the active version, so such a version is listed under `ready` until a request names its
-  own head. The `approved` section prints one line for each change: its name, its title, and with
-  `--checks` its check state, as `kqxm  add greeting  checks: 12 passed, 7 pending`. A stack that
-  holds a change still waiting on an approval is drawn in full, with its approved layers marked
-  `(approved)`.
-- **Behavior:** Groups stacked entries under their top entry by commit ancestry, shows linked knots
-  (`<title> · <knot-id>`), marks `includes <handle>` for unlanded non-entry changes (such as
-  `withdrawn` changes) contained in a head, and marks `uncertain` when a version's landing cannot be
-  verified. Also writes the shell-completion handle cache for the current repository at
-  `<git-common-dir>/valley/handles`.
 
 ### `valley changes`
 

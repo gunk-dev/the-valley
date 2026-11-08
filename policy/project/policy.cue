@@ -262,14 +262,15 @@ project: {
 	// attest, the worker and the integrator write its streams, and the CLI
 	// reads and reports with it, so a change to it requires their unit
 	// tests as well as its own. telemetry-e2e drives all of it on a NixOS
-	// machine. module-eval evaluates the module in nix/telemetry.nix, so the
+	// machine; it follows main after a landing, as slow end-to-end checks
+	// do, and gates nothing. module-eval evaluates the module in nix/telemetry.nix, so the
 	// module-eval class requires it for that file. It runs none of the
 	// collector's code, so a change under telemetry/ does not require it.
 	classes: telemetry: {
 		paths: "telemetry/**":       true
 		paths: "nix/telemetry.nix":  true
 		requires: "telemetry-unit":  true
-		requires: "telemetry-e2e":   true
+		follows: "telemetry-e2e":    true
 		requires: "valleyhook-unit": true
 		requires: "attest-unit":     true
 		requires: "valley-go-unit":  true
@@ -278,19 +279,21 @@ project: {
 
 	// The producers and the CLI that record and send telemetry: attest's
 	// progress, the worker's and the workstation's records, and approve,
-	// which runs them. telemetry-e2e observes each over ssh.
+	// which runs them. telemetry-e2e observes each over ssh, and follows main
+	// after a landing.
 	classes: "telemetry-producers": {
 		paths: "attest/progress.go":        true
 		paths: "status/telemetry.go":       true
 		paths: "status/workertelemetry.go": true
 		paths: "bin/valley":                true
-		requires: "telemetry-e2e":          true
+		follows: "telemetry-e2e":           true
 	}
 
 	// The check worker's own code: its pass and its records in status/, the
 	// wake directory it claims, and attest's run, which runs each check a
 	// pass builds, signs and stores the evidence, and reports its progress.
-	// worker-e2e runs those passes on a NixOS machine. The rest of status/
+	// worker-e2e runs those passes on a NixOS machine; it follows main after
+	// a landing, as slow end-to-end checks do, and gates nothing. The rest of status/
 	// and attest/ serves other commands too, and their classes require
 	// their own checks.
 	classes: worker: {
@@ -300,7 +303,7 @@ project: {
 		paths: "attest/run.go":             true
 		paths: "attest/check.go":           true
 		paths: "attest/progress.go":        true
-		requires: "worker-e2e":             true
+		follows: "worker-e2e":              true
 	}
 
 	// The integrator, the end-to-end scenarios under integrator/e2e/, and the
@@ -571,6 +574,7 @@ project: {
 	// follow the scripts out of the hosts in nix/checks/hosts.nix, which
 	// are made of the three declarations named here; ssh-e2e, publish-e2e,
 	// worker-e2e and restack-host-e2e run the module in NixOS machines.
+	// worker-e2e follows main after a landing and gates nothing.
 	classes: "host-module": {
 		paths: "nix/valley-host.nix":          true
 		paths: "nix/checks/hosts.nix":         true
@@ -585,7 +589,7 @@ project: {
 		requires: "identity-e2e":              true
 		requires: "ssh-e2e":                   true
 		requires: "publish-e2e":               true
-		requires: "worker-e2e":                true
+		follows: "worker-e2e":                 true
 		requires: "restack-host-e2e":          true
 		requires: "valley-changes":            true
 	}
@@ -595,7 +599,9 @@ project: {
 	// where it has a file of its own. One class per check, named
 	// check-<name>. prose-format is the floor's check, but its script is
 	// here. own-policy fails if a script under nix/checks/ requires no
-	// check.
+	// check. A class can only require here, so a change to the script or
+	// definition of worker-e2e or telemetry-e2e still builds it before
+	// landing, though a change to the subject it tests only follows.
 	for n in list.Concat([ownChecks, ["prose-format"]]) {
 		classes: ("check-\(n)"): {
 			paths: ("nix/checks/\(n).sh"):  true
@@ -608,6 +614,8 @@ project: {
 	// definitions of a subject's checks, and the helpers and rejection lists
 	// a check is given. cli.nix, which defines every check of bin/valley,
 	// is left to the nix class, as is nix/checks.nix, which wires them all.
+	// This map can only require, so telemetry.nix keeps requiring
+	// telemetry-e2e: a change to its definition builds it before landing.
 	let checkFiles = {
 		"attest.nix": ["attest-unit", "attest-conformance", "attest-e2e"]
 		"telemetry.nix": ["telemetry-unit", "telemetry-e2e"]

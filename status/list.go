@@ -545,7 +545,9 @@ func readSources(list []source, v verifier) []listed {
 func readKnots(repos []listed, verbose bool, stderr io.Writer) {
 	for i := range repos {
 		if repos[i].err == nil {
+			end := phase("knots")
 			repos[i].knots = readDoers(repos[i].g, repos[i].name, verbose, stderr)
+			end()
 		}
 	}
 }

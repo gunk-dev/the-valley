@@ -49,7 +49,9 @@ func runStatus(g git, args []string, stdout, stderr io.Writer) int {
 		// Only the JSON output includes linked knots, so human status
 		// skips reading the plan graph.
 		if s.recorded != nil {
+			end := phase("knots")
 			s.knots = readDoers(g, project(g), verbose, stderr).of(s.recorded.id)
+			end()
 		}
 		return writeJSON(s, stdout, stderr)
 	}

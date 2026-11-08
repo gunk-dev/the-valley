@@ -1395,16 +1395,34 @@ git config --global valley.telemetry true
 git config valley.telemetry.remote origin   # optional; origin is the default
 ```
 
-With `valley.telemetry` true, every approval attempt records its steps: `valley approve`, and each
-`[a]pprove` answer in `valley review`, a stack's layers included. An attempt records its start, the
-policy it derived, which checks origin's evidence covers and who signed that evidence, the checks it
-runs, the request push and its end: `filed`, `refused`, or `interrupted` when the session exits
-during it. Each attempt is a run of its own, so a review that is refused and approved again records
-two runs. Each record carries the CLI's version stamp and executable path, the project, change,
-version and head, and `elapsed_ms`, this machine's wall clock since the attempt began. `attest run`
-records the progress of the checks it runs into the same spool, and writes each check's output to a
-log there. A run whose evidence is all reused records no checks, and its approval is observable all
-the same. Reviewing a change without approving it records nothing.
+With `valley.telemetry` true, every `valley` command records one `command` record (its own run) on
+exit. It carries the project, the CLI's version stamp, `verb`, `subverb` (a `knot` verb or
+`telemetry` operation), `flags` (each known flag name once, never values or anything after `--`),
+`status` (exit status), and `elapsed_ms` (wall time from the start of `bin/valley`), and never an
+argument's value, path, title, or body. A verb `valley-go` runs (`pending`, `status`, `changes`,
+`ready`, `unready`, `withdraw`, `knot`, `plan`, `rebase`, `telemetry`, `self-update`) adds
+`shell_ms` (script time before `valley-go` started, including `pending`'s fetch of origin) and each
+phase's `<phase>_ms` (wall time, excluding nested phases) and `<phase>_procs` (processes started).
+The phases are `fetch` (`ls-remote` and `fetch`), `records` (reading change and outcome records),
+`transfers` (verifying transfer statements), `knots`, `changes` (pending's change states), `checks`
+(pending's check evidence), `policy` (policy at main), `main` (main's follow checks and worker
+runs), `branches` (pending's branches and stacks), and `other`. With telemetry off, `valley-go`
+verbs start no extra process and write no file: `valley-go` reads the git configuration files
+directly and runs `git` only when one mentions telemetry or includes another file. With telemetry
+on, the command runs one `git config` and starts the background flusher. Verbs the script runs
+itself (`review`, `approve`, `checks`, `tail`, `replay`) pass their record on exit to
+`valley-go telemetry command`, which checks configuration the same way.
+
+Every approval attempt also records its steps: `valley approve`, and each `[a]pprove` answer in
+`valley review`, a stack's layers included. An attempt records its start, the policy it derived,
+which checks origin's evidence covers and who signed that evidence, the checks it runs, the request
+push and its end: `filed`, `refused`, or `interrupted` when the session exits during it. Each
+attempt is a run of its own, so a review that is refused and approved again records two runs. Each
+record carries the CLI's version stamp and executable path, the project, change, version and head,
+and `elapsed_ms`, this machine's wall clock since the attempt began. `attest run` records the
+progress of the checks it runs into the same spool, and writes each check's output to a log there. A
+run whose evidence is all reused records no checks, and its approval is observable all the same.
+Reviewing a change without approving it records nothing.
 
 Each run is bound to a destination when it begins: the SSH destination of the checkout's
 `valley.telemetry.remote`, else `origin`, as the remote spells it, `ssh://[user@]host[:port]`. Its
@@ -2844,6 +2862,7 @@ The types:
 | :-------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | check worker          | `pass.start`, `pass.end`, `pass.interrupted` (inferred, at the next pass), `change.seen`, `batch.start`, `batch.end`, `capacity`, `backoff`, `publish.start`, `publish.end`                        |
 | `attest run`          | `run.start`, `run.end`, `eval.start`, `eval.end`, `check.queued`, `check.build-start`, `check.build-end`, `check.start`, `check.result`, `evidence.stored`                                         |
+| any `valley` command  | `command`: the verb, flag names, project, exit status, wall time and, for a verb `valley-go` runs, each phase's time and processes                                                                 |
 | `valley approve`      | `approve.start`, `approve.policy`, `approve.coverage`, `approve.checks`, `approve.request`, `approve.end`                                                                                          |
 | a workstation's flush | `check.output`, a piece of a check's output, shown only with `--logs`                                                                                                                              |
 | integrator            | `decision`: the request, outcome, total duration and stage durations; for a decision made in a pass, also the deciding process and pass and when that process first listed the request at its head |

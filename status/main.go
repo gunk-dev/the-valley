@@ -85,7 +85,12 @@ verified with, ahead of VALLEY_KNOWN_SIGNERS, VALLEY_INTEGRATOR_SIGNER and
 what the serving host publishes at refs/the-valley/signers.`
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	// A verb bin/valley execs this program for records its command record
+	// once it has run (command.go).
+	inv := execed(os.Args[1:])
+	status := run(os.Args[1:], os.Stdout, os.Stderr)
+	inv.record(status, true)
+	os.Exit(status)
 }
 
 // failure is a verb that ends without doing what it was asked: a message
@@ -196,7 +201,7 @@ type git struct {
 // engine is g as the rebase engine runs git: in the same repository and
 // environment, with git's own diagnostics on the same stderr.
 func (g git) engine() rebase.Git {
-	return rebase.Git{Dir: g.dir, Env: g.env, Stderr: g.stderr}
+	return rebase.Git{Dir: g.dir, Env: g.env, Stderr: g.stderr, Phase: phase, Started: processStarted}
 }
 
 // gitEnvironment is the caller's environment with replacement refs off.
@@ -230,6 +235,7 @@ func (g git) output(quiet bool, args ...string) (string, error) {
 
 // input is output with stdin.
 func (g git) input(quiet bool, stdin io.Reader, args ...string) (string, error) {
+	processStarted()
 	cmd := exec.Command("git", args...)
 	cmd.Env = g.env
 	cmd.Dir = g.dir

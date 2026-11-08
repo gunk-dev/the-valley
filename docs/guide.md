@@ -372,17 +372,19 @@ follow lasts at most 300 seconds.
 is marked untrusted and its control characters are escaped. Leave `--logs` off unless the output is
 what you need.
 
-To publish a workstation's approvals and check runs to the host, so a session can see them while
-they run:
+To publish a workstation's commands, approvals and check runs to the host, so a session can see them
+while they run:
 
 ```sh
 git config --global valley.telemetry true
 ```
 
-Each approval attempt, from `valley approve` or from `valley review`, then records its steps and its
-checks' progress in a spool on the workstation, and they are sent in the background to the valley
-the checkout's remote named when the attempt began, and to no other. A host that is down or
-unreachable never slows or fails an approval; `valley telemetry flush` sends what is left later.
+Every `valley` command then records its verb, flag names, project, exit status, and wall time (plus
+each phase's time and processes for `valley pending` and `valley status`), never an argument's
+value, path, title, or body. Each approval attempt from `valley approve` or `valley review` also
+records its steps and check progress. Records wait in a local spool and go in the background to the
+valley named by the checkout's telemetry remote, and to no other. An unreachable host never slows,
+fails, or alters a command's output; `valley telemetry flush` sends what is left later.
 
 ## Planning work with knots
 

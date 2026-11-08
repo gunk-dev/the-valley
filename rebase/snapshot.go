@@ -149,7 +149,9 @@ const snapshotTries = 3
 // still fails is the snapshot's error.
 func ReadSnapshot(ctx context.Context, g Git, v Verifier) (*Snapshot, error) {
 	for try := 1; ; try++ {
+		end := g.phase("fetch")
 		o, err := ListOrigin(ctx, g, InventoryPatterns...)
+		end()
 		if err != nil {
 			return nil, err
 		}
@@ -170,9 +172,13 @@ func fetchSnapshot(ctx context.Context, g Git, o Origin, v Verifier) (*Snapshot,
 			want = append(want, oid)
 		}
 	}
-	if err := Fetch(ctx, g, want...); err != nil {
+	end := g.phase("fetch")
+	err := Fetch(ctx, g, want...)
+	end()
+	if err != nil {
 		return nil, err
 	}
+	defer g.phase("records")()
 	all, unread, err := ReadAll(ctx, g, o)
 	if err != nil {
 		return nil, err
@@ -605,6 +611,7 @@ func (s *Snapshot) repoDir() string {
 // digest is the valley-tree-v1 digest of a commit's tree, from attest,
 // which defines the scheme.
 func (s *Snapshot) digest(oid string) (string, bool) {
+	defer s.g.phase("transfers")()
 	if d, ok := s.digestOf[oid]; ok {
 		return d, d != ""
 	}
@@ -623,6 +630,7 @@ func (s *Snapshot) digest(oid string) (string, bool) {
 // signer projects file restricts is not the integrator's, so nothing
 // signed under it is verified.
 func (s *Snapshot) verified(t transferStatement) bool {
+	defer s.g.phase("transfers")()
 	if s.verify.Resolve != nil {
 		s.verify.Keys, s.verify.Signer, s.verify.SignerProjects = s.verify.Resolve()
 		s.verify.Resolve = nil

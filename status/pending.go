@@ -257,6 +257,7 @@ func writePending(repos []listed, h handleMap, l listing, c *costs, w, stderr io
 	if head {
 		p("\n")
 	}
+	defer phase("branches")()
 	var waiting, moving []*entry
 	var drafts, branches []block
 	nDrafts, nBranches := 0, 0
@@ -264,8 +265,12 @@ func writePending(repos []listed, h handleMap, l listing, c *costs, w, stderr io
 		if r.err != nil {
 			continue
 		}
+		end := phase("changes")
 		view := r.pendingView(h)
+		end()
+		end = phase("checks")
 		r.addChecks(&view, c, stderr)
+		end()
 		wa, mo := r.queue(view, h, l, l.verbose)
 		waiting, moving = append(waiting, wa...), append(moving, mo...)
 		nDrafts, nBranches = nDrafts+len(*view.Drafts), nBranches+len(view.Branches)
@@ -455,8 +460,11 @@ func (r listed) mainState(h handleMap, c *costs, stderr io.Writer, t terminal, n
 	if r.snap.tip == "" {
 		return nil
 	}
+	end := phase("policy")
 	instance, project, done, err := policyLayers(r.g, r.snap.tip)
+	end()
 	defer done()
+	defer phase("main")()
 	if err != nil {
 		fmt.Fprintf(stderr, "valley: %s: the policy at main did not read, so main's state is not shown: %v\n", r.name, err)
 		return nil
@@ -778,6 +786,7 @@ func (s *snapshot) checks(head string) string {
 	if err != nil {
 		return "requires ? (no merge base with main)"
 	}
+	processStarted()
 	cmd := exec.Command(valley, "checks", base, head)
 	cmd.Dir = s.g.dir
 	cmd.Env = s.g.env

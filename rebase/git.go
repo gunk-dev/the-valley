@@ -30,6 +30,29 @@ type Git struct {
 	// command started too, such as ssh. A caller that sets it never lets git
 	// or ssh ask a question: see command.
 	Unattended bool
+
+	// Phase, when set, is told as a read enters one of its parts, and the
+	// func it returns as that part ends: "fetch" (ls-remote and fetch),
+	// "records" (reading what the listing names) and "transfers"
+	// (verifying transfer statements). Started, when set, is told of each
+	// process started. Both only measure, for the caller's telemetry.
+	Phase   func(name string) (end func())
+	Started func()
+}
+
+// phase enters a part of a read, for Phase.
+func (g Git) phase(name string) (end func()) {
+	if g.Phase == nil {
+		return func() {}
+	}
+	return g.Phase(name)
+}
+
+// started counts a process, for Started.
+func (g Git) started() {
+	if g.Started != nil {
+		g.Started()
+	}
 }
 
 // waitDelay is how long a wait for git's output may go on after git has
@@ -56,6 +79,7 @@ var reachesOrigin = map[string]bool{"ls-remote": true, "fetch": true, "push": tr
 // that reads the terminal is stopped. ssh reads the terminal to ask for a
 // passphrase, and git reads it to ask for credentials.
 func (g Git) command(ctx context.Context, args ...string) *exec.Cmd {
+	g.started()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Env, cmd.Dir, cmd.WaitDelay = g.Env, g.Dir, waitDelay
 	if g.Unattended || len(args) == 0 || !reachesOrigin[args[0]] {
@@ -78,6 +102,7 @@ func (g Git) Command(ctx context.Context, args ...string) *exec.Cmd {
 // process group of its own, killed whole once ctx is done, and the wait
 // for its output is bounded as git's is.
 func (g Git) tool(ctx context.Context, name string, args ...string) *exec.Cmd {
+	g.started()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env, cmd.WaitDelay = g.Env, waitDelay
 	ownGroup(cmd)

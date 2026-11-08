@@ -420,6 +420,7 @@ func (r remote) blobs(oids []string) (map[string][]byte, error) {
 	if len(oids) == 0 {
 		return found, nil
 	}
+	processStarted()
 	cmd := exec.Command("git", "cat-file", "--batch")
 	cmd.Env, cmd.Dir = r.g.env, r.g.dir
 	cmd.Stdin = strings.NewReader(strings.Join(oids, "\n") + "\n")

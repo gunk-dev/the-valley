@@ -99,6 +99,30 @@ verb:
 		return nil
 	case "emit":
 		return runEmit(args[1:])
+	case "command":
+		// The command record of a verb bin/valley runs itself, as it
+		// exits: --since <µs> --version <stamp> --status <n> -- <verb> [args].
+		// It exits 0 whatever becomes of the record.
+		var since, version, status string
+		rest := args[1:]
+		for len(rest) > 1 && rest[0] != "--" {
+			switch rest[0] {
+			case "--since":
+				since = rest[1]
+			case "--version":
+				version = rest[1]
+			case "--status":
+				status = rest[1]
+			}
+			rest = rest[2:]
+		}
+		if len(rest) > 0 && rest[0] == "--" {
+			n, err := strconv.Atoi(status)
+			if err == nil {
+				invocationOf(rest[1:], since, version).record(n, false)
+			}
+		}
+		return nil
 	case "flush":
 		return runFlush(g, remote, args[1:], stderr)
 	case telemetry.OpSources, telemetry.OpSnapshot, telemetry.OpRead, telemetry.OpFollow:
@@ -215,20 +239,29 @@ var (
 // (valley.telemetry.remote, else origin), to an ssh destination. A remote
 // that is not reached over ssh is refused.
 func telemetryRemote(g git, remote string) (sshDest, error) {
+	return remoteDest(func(key string) (string, bool) {
+		v, err := g.output(true, "config", "--get", key)
+		return strings.TrimSpace(v), err == nil
+	}, remote)
+}
+
+// remoteDest is telemetryRemote with the checkout's configuration read
+// from config.
+func remoteDest(config func(key string) (string, bool), remote string) (sshDest, error) {
 	if remote == "" {
-		if r, err := g.output(true, "config", "--get", "valley.telemetry.remote"); err == nil && strings.TrimSpace(r) != "" {
-			remote = strings.TrimSpace(r)
+		if r, ok := config("valley.telemetry.remote"); ok && r != "" {
+			remote = r
 		} else {
 			remote = "origin"
 		}
 	}
 	location := remote
 	if !strings.Contains(remote, ":") {
-		u, err := g.output(true, "config", "--get", "remote."+remote+".url")
-		if err != nil || strings.TrimSpace(u) == "" {
+		u, ok := config("remote." + remote + ".url")
+		if !ok || u == "" {
 			return sshDest{}, fmt.Errorf("no remote %s to read telemetry from; name one with --remote", remote)
 		}
-		location = strings.TrimSpace(u)
+		location = u
 	}
 	if strings.Contains(location, "://") {
 		u, err := url.Parse(location)

@@ -48,6 +48,10 @@ unset GIT_REPLACE_REF_BASE GIT_GRAFT_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJ
 VALLEY_STAMP="${VALLEY_VERSION:-}"
 unset VALLEY_VERSION
 
+# When this invocation started, in microseconds, for its command record
+# (valley help telemetry). Reading the clock starts no process.
+TEL_T0="${EPOCHREALTIME/[.,]/}"
+
 die() {
   printf 'valley: %s\n' "$*" >&2
   exit 1
@@ -1113,13 +1117,18 @@ and never run. --json prints the valley-telemetry/v1 answer lines as they
 come. A gap, a cut-short answer or an error is said; an answer that does
 not end exits 1.
 
-With `git config valley.telemetry true`, every approval attempt, from
-approve or from review, records its steps and its checks' progress in an
-owner-only spool for the destination the checkout's telemetry remote names
-when the attempt starts, under $XDG_STATE_HOME/valley/telemetry/spools.
-A background flusher sends each spool to its own destination, with the
-report grant; flush does the same now, and --remote limits it to that
-remote's spool. Telemetry never fails or holds up an approval.
+With `git config valley.telemetry true`, every valley command records a
+command record: its verb (and knot's or telemetry's subverb), the names of
+the flags it was given, its project, its exit status and its wall time,
+and for pending and status the milliseconds and processes each phase took.
+It never records an argument's value, a path, a title or a body. Every
+approval attempt, from approve or from review, also records its steps and
+its checks' progress. Records go to an owner-only spool for the
+destination the checkout's telemetry remote names, under
+$XDG_STATE_HOME/valley/telemetry/spools. A background flusher sends each
+spool to its own destination, with the report grant; flush does the same
+now, and --remote limits it to that remote's spool. Telemetry never fails
+or holds up a command, and changes nothing it prints.
 EOF
 }
 
@@ -1244,7 +1253,8 @@ cmd_pending() {
   command -v valley-go > /dev/null 2>&1 \
     || die "pending needs the valley-go helper; nix run .#valley bundles it"
   fetch_origin
-  VALLEY_COMMAND="$0" exec valley-go pending "$@"
+  VALLEY_COMMAND="$0" VALLEY_TELEMETRY_SINCE="$TEL_T0" VALLEY_TELEMETRY_VERSION="$VALLEY_STAMP" \
+    exec valley-go pending "$@"
 }
 
 # For a change with a record, what is rejected is the head its record
@@ -1695,6 +1705,7 @@ page_buffer() {
 # and no ctrl-C in the pager — leaves any of them behind. The rebase's
 # worktree is valley-go's, which removes it itself.
 cleanup_scratch() {
+  local status=$?
   # An approval attempt still open when the session exits was cut short:
   # by a signal, or by a step that ended the session.
   if [ -n "$TEL_RUN" ]; then tel_end interrupted; fi
@@ -1704,6 +1715,7 @@ cleanup_scratch() {
   cleanup_project_tmp
   cleanup_review_tmp
   cleanup_checks_tmp
+  tel_command "$status"
 }
 
 # A stack's [b]ase all and the rebase verb are one piece of code,
@@ -1968,6 +1980,19 @@ tel() {
 tel_end() {
   tel approve.end --data "result=$1"
   TEL_RUN="" TEL_SPOOL="" TEL_PROJECT="" TEL_CTX=()
+}
+
+# tel_command <status>: the command record of a verb this script runs
+# itself, handed to valley-go as the script exits, once. valley-go decides
+# whether telemetry is on; the verbs this script execs it for it records
+# itself.
+TEL_ARGS=()
+tel_command() {
+  [ ${#TEL_ARGS[@]} -gt 0 ] || return 0
+  local -a args=("${TEL_ARGS[@]}")
+  TEL_ARGS=()
+  valley-go telemetry command --since "$TEL_T0" --version "$VALLEY_STAMP" --status "$1" \
+    -- "${args[@]}" < /dev/null > /dev/null 2>&1 || true
 }
 
 # approve <branch>: one approval attempt, and its telemetry. Every way of
@@ -2508,7 +2533,7 @@ approve_attempt() {
 cmd_go() {
   command -v valley-go > /dev/null 2>&1 \
     || die "$1 needs the valley-go helper; nix run .#valley bundles it"
-  exec valley-go "$@"
+  VALLEY_TELEMETRY_SINCE="$TEL_T0" VALLEY_TELEMETRY_VERSION="$VALLEY_STAMP" exec valley-go "$@"
 }
 
 # A change is named by its full change ID, its handle, or its branch.
@@ -3550,7 +3575,8 @@ cmd_rebase() {
   command -v valley-go > /dev/null 2>&1 \
     || die "review, approve and rebase read the change's record with the valley-go helper; nix run .#valley bundles it"
   fetch_origin
-  exec valley-go rebase "${verify[@]}" "$name"
+  VALLEY_TELEMETRY_SINCE="$TEL_T0" VALLEY_TELEMETRY_VERSION="$VALLEY_STAMP" \
+    exec valley-go rebase "${verify[@]}" "$name"
 }
 
 # tail and replay are thin wrappers over the nats CLI — anything they do,
@@ -4394,7 +4420,7 @@ cmd_checks() {
       || die "$head and ${target#refs/} do not share history — name a base"
   fi
 
-  trap 'cleanup_policy_tmp; cleanup_instance_tmp; cleanup_project_tmp' EXIT
+  trap 'tel_command $?; cleanup_policy_tmp; cleanup_instance_tmp; cleanup_project_tmp' EXIT
   # Each layer is resolved only when nobody named one. --instance and
   # --project are a reader pointing this at a layer on purpose, and
   # honouring that means not fetching the repository, and not reading the
@@ -4539,6 +4565,12 @@ main() {
         cmd_help "$verb"
         return
       fi
+      ;;
+  esac
+  case "$verb" in
+    review | approve | checks | tail | replay)
+      TEL_ARGS=("$verb" "$@")
+      trap 'tel_command $?' EXIT
       ;;
   esac
   case "$verb" in

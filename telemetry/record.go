@@ -100,6 +100,8 @@ var recordTypes = map[string]bool{
 	// valley approve (bin/valley), on a workstation.
 	"approve.start": true, "approve.policy": true, "approve.coverage": true,
 	"approve.checks": true, "approve.request": true, "approve.end": true,
+	// One valley invocation, on a workstation (status/command.go).
+	"command": true,
 	// The integrator (integrator/timing.go).
 	"decision": true,
 	// The collector, about a report.
@@ -109,6 +111,9 @@ var recordTypes = map[string]bool{
 // ClientType reports whether a report may carry records of type t: what a workstation or a
 // remote component says about its own runs.
 func ClientType(t string) bool {
+	if t == "command" {
+		return true
+	}
 	for _, prefix := range []string{"approve.", "run.", "eval.", "check.", "evidence."} {
 		if strings.HasPrefix(t, prefix) {
 			return recordTypes[t]

@@ -49,6 +49,7 @@ type origin struct {
 // listOrigin takes one snapshot of origin's refs matching the patterns, as
 // the rebase engine reads origin.
 func listOrigin(g git, patterns ...string) (origin, error) {
+	defer phase("fetch")()
 	o, err := rebase.ListOrigin(context.Background(), g.engine(), patterns...)
 	return origin{refs: o.Refs}, err
 }
@@ -69,12 +70,14 @@ func (o origin) handle(id string) string { return o.engine().Handle(id) }
 // fetch brings the objects named into this checkout's object store, as
 // the rebase engine fetches them: by ID, without moving a ref.
 func fetch(g git, oids ...string) error {
+	defer phase("fetch")()
 	return rebase.Fetch(context.Background(), g.engine(), oids...)
 }
 
 // readRecord reads the record a record commit holds. The commit must have
 // been fetched.
 func readRecord(g git, commit string) (*change.Record, error) {
+	defer phase("records")()
 	return rebase.ReadRecord(context.Background(), g.engine(), commit)
 }
 
@@ -326,6 +329,7 @@ func runVersions(g git, args []string, w io.Writer) error {
 // the rebase engine reads them (rebase.ReadAll). A record that does not
 // read is kept apart, in unread, and is no change for any reader.
 func readAll(g git, o origin) (all []recorded, unread []unreadRecord, err error) {
+	defer phase("records")()
 	read, bad, err := rebase.ReadAll(context.Background(), g.engine(), o.engine())
 	for _, u := range bad {
 		unread = append(unread, unreadRecord{ref: u.Ref, commit: u.Commit, why: u.Why})

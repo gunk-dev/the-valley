@@ -25,7 +25,10 @@
 # published, with alice's CLI version and her own timestamps. An approval
 # reusing the worker's evidence beside a local command check, and one
 # reusing everything, are observable too, and so is the integrator's
-# decision.
+# decision. Every command she runs records its verb, its flag names, its
+# exit status, its time and, for pending, its phases, and never an
+# argument's value; with telemetry off it records nothing and writes no
+# spool, and with the host unreachable it prints and exits as it does off.
 #
 # Last, outage: with the collector stopped, and with the telemetry remote
 # unreachable, approvals and pushes still complete, within a bounded
@@ -618,6 +621,33 @@ in
           ends = [r for r in records(ls, type="approve.end") if r["head"] == head_down]
           assert len(ends) == 1 and ends[0]["data"]["result"] == "filed", ends
           assert not [r for r in of(ls, "record") if r.get("head") == head_away], "a run bound to another destination reached this one"
+
+      with subtest("every command records its verb, flags, status, time and phases, never a value, and only with telemetry on"):
+          def commands(verb):
+              # Only origin's spool: the outage left one bound to 192.0.2.1.
+              as_alice("valley telemetry --remote origin flush")
+              ls = observe("read --source=report.alice --limit=1000")
+              return ls, [r for r in records(ls, type="command") if r["data"]["verb"] == verb]
+          as_alice("valley pending --json > /tmp/on.json")
+          as_alice("valley status --json zx81q-secret", check=False)
+          ls, pending = commands("pending")
+          d = pending[-1]["data"]
+          assert d["status"] == 0 and d["flags"] == ["--json"] and pending[-1].get("project"), pending[-1]
+          assert d["elapsed_ms"] >= d["fetch_ms"] > 0 and d["fetch_procs"] > 0 and "records_ms" in d, d
+          named = [r for r in records(ls, type="command") if r["data"]["verb"] == "status"]
+          assert named and named[-1]["data"]["status"] == 1 and named[-1]["data"]["flags"] == ["--json"], named
+          assert "zx81q" not in json.dumps(ls), "an argument's value reached the report stream"
+          # Off: no record, and no spool file, under a state home of its own.
+          as_alice("git config --unset valley.telemetry")
+          off = as_alice("XDG_STATE_HOME=/tmp/alice-off valley pending --json > /tmp/off.json"
+                         " && XDG_STATE_HOME=/tmp/alice-off valley status --json zx81q-secret; echo $?")
+          host.fail("test -e /tmp/alice-off")
+          assert len(commands("pending")[1]) == len(pending)
+          # Unreachable: the same output and exit status as off.
+          as_alice("git config valley.telemetry true && git config valley.telemetry.remote ssh://git@192.0.2.1/project.git")
+          away = as_alice("valley pending --json > /tmp/away.json && valley status --json zx81q-secret; echo $?")
+          as_alice("git config --unset valley.telemetry.remote")
+          assert away == off and host.succeed("cat /tmp/away.json") == host.succeed("cat /tmp/off.json"), (away, off)
 
       with subtest("the server holds every request to its limits"):
           big = '{"type":"approve.start","time":"2026-01-01T00:00:00.000Z","client_id":"0123456789abcdef:1","data":{"x":"' + "y" * 20000 + '"}}'

@@ -72,7 +72,6 @@ import (
 	"os"
 	"os/exec"
 	"path"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -81,67 +80,11 @@ import (
 	"the-valley/note"
 )
 
-const coverageUsage = "usage: valley-go coverage --head <sha> [--check <name>=<attribute>]..."
-
 const predicatePure = "the-valley/check/pure/v1"
-
-// checkName is a check's name or flake attribute as the policy schema
-// admits one (#Name in schema/verification.cue).
-var checkName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 // nixCheck is one required check the nix runner runs: its name, and the
 // flake attribute the policy builds it from.
 type nixCheck struct{ name, attribute string }
-
-func runCoverage(g git, args []string, w, stderr io.Writer) error {
-	var head string
-	var checks []nixCheck
-	for i := 0; i < len(args); i++ {
-		opt, value, inline := strings.Cut(args[i], "=")
-		if opt != "--head" && opt != "--check" {
-			return failure(coverageUsage)
-		}
-		if !inline {
-			if i+1 == len(args) {
-				return failure(coverageUsage)
-			}
-			i++
-			value = args[i]
-		}
-		if opt == "--head" {
-			head = value
-			continue
-		}
-		name, attribute, ok := strings.Cut(value, "=")
-		if !ok || !checkName.MatchString(name) || !checkName.MatchString(attribute) {
-			return failure(fmt.Sprintf("--check %q: expected <name>=<attribute>", value))
-		}
-		checks = append(checks, nixCheck{name, attribute})
-	}
-	if head == "" {
-		return failure(coverageUsage)
-	}
-	e, err := coverageOf(g, head, checks, stderr)
-	if err != nil {
-		return err
-	}
-	var lines []string
-	lines = append(lines, "digest "+e.digest)
-	for _, ref := range e.stored {
-		lines = append(lines, "stored "+ref+" "+e.listed[ref])
-	}
-	for _, c := range checks {
-		if by, ok := e.covered[c.name]; ok {
-			lines = append(lines, "covered "+c.name+" "+by)
-		} else if by, ok := e.failed[c.name]; ok {
-			lines = append(lines, "failed "+c.name+" "+by)
-		} else {
-			lines = append(lines, "missing "+c.name)
-		}
-	}
-	_, err = io.WriteString(w, strings.Join(lines, "\n")+"\n")
-	return err
-}
 
 // evidence is what coverage reads of a head's tree on origin: the tree's
 // digest, every attestation ref origin holds for it, in order, with the

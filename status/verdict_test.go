@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
@@ -80,8 +81,8 @@ func TestVerdictPrompt(t *testing.T) {
 func TestVerdictChecking(t *testing.T) {
 	v := verdict{name: "nqyw", version: "3", required: 3, passed: 1, target: "main"}
 	var out, errs bytes.Buffer
-	pass := []string{"sh", "-c", `echo "check   a nix passed"; echo "check   b nix passed"; echo "stored refs/x -> y"`}
-	if status := v.checking([]string{"a", "b"}, pass, false, &out, &errs); status != 0 {
+	pass := exec.Command("sh", "-c", `echo "check   a nix passed"; echo "check   b nix passed"; echo "stored refs/x -> y"`)
+	if status := v.checking([]string{"a", "b"}, pass, false, &out, &errs, nil, nil); status != 0 {
 		t.Fatalf("a passing run exited %d", status)
 	}
 	if out.String() != "◐ nqyw v3  checking 2 checks: a, b\n" || errs.Len() != 0 {
@@ -90,8 +91,8 @@ func TestVerdictChecking(t *testing.T) {
 
 	out.Reset()
 	errs.Reset()
-	fail := []string{"sh", "-c", `echo "check   a nix passed"; echo "check   b nix failed"; echo; echo "--- b ---"; echo "b: build log"; echo boom; exit 1`}
-	if status := v.checking([]string{"a", "b"}, fail, false, &out, &errs); status != 1 {
+	fail := exec.Command("sh", "-c", `echo "check   a nix passed"; echo "check   b nix failed"; echo; echo "--- b ---"; echo "b: build log"; echo boom; exit 1`)
+	if status := v.checking([]string{"a", "b"}, fail, false, &out, &errs, nil, nil); status != 1 {
 		t.Fatalf("a failing run exited %d", status)
 	}
 	got := errs.String()

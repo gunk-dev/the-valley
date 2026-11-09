@@ -283,46 +283,23 @@ func runResolve(g git, args []string, w io.Writer) error {
 	return err
 }
 
-// runVersions prints every version of a change, for bin/valley's approve,
-// which approves exactly one head of a change and refuses a head no
-// version records. One line each, in order, of fields separated by tabs:
-//
-//	<n> <head> <state> <title>
-//
-// with the head as a full object ID and the change's state as its record
-// says it, on every line. The title is last, since it may hold spaces; it
-// holds no tab, which is a control character. It fails when origin holds
-// no record of the change.
-func runVersions(g git, args []string, w io.Writer) error {
-	if len(args) != 1 || !change.ValidID(args[0]) {
-		return failure("usage: valley-go versions <change ID>")
-	}
-	id := args[0]
-	if !g.succeeds(true, "rev-parse", "--git-dir") {
-		return failure("not a git repository")
-	}
+// versionsOf reads a change's record from origin, for approve, which
+// approves exactly one head of a change and refuses a head no version
+// records. It fails when origin holds no record of the change.
+func versionsOf(g git, id string) (*change.Record, error) {
 	ref := change.Ref(recordTarget, id)
 	o, err := listOrigin(g, ref)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	commit := o.refs[ref]
 	if commit == "" {
-		return failure("origin holds no record of change " + id)
+		return nil, failure("origin holds no record of change " + id)
 	}
 	if err := fetch(g, commit); err != nil {
-		return err
+		return nil, err
 	}
-	r, err := readRecord(g, commit)
-	if err != nil {
-		return err
-	}
-	var b strings.Builder
-	for _, v := range r.Versions {
-		fmt.Fprintf(&b, "%d\t%s\t%s\t%s\n", v.N, headOf(v), r.State, v.Title)
-	}
-	_, err = io.WriteString(w, b.String())
-	return err
+	return readRecord(g, commit)
 }
 
 // readAll reads every record origin holds, in the order of their IDs, as

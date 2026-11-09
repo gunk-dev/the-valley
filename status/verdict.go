@@ -36,12 +36,7 @@ import (
 	"time"
 )
 
-const verdictUsage = `usage: valley-go verdict approved|refused|unknown --name <name> [--version <n>] [<fact>]...
-       valley-go verdict checking --name <name> [--version <n>] [--of <n>] [--passed <n>] [-v] --check <name>... -- <command>...
-       valley-go verdict prompt <clause>... -- <key>...
-facts: --required <n> --passed <n> --took <duration> --waiting <check> --worker
-       --failed <check> --why <obstruction> --run <command> --see <command>
-       --then <text> --target <branch>`
+const promptUsage = "usage: valley-go verdict prompt <clause>... -- <key>..."
 
 // The SGR colours of the verdict glyphs, as plan shows its states.
 const (
@@ -69,89 +64,14 @@ type verdict struct {
 	then     string // what the person does next, when it is no command
 }
 
+// runVerdict prints review's prompt.
 func runVerdict(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		fmt.Fprintln(stderr, verdictUsage)
+	if len(args) == 0 || args[0] != "prompt" {
+		fmt.Fprintln(stderr, promptUsage)
 		return 2
 	}
-	if args[0] == "prompt" {
-		header, keys, _ := cutArgs(args[1:])
-		fmt.Fprint(stdout, promptLines(terminalOf(stdout), header, keys))
-		return 0
-	}
-	v := verdict{outcome: args[0], target: "main", required: -1, passed: -1}
-	var checks, command []string
-	verbose := false
-	args, command, _ = cutArgs(args[1:])
-	for i := 0; i < len(args); i++ {
-		flag := args[i]
-		if flag == "--worker" || flag == "-v" {
-			v.worker = v.worker || flag == "--worker"
-			verbose = verbose || flag == "-v"
-			continue
-		}
-		if i+1 == len(args) {
-			fmt.Fprintln(stderr, verdictUsage)
-			return 2
-		}
-		i++
-		value := args[i]
-		var err error
-		switch flag {
-		case "--name":
-			v.name = value
-		case "--version":
-			v.version = value
-		case "--target":
-			v.target = value
-		case "--required", "--of":
-			v.required, err = strconv.Atoi(value)
-		case "--passed":
-			v.passed, err = strconv.Atoi(value)
-		case "--took":
-			v.took = value
-		case "--waiting":
-			v.waiting = append(v.waiting, value)
-		case "--failed":
-			v.failed = append(v.failed, value)
-		case "--check":
-			checks = append(checks, value)
-		case "--why":
-			v.why = value
-		case "--run":
-			v.run = value
-		case "--see":
-			v.see = value
-		case "--then":
-			v.then = value
-		default:
-			err = fmt.Errorf("unknown flag %s", flag)
-		}
-		if err != nil {
-			fmt.Fprintf(stderr, "valley: %v\n%s\n", err, verdictUsage)
-			return 2
-		}
-	}
-	if v.name == "" {
-		fmt.Fprintln(stderr, verdictUsage)
-		return 2
-	}
-	switch v.outcome {
-	case "approved", "unknown":
-		fmt.Fprint(stdout, v.lines(terminalOf(stdout)))
-	case "refused":
-		fmt.Fprint(stderr, v.lines(terminalOf(stderr)))
-		return 1
-	case "checking":
-		if len(command) == 0 || len(checks) == 0 {
-			fmt.Fprintln(stderr, verdictUsage)
-			return 2
-		}
-		return v.checking(checks, command, verbose, droppable(stdout), droppable(stderr))
-	default:
-		fmt.Fprintln(stderr, verdictUsage)
-		return 2
-	}
+	header, keys := cutArgs(args[1:])
+	fmt.Fprint(stdout, promptLines(terminalOf(stdout), header, keys))
 	return 0
 }
 
@@ -178,13 +98,13 @@ func droppable(w io.Writer) io.Writer {
 }
 
 // cutArgs splits args at the first "--".
-func cutArgs(args []string) (before, after []string, found bool) {
+func cutArgs(args []string) (before, after []string) {
 	for i, a := range args {
 		if a == "--" {
-			return args[:i], args[i+1:], true
+			return args[:i], args[i+1:]
 		}
 	}
-	return args, nil, false
+	return args, nil
 }
 
 // lines is the verdict: its line, and the action line under it when there
@@ -305,14 +225,16 @@ const (
 	logKept = 2000
 )
 
-// checking runs command, attest run over the checks named, in order. On a
+// checking runs cmd, attest run over the checks named, in order. On a
 // terminal one line says which check is building and for how long, and is
 // redrawn in place; in a pipe one line says the checks started. The
 // command's own output is kept back, unless verbose, and when a check
 // fails the end of its log is shown and the refusal follows. On success
 // nothing more is printed: approve has not filed yet, and its verdict
-// follows. The status is the command's.
-func (v verdict) checking(checks, command []string, verbose bool, stdout, stderr io.Writer) int {
+// follows. The status is the command's. started, when given, is told of
+// the process once it runs. Nothing is said of a run that SIGINT or
+// SIGTERM ended, or that stopped, when given, reports was stopped.
+func (v verdict) checking(checks []string, cmd *exec.Cmd, verbose bool, stdout, stderr io.Writer, started func(*os.Process), stopped func() bool) int {
 	t := terminalOf(stdout)
 	began := time.Now()
 	of := v.required
@@ -324,8 +246,6 @@ func (v verdict) checking(checks, command []string, verbose bool, stdout, stderr
 		done = of - len(checks)
 	}
 
-	cmd := exec.Command(command[0], command[1:]...)
-	cmd.Stdin = os.Stdin
 	var mu sync.Mutex
 	var output []string
 	reported, failed := 0, []string(nil)
@@ -400,7 +320,13 @@ func (v verdict) checking(checks, command []string, verbose bool, stdout, stderr
 		}()
 		cleanup = append([]func(){func() { close(stop); <-ticked; fmt.Fprint(stdout, "\r\x1b[K") }}, cleanup...)
 	}
-	err := cmd.Run()
+	err := cmd.Start()
+	if err == nil {
+		if started != nil {
+			started(cmd.Process)
+		}
+		err = cmd.Wait()
+	}
 	for _, f := range cleanup {
 		f()
 	}
@@ -410,6 +336,20 @@ func (v verdict) checking(checks, command []string, verbose bool, stdout, stderr
 	status := 1
 	if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() > 0 {
 		status = exit.ExitCode()
+	} else if ok {
+		// A command a signal ended exits as a shell reports it, 128 and
+		// the signal's number. One that SIGINT or SIGTERM ended was
+		// stopped, as the person's ctrl-C stops every process in the
+		// terminal's foreground, this one with it.
+		if ws, ok := exit.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			status = 128 + int(ws.Signal())
+			if ws.Signal() == syscall.SIGINT || ws.Signal() == syscall.SIGTERM {
+				return status
+			}
+		}
+	}
+	if stopped != nil && stopped() {
+		return status
 	}
 	if !verbose {
 		fmt.Fprint(stderr, failedLogs(output, failed))

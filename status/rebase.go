@@ -539,52 +539,35 @@ func readyCommand(head, id, branch string) string {
 	return "valley ready --head " + head + " --change " + id + " " + shellQuote(branch)
 }
 
-// runBrings prints each change that has not landed, other than the one
-// --change names, with a version head among the commits a head would
-// bring to main: those it reaches and main does not. One handle a line,
-// in the order of the changes' IDs. approve refuses a head that does not
-// fast-forward from main and would bring one, since it is a layer of a
-// stack that has to be rebased first.
-func runBrings(g git, args []string, w io.Writer) error {
-	const usage = "usage: valley-go brings [--change <id>] <head>"
-	var except, head string
-	for i := 0; i < len(args); i++ {
-		switch {
-		case args[i] == "--change" && i+1 < len(args):
-			except = args[i+1]
-			i++
-		case head == "" && isObjectID(args[i]):
-			head = args[i]
-		default:
-			return failure(usage)
-		}
-	}
-	if head == "" {
-		return failure(usage)
-	}
+// bringsOf is the handle of each change that has not landed, other than
+// except, with a version head among the commits head would bring to
+// main: those it reaches and main does not, in the order of the changes'
+// IDs. approve refuses a head that does not fast-forward from main and
+// would bring one, since it is a layer of a stack that has to be rebased
+// first.
+func bringsOf(g git, except, head string) ([]string, error) {
 	if !g.succeeds(true, "cat-file", "-e", head+"^{commit}") {
-		return failure("no commit " + head + " here")
+		return nil, failure("no commit " + head + " here")
 	}
 	s, err := readSnapshot(g, newVerifier())
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if s.tip == "" {
-		return failure("origin has no " + recordTarget + " to read against")
+		return nil, failure("origin has no " + recordTarget + " to read against")
 	}
 	reach := s.reach(head)
-	var b strings.Builder
+	var handles []string
 	for _, n := range s.all {
 		if n.id == except || !unlanded(s, n) {
 			continue
 		}
 		for _, v := range n.record.Versions {
 			if reach[headOf(v)] {
-				fmt.Fprintln(&b, s.o.handle(n.id))
+				handles = append(handles, s.o.handle(n.id))
 				break
 			}
 		}
 	}
-	_, err = io.WriteString(w, b.String())
-	return err
+	return handles, nil
 }

@@ -1676,28 +1676,28 @@ A project's required checks come from three CUE layers, unified as
 Both layers are read from integrated tips, never from the change being judged
 (`integrator/policy.go`, `composed/composed.go`). A path class maps path globs to checks. A change
 requires the union of the checks of every class one of its paths matches. A path no class matches
-requires the `unclassified` checks. `valley checks` and the integrator get this answer from the Go
-deriver, and approval from the Bash deriver in `bin/valley`. Both diff with renames counted on both
-sides. Checked by `policy-deriver`, `cue-vet` and `integrator-unit`.
+requires the `unclassified` checks. `valley checks`, approval and the integrator get this answer
+from the Go deriver (`derive/`), which diffs with renames counted on both sides. Checked by
+`policy-deriver`, `cue-vet` and `integrator-unit`.
 
 A layer's documents are the entries bash's glob `"$dir"/*.cue` names. The directory is a name and
 never a pattern, so a directory named `policy[1]` is read, and `policy1` is not. A name beginning
 with a dot is not a document. Checked by `derive-unit`.
 
-A glob matches bytes. The Go deriver compares bytes, and the Bash deriver approval runs
-(`derive_required`) derives in the C locale, whatever locale it is run in. So `?` matches one byte,
-and `?.md` does not match `é.md`, whose `é` is two bytes. A path holding a byte that is not UTF-8
-matches a glob like any other path. Under a UTF-8 locale, bash's regular expressions would match
-characters, and such a path would match no glob, not even `**`. The checks a change requires would
-then depend on the locale of the operator's shell or the integrator's unit. Checked by
-`derive-unit`.
+A glob matches bytes. The Go deriver compares bytes, and the Bash deriver in `bin/valley`
+(`derive_required`), which `derive-unit` holds to the Go deriver's answer, derives in the C locale,
+whatever locale it is run in. So `?` matches one byte, and `?.md` does not match `é.md`, whose `é`
+is two bytes. A path holding a byte that is not UTF-8 matches a glob like any other path. Under a
+UTF-8 locale, bash's regular expressions would match characters, and such a path would match no
+glob, not even `**`. The checks a change requires would then depend on the locale of the operator's
+shell or the integrator's unit. Checked by `derive-unit`.
 
 The derivation fails closed. A failed read of the diff, the target, a policy layer or the composed
-policy makes `valley checks` exit non-zero and print no report, and refuses the integrator's
-evaluation of the change. Without that, the failure would read as an empty list, and an empty list
-derives a change that requires nothing. The integrator believes a derivation of no changed paths
-only when git agrees that the two trees are the same. Checked by `policy-deriver`, `valley-request`
-and `integrator-unit`.
+policy makes `valley checks` exit non-zero and print no report, refuses the approval, and refuses
+the integrator's evaluation of the change. Without that, the failure would read as an empty list,
+and an empty list derives a change that requires nothing. The integrator believes a derivation of no
+changed paths only when git agrees that the two trees are the same. Checked by `policy-deriver`,
+`valley-request` and `integrator-unit`.
 
 A policy cannot forge a line of what it renders. The Bash deriver reads the composed policy as lines
 of tab-separated fields, and the policy's own strings are fields of those lines. A newline in one
@@ -1707,14 +1707,15 @@ class and check names. The Bash deriver also refuses a rendered line holding one
 second line for anything the policy states once, such as a class's carry mode or a class's
 requirement of a check. Checked by `cue-vet` and `policy-deriver`.
 
-A second deriver is written in Go (`derive/`). `valley checks`, `valley pending`, the check worker
-and the integrator run it, and approval runs the one in `bin/valley`. It reads the whole composed
-policy through `composed.Read` (`composed/model.go`): every class's paths, requirements and carry
-mode, the `unclassified` set, and each check's runner, cost and validity. It asks cue whether each
-requirement is mandatory the way the Bash deriver asks: it vets the layers with a document setting
-that requirement to `false`. It reads a diff as the Bash deriver does, with renames counted on both
-sides, and keeps every path whole, whatever bytes it holds. It matches globs byte by byte, as the
-Bash deriver does. It reads a layer's documents as the Bash deriver does. Checked by `derive-unit`.
+A second deriver is written in Go (`derive/`). `valley checks`, `valley pending`, approval, the
+check worker and the integrator run it, and no verb runs the one in `bin/valley`. It reads the whole
+composed policy through `composed.Read` (`composed/model.go`): every class's paths, requirements and
+carry mode, the `unclassified` set, and each check's runner, cost and validity. It asks cue whether
+each requirement is mandatory the way the Bash deriver asks: it vets the layers with a document
+setting that requirement to `false`. It reads a diff as the Bash deriver does, with renames counted
+on both sides, and keeps every path whole, whatever bytes it holds. It matches globs byte by byte,
+as the Bash deriver does. It reads a layer's documents as the Bash deriver does. Checked by
+`derive-unit`.
 
 The integrator reads the composed policy through `composed.ReadUnpinned`, which asks cue nothing
 about whether a requirement is mandatory, because the integrator never reads that. It reads it once
@@ -1731,7 +1732,7 @@ the Bash deriver under the C, `C.UTF-8` and `en_US.UTF-8` locales, with the laye
 named like glob patterns. Every global of the Bash derivation must equal the Go answer: the
 documents composed, the changed paths, the classes matched, the carry mode, the unclassified paths,
 and each required check's classes, pin, runner, attribute, command and cost. The two derivers differ
-in three places, where the Bash deriver is wrong and `valley checks` gives the Go deriver's answer:
+in three places, where the Bash deriver is wrong and every verb gives the Go deriver's answer:
 
 - The Bash deriver splits a path holding a newline into two paths.
 - A class added by refining `policy` may require a check no layer defines, because the schema's
@@ -2257,11 +2258,10 @@ pushes every layer's branch in one atomic push, with a lease on each.
 
 Evidence on `origin` comes from a check worker (see [The check worker](#the-check-worker)) or from
 an earlier approval. Approval reuses eligible `nix` evidence and leaves uncovered `nix` checks
-unbuilt unless `--build-here` is set. Approval reads the evidence with `valley-go coverage`
-(`status/coverage.go`). It lists `origin`'s attestation refs for the head's tree and fetches the
-objects they name. It reads the notes from those objects byte for byte, as the integrator reads
-them. A local ref that was never published does not count. A listing or a fetch that fails ends the
-approval, and nothing runs.
+unbuilt unless `--build-here` is set. Approval reads the evidence as `status/coverage.go` reads it.
+It lists `origin`'s attestation refs for the head's tree and fetches the objects they name. It reads
+the notes from those objects byte for byte, as the integrator reads them. A local ref that was never
+published does not count. A listing or a fetch that fails ends the approval, and nothing runs.
 
 Approval judges each required `nix` check by the note the integrator judges it by: the first note
 for the check that verifies under the `known-signers` file the host publishes (see
@@ -2609,9 +2609,9 @@ branch's tip on origin is another commit than the active version's head, and the
 commits. `[r]eject` deletes the branch under a lease on the recorded head. `approve`, `rebase`, and
 `review`'s `[a]pprove` refuse a change whose record is not `ready`, and the refusal names its state.
 `review` does not offer `[a]pprove` for a change that is not ready when it shows it.
-`valley-go resolve` gives these verbs the change's ID, handle, active version, recorded head,
-branch, state and owner on one line, `valley-go versions` lists every version, for `approve`, and
-`valley-go standing` says where a change stands now, for `review`.
+`valley-go resolve` gives `review` the change's ID, handle, active version, recorded head, branch,
+state and owner on one line, and `valley-go standing` says where a change stands now. `approve` and
+`rebase` read the record themselves (`status/approve.go`, `status/rebase.go`).
 
 The record can change while one of these verbs runs. Another principal may unready or withdraw the
 change, or ready a new version, while a review is open or the checks run. So `approve` reads the

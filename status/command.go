@@ -83,10 +83,16 @@ type invocation struct {
 // own.
 func execed(args []string) *invocation {
 	since, version := os.Getenv("VALLEY_TELEMETRY_SINCE"), os.Getenv("VALLEY_TELEMETRY_VERSION")
+	producerStamp = version
 	os.Unsetenv("VALLEY_TELEMETRY_SINCE")
 	os.Unsetenv("VALLEY_TELEMETRY_VERSION")
 	return invocationOf(args, since, version)
 }
+
+// stamp is bin/valley's version, which bin/valley passes as
+// VALLEY_TELEMETRY_VERSION, or "" for a script run from a checkout. It
+// names the producer of an approval's records (approve.go).
+var producerStamp string
 
 // invocationOf is an invocation started at since, in microseconds of the
 // Unix epoch as bash's EPOCHREALTIME reads with its point removed.
@@ -316,8 +322,14 @@ func gitDirs() ([]string, bool) {
 
 // startFlusher sends the spools in the background, in a session of its
 // own, so the command neither waits for the host nor takes it down on
-// exit.
+// exit. One process starts one flusher.
 func startFlusher() {
+	flusherOnce.Do(flushInBackground)
+}
+
+var flusherOnce sync.Once
+
+func flushInBackground() {
 	exe, err := os.Executable()
 	if err != nil {
 		return

@@ -66,15 +66,13 @@ const usage = `usage: valley-go status [--json] [-v] <change>
        valley-go does [-v] <change ID>...
        valley-go checkline <change ID>...
        valley-go rebase [--head <sha>] <change>
-       valley-go brings [--change <id>] <head>
-       valley-go versions <change ID>
        valley-go standing <change ID>
        valley-go compare [-v] --tip <commit> <change ID> <version> <head>
        valley-go carry <change ID> <version shown> <later version>
        valley-go style [--paged] < page
        valley-go checks [--schema <file>] --instance <dir> --project <dir> <base> <head>
-       valley-go coverage --head <sha> [--check <name>=<attribute>]...
-       valley-go verdict approved|refused|unknown|checking|prompt [args]
+       valley-go approve [-v] [--head <sha>] [--build-here] <change>
+       valley-go verdict prompt <clause>... -- <key>...
        valley-go work --repo <name>... --key <file> [--name <name>] [--state <dir>]
        valley-go changes --json [--all] [--repo <name>] [-v]
        valley-go pending [--json] [--all] [--repo <name>] [--checks] [-v]
@@ -93,6 +91,10 @@ func main() {
 	// A verb bin/valley execs this program for records its command record
 	// once it has run (command.go).
 	inv := execed(os.Args[1:])
+	exitWith = func(status int) {
+		inv.record(status, true)
+		os.Exit(status)
+	}
 	status := run(os.Args[1:], os.Stdout, os.Stderr)
 	inv.record(status, true)
 	os.Exit(status)
@@ -142,10 +144,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runCheckLine(g, args, stdout, stderr)
 	case "rebase":
 		return runRebase(g, args, stdout, stderr)
-	case "brings":
-		err = runBrings(g, args, stdout)
-	case "versions":
-		err = runVersions(g, args, stdout)
 	case "standing":
 		err = runStanding(g, args, stdout)
 	case "compare":
@@ -156,8 +154,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runStyle(args, os.Stdin, stdout)
 	case "checks":
 		err = runChecks(g, args, stdout)
-	case "coverage":
-		err = runCoverage(g, args, stdout, stderr)
+	case "approve":
+		return runApprove(g, args, stdout, stderr)
 	case "verdict":
 		return runVerdict(args, stdout, stderr)
 	case "changes":

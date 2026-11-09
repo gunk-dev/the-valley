@@ -244,10 +244,10 @@ that names it. A missing ref is missing:
   owning valley's `refs/heads/main` names (`status/worker.go`). `valley ready --stamp` finds no
   local branch when the one it names is missing (`status/ready.go`).
 - `valley review`, `valley approve` and `valley checks` read `origin/main` and the change's branch
-  by their exact names (`bin/valley`). approve reads `origin/main` once, and reads the merge base
-  and both policy layers at that commit. The floor is fetched at the commit the owning valley's
-  `refs/heads/main` names. A request ref missing on origin is missing, whatever a branch named like
-  it holds.
+  by their exact names (`bin/valley`, `status/approve.go`, `status/checks.go`). approve reads
+  `origin/main` once, and reads the merge base and both policy layers at that commit. The floor is
+  fetched at the commit the owning valley's `refs/heads/main` names. A request ref missing on origin
+  is missing, whatever a branch named like it holds.
 
 The identity compiler, the integrator and the restacker refuse a configured ref that is not a full
 ref name, such as `main`.

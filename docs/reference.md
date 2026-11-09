@@ -537,7 +537,7 @@ valley approve [-v] [--head <sha>] [--build-here] <change>
   - Composes the verification policy from `origin/main` and the instance repository's
     `refs/heads/main`, and derives the required checks for `base..head`.
   - When a check is required, lists `origin`'s `refs/the-valley/attestations/<tree-digest>/*` for
-    the head's tree and fetches the objects they name (`valley-go coverage`). It never counts a
+    the head's tree and fetches the objects they name (`status/coverage.go`). It never counts a
     local attestation ref as evidence. A listing or a fetch that fails is refused, and nothing runs
     or is published.
   - Judges each required `nix` check by the note the integrator judges it by: the first note for the
@@ -555,7 +555,7 @@ valley approve [-v] [--head <sha>] [--build-here] <change>
     never widen it. A `command` check is never reused.
   - Refuses when the note it judges a required `nix` check by verifies, counts in this project, and
     is not a pass of that check: the integrator judges the check by that note, so building it again
-    changes nothing for the tree. `valley-go coverage` lists such a check as `failed`.
+    changes nothing for the tree.
   - With `-v`, prints `reusing the evidence origin holds for <change> at <head>, tree <digest>:`,
     then one line per reused check naming its signer. For each check whose note it does not reuse,
     it prints the reason on `stderr`, for example
@@ -1356,7 +1356,6 @@ export VALLEY_ATTEST_NAME=operator
 | `VALLEY_ATTEST_KEY`          | `approve`, `review` (`[a]pprove`)                               | Path to the OpenSSH `ssh-ed25519` private key passed to `attest run --key` whenever a required check has to run, because `origin` holds no evidence `approve` can reuse for it.                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `VALLEY_ATTEST_NAME`         | `approve`, `review` (`[a]pprove`)                               | Signer name passed to `attest run --name` (when unset, `attest` defaults to `<hostname>/attestations`, or `localhost/attestations` if `os.Hostname` fails).                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `VALLEY_VERIFICATION_SCHEMA` | `checks`, `approve`, `review`, `integrator`, `valley-restacker` | Path to `schema/verification.cue`. Set automatically by the Nix wrapper, `valley-worker`'s included; falls back to `<repo>/schema/verification.cue` when running `bin/valley` from a checkout.                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `VALLEY_POLICY_SCHEMA`       | `checks`, `approve`, `review`                                   | Optional override for the verification policy schema path in `bin/valley` (takes precedence over `VALLEY_VERIFICATION_SCHEMA` when `--schema` is not passed).                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `VALLEY_ATTEST_SCHEMA`       | `attest`, `integrator`                                          | Path to `schema/attestation.cue`, set by the Nix wrapper.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `VALLEY_EVENT_SCHEMA`        | `integrator`                                                    | Path to `schema/events.cue`, set by the Nix wrapper.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `VALLEY_IDENTITY_SCHEMA`     | `identity`                                                      | Path to `schema/identity.cue`, set by the Nix wrapper.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -2689,9 +2688,9 @@ check as soon as the host's check worker records it.
       the note judged is not evidence for this check.
 - **Where it comes from:** The required checks are derived as the host's check worker derives them:
   over the head's merge base with `main`, under both policy layers read at `main`'s tip on `origin`.
-  Each check's note is chosen and read as `valley-go coverage` reads it. Only the attestation refs
-  `origin` holds for the head's tree count. The note judged is the first that verifies under the
-  known-signers file the host publishes, by a signer who counts in this project.
+  Each check's note is chosen and read as approval reads it (`status/coverage.go`). Only the
+  attestation refs `origin` holds for the head's tree count. The note judged is the first that
+  verifies under the known-signers file the host publishes, by a signer who counts in this project.
   `VALLEY_KNOWN_SIGNERS` does not narrow it.
   - `passed`: the note judged is pure evidence from the `nix` runner, for this check's name and
     attribute, and records the check as passed.

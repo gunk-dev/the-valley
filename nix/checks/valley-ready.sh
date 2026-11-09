@@ -428,6 +428,7 @@ printf 'y\n' | script -qec "VALLEY_PRINCIPAL=requester valley approve pppp" /dev
 [ "$(git -C "$origin" rev-parse "$request")" = "$elsewhere" ] || fail 'a confirmed approval did not file the active head'
 ok as requester valley approve --head "$honest" pppp
 [ "$(git -C "$origin" rev-parse "$request")" = "$honest" ] || fail 'approve did not file an older version head'
+grep -q ' pppp v1  approved · ' "$w/out" || fail "approve did not name the version whose head it filed: $(cat "$w/out")"
 ok as requester valley approve --head "$elsewhere" pppp
 [ "$(git -C "$origin" rev-parse "$request")" = "$elsewhere" ] || fail 'approve did not file the active head'
 
@@ -773,6 +774,16 @@ grep -qxF "⊘ drafts/plain  not approved · now change $plain_handle v1, which 
 if git -C "$origin" rev-parse --verify --quiet refs/the-valley/integration-requests/main/drafts-plain > /dev/null; then
   fail 'review filed a request for a branch that became a draft while it was open'
 fi
+# A branch readied while the review is open, and left ready at the head
+# the review showed, is filed at that head.
+git checkout --quiet -b drafts/readied main
+commit readied
+as contributor git push --quiet origin drafts/readied
+review_while drafts/readied 'a\n' as contributor valley ready drafts/readied
+grep -q '^[^ ]* drafts/readied  approved · ' "$w/review.out" \
+  || fail "review's [a]pprove refused a branch readied at the head it showed: $(cat "$w/review.err")"
+[ "$(git -C "$origin" rev-parse refs/the-valley/integration-requests/main/drafts-readied)" = "$(git rev-parse drafts/readied)" ] \
+  || fail 'review did not file the head it showed of a branch readied while it was open'
 
 # ----------------------------------------------------------------------
 # A request filed for an earlier version is named by that version's

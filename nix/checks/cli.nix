@@ -285,6 +285,7 @@ in
       pkgs.cue
       pkgs.jq # the timing log's lines
       pkgs.openssh
+      pkgs.util-linux # setsid, to stop an approval as ctrl-C does
       packages.attest
       packages.valley-script
       packages.valley-go

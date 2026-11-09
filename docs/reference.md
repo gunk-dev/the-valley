@@ -330,16 +330,19 @@ full diff, reject the remote branch, or skip. Just before the prompt, a ready ch
 of its checks and their [build times](#build-times) on one line, as `valley pending --checks` shows
 it. `valley review` reads them in the background while it shows the diff and never waits for them: a
 line not ready at the prompt is left out. `VALLEY_REVIEW_CHECKS_WAIT` sets how many seconds to wait
-for it.
+for it. With no change, it reviews each change that needs the operator in turn (see
+[the walk](#the-walk)).
 
 ```sh
 valley review kqxm
 valley review [-v] [--build-here] <change>
+valley review [-v] [--build-here] [--repo <name>]
 ```
 
 - **Arguments and flags:**
   - `<change>`: Change ID, handle, or branch name. The change's active version must record a
     non-empty `branch`.
+  - `--repo <name>`: With no change, walks that project alone.
   - `-v`: Warns on `stderr` if the plan graph, or the checks and their build times, cannot be read.
   - `--build-here`: Lets `[a]pprove` build, on this machine, the required `nix` checks that `origin`
     holds no evidence for, as `valley approve --build-here` does.
@@ -424,6 +427,70 @@ valley review [-v] [--build-here] <change>
 - **Inline review notes:** Pressing `v` inside `less` opens the diff buffer in `$EDITOR`. Any lines
   inserted by the reviewer are anchored to their file and new-side line number, appended to
   `$XDG_STATE_HOME/valley/notes/<branch>.md`, and printed at the end of the review.
+
+#### The walk
+
+`valley review` with no change runs `valley-go walk` (`status/walk.go`). It reads the rows
+`valley pending --all` lists under needs you, or `valley pending --repo <name>` with `--repo`, and
+reviews each in landing order. A project that did not read, and a discovery failure that leaves the
+walk with the current project alone, are printed as `✗` lines before the first step and again in the
+summary.
+
+```text
+needs you (3, in landing order)
+
+[1/3] guarded · kmkm v1 · checks 18/18
+…the review of kmkm…
+
+walked (3 of 3)
+  ✓ guarded kmkm v1  approved
+  ✓ guarded knkn v1  rejected · branch deleted
+  ◇ open popo v1  skipped
+
+still needs you (2): guarded knkn, open popo
+```
+
+- **Each step:** A header gives the step's place, the project, the handle and active version, the
+  stack the change tops, and its checks as `valley pending` counts them. Then
+  `<valley> review [-v] [--build-here] <change ID>` runs, with the walk's stdin, stdout and stderr,
+  where `<valley>` is `VALLEY_COMMAND` made absolute. It runs in the current checkout's top level,
+  or in the cache clone the project is read through (see
+  [Client state and cache files](#client-state-and-cache-files)), with `GIT_DIR`, `GIT_WORK_TREE`
+  and the other variables that select a repository removed. For a cache clone, the current
+  checkout's `valley.principal`, `user.name` and `user.email` are appended to `GIT_CONFIG_COUNT`,
+  `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`, each only when the clone's own configuration does
+  not set it.
+- **The child's variables:** `VALLEY_WALK_QUEUED` is `<change ID> <version> <head>` as the queue
+  held it. `VALLEY_WALK_OUTCOME` names the file the review writes its outcome to: one line of
+  tab-separated fields.
+
+  | Outcome                                          | Summary                                                                    | Glyph |
+  | ------------------------------------------------ | -------------------------------------------------------------------------- | ----- |
+  | `approved <change ID> <handle> <version> <head>` | `approved`, `approved v<n>`, or `approved <handle> v<n>, a layer under it` | `✓`   |
+  | `rejected <branch>`                              | `rejected · branch deleted`                                                | `✓`   |
+  | `kept <branch>`                                  | `kept · rejection not confirmed`                                           | `◇`   |
+  | `skipped`                                        | `skipped`                                                                  | `◇`   |
+  | `refused`                                        | `refused, then skipped`                                                    | `⊘`   |
+  | `moved`                                          | `moved while shown`                                                        | `◇`   |
+  | `not-reviewed <reason>`                          | `not reviewed · <reason>`                                                  | `⊘`   |
+  | `interrupted`                                    | `interrupted`                                                              | `◇`   |
+  | `error`                                          | `error`                                                                    | `✗`   |
+
+  A step that leaves no outcome the walk reads is `error`.
+
+- **Before the review shows anything:** It reads the change again. A change that landed, is not
+  ready, or has no branch on `origin` prints `<handle> is not reviewed: <reason>` and the step ends.
+  A change ready at another version or head prints
+  `<handle> moved to v<n> since the queue was read`, and that version is reviewed.
+- **Ctrl-C:** The walk catches `SIGINT` while a step runs. A step that exits `130`, or during which
+  `SIGINT` arrives, ends the walk: it prints the summary so far and exits `130`.
+- **Summary:** One line per step in walk order, then the queue read again:
+  `still needs you (<n>): <project> <handle>, …`, or `nothing needs you` when every project read.
+- **An empty queue:** Prints `nothing needs you`, then `valley pending`'s counts of moving changes,
+  drafts and branches no change is on, and exits `0`. When a project did not read, it prints the `✗`
+  lines instead and exits `1`.
+- **Exit status:** `0`; `1` when a step ended in `error` or a project did not read; `130` when
+  interrupted.
 
 ### `valley approve`
 
@@ -876,14 +943,16 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     key line.
 - **`valley-go`** ([`status/main.go`](../status/main.go)): Internal helper binary invoked by
   `bin/valley` for `status`, `ready`, `unready`, `withdraw`, `changes`, `pending`, `rebase`, `knot`,
-  `plan`, `telemetry`, and `self-update`, plus internal plumbing verbs (`resolve <change>`,
-  `stack <change>`, `does [-v] <change-id>...`, `brings [--change <id>] <head>`,
-  `versions <change-id>`, `compare --tip <commit> <change-id> <version> <head>`,
+  `plan`, `telemetry`, and `self-update`, for `review` with no change
+  (`walk [--repo <name>] [-v] [--build-here]`, see [the walk](#the-walk)), plus internal plumbing
+  verbs (`resolve <change>`, `stack <change>`, `does [-v] <change-id>...`,
+  `brings [--change <id>] <head>`, `versions <change-id>`,
+  `compare --tip <commit> <change-id> <version> <head>`,
   `coverage --head <sha> [--check <name>=<attribute>]...`), and
   `checks [--schema <file>] --instance <dir> --project <dir> <base> <head>`, which prints the Go
   deriver's `valley-checks/v1` document and which `bin/valley` does not run. `work` is the check
-  worker, which `valley-worker` runs. `status`, `stack`, `rebase`, `brings`, `changes`, `pending`
-  and `plan` also take `--known-signers <file>` and `--integrator-name <name>`.
+  worker, which `valley-worker` runs. `status`, `stack`, `rebase`, `brings`, `changes`, `pending`,
+  `walk` and `plan` also take `--known-signers <file>` and `--integrator-name <name>`.
 - **`valley-worker`** ([`status/worker.go`](../status/worker.go)): One pass of the check worker (see
   [The check worker](architecture.md#the-check-worker)). It is `valley-go work`, wrapped with this
   flake's git, cue and `attest` and with `VALLEY_VERIFICATION_SCHEMA` set. It runs the machine's own
@@ -1284,7 +1353,7 @@ export VALLEY_ATTEST_NAME=operator
 | `VALLEY_ATTEST_SCHEMA`       | `attest`, `integrator`                                          | Path to `schema/attestation.cue`, set by the Nix wrapper.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `VALLEY_EVENT_SCHEMA`        | `integrator`                                                    | Path to `schema/events.cue`, set by the Nix wrapper.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `VALLEY_IDENTITY_SCHEMA`     | `identity`                                                      | Path to `schema/identity.cue`, set by the Nix wrapper.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `VALLEY_COMMAND`             | `pending --checks`                                              | Executable invoked by `valley-go pending --checks` to run `<valley> checks <base> <head>` (`bin/valley` sets `VALLEY_COMMAND` to its own path; defaults to `"valley"`).                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `VALLEY_COMMAND`             | `pending --checks`, `review`                                    | Executable invoked by `valley-go pending --checks` to run `<valley> checks <base> <head>`, and by `valley-go walk` to run `<valley> review <change ID>` for each step (`bin/valley` sets `VALLEY_COMMAND` to its own path; defaults to `"valley"`).                                                                                                                                                                                                                                                                                                                                                            |
 | `VALLEY_NOW`                 | `knot`, `plan`, `valley-worker`                                 | Optional UTC timestamp in `RFC 3339` format (`YYYY-MM-DDTHH:MM:SSZ`) overriding the system clock for knot `created` dates, comment stamps, comment edit times, claim timestamps, claim age calculations, and the check worker's waits after a failed batch. Invalid values exit `2`.                                                                                                                                                                                                                                                                                                                           |
 | `VALLEY_TELEMETRY_DIR`       | `valley-worker`, `integrator`                                   | Host-side: the directory a producer exports its telemetry to, set by the NixOS module ([Telemetry](architecture.md#telemetry)). Unset, the producer records nothing.                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `VALLEY_REVIEW_CHECKS_WAIT`  | `review`                                                        | Whole seconds `valley review` waits, at most, for a change's checks line before the prompt (default `0`: it does not wait). The line takes about as long to read as `valley pending --checks` takes for one project, so a prompt that follows a short diff right away shows it only with a wait of a few seconds.                                                                                                                                                                                                                                                                                              |
@@ -1400,18 +1469,19 @@ exit. It carries the project, the CLI's version stamp, `verb`, `subverb` (a `kno
 `telemetry` operation), `flags` (each known flag name once, never values or anything after `--`),
 `status` (exit status), and `elapsed_ms` (wall time from the start of `bin/valley`), and never an
 argument's value, path, title, or body. A verb `valley-go` runs (`pending`, `status`, `changes`,
-`ready`, `unready`, `withdraw`, `knot`, `plan`, `rebase`, `telemetry`, `self-update`) adds
-`shell_ms` (script time before `valley-go` started, including `pending`'s fetch of origin) and each
-phase's `<phase>_ms` (wall time, excluding nested phases) and `<phase>_procs` (processes started).
-The phases are `fetch` (`ls-remote` and `fetch`), `records` (reading change and outcome records),
-`transfers` (verifying transfer statements), `knots`, `changes` (pending's change states), `checks`
-(pending's check evidence), `policy` (policy at main), `main` (main's follow checks and worker
-runs), `branches` (pending's branches and stacks), and `other`. With telemetry off, `valley-go`
-verbs start no extra process and write no file: `valley-go` reads the git configuration files
-directly and runs `git` only when one mentions telemetry or includes another file. With telemetry
-on, the command runs one `git config` and starts the background flusher. Verbs the script runs
-itself (`review`, `approve`, `checks`, `tail`, `replay`) pass their record on exit to
-`valley-go telemetry command`, which checks configuration the same way.
+`ready`, `unready`, `withdraw`, `knot`, `plan`, `rebase`, `telemetry`, `self-update`, and `review`
+with no change) adds `shell_ms` (script time before `valley-go` started, including `pending`'s fetch
+of origin) and each phase's `<phase>_ms` (wall time, excluding nested phases) and `<phase>_procs`
+(processes started). The phases are `fetch` (`ls-remote` and `fetch`), `records` (reading change and
+outcome records), `transfers` (verifying transfer statements), `knots`, `changes` (the queue's
+change states), `checks` (the queue's check evidence), `policy` (policy at main), `main` (main's
+follow checks and worker runs), `branches` (pending's branches and stacks), `steps` (the reviews a
+walk runs), and `other`. With telemetry off, `valley-go` verbs start no extra process and write no
+file: `valley-go` reads the git configuration files directly and runs `git` only when one mentions
+telemetry or includes another file. With telemetry on, the command runs one `git config` and starts
+the background flusher. Verbs the script runs itself (`review` of one change, `approve`, `checks`,
+`tail`, `replay`) pass their record on exit to `valley-go telemetry command`, which checks
+configuration the same way.
 
 Every approval attempt also records its steps: `valley approve`, and each `[a]pprove` answer in
 `valley review`, a stack's layers included. An attempt records its start, the policy it derived,

@@ -5,6 +5,8 @@
 // repositories a host serves, and for resolve, which turns the name of a
 // change into its branch for the verbs bin/valley runs itself, for
 // stack, which lists the layers under a change for review (stack.go), for
+// walk, which steps review through what needs the operator when it is
+// given no change (walk.go), for
 // rebase, which rebases a change's whole stack onto main, and brings, which
 // lists the changes a head would bring that have not landed, for approve
 // (rebase.go), for does, which lists the knots each change does, for review
@@ -74,11 +76,12 @@ const usage = `usage: valley-go status [--json] [-v] <change>
        valley-go work --repo <name>... --key <file> [--name <name>] [--state <dir>]
        valley-go changes --json [--all] [--repo <name>] [-v]
        valley-go pending [--json] [--all] [--repo <name>] [--checks] [-v]
+       valley-go walk [--repo <name>] [-v] [--build-here]
        valley-go knot <verb> [args]   (valley-go knot for its verbs)
        valley-go plan [--project <name> | --all] [--owner <name>] [--json]
        valley-go self-update [-v] [--retry | --rollback | --pin | --unpin] [--repo <url>] [--branch <name>]
 
-status, stack, rebase, brings, changes, pending and plan read how far a
+status, stack, rebase, brings, changes, pending, walk and plan read how far a
 version has landed, and also take --known-signers <file> and
 --integrator-name <name>: what an integrator's transfer statement is
 verified with, ahead of VALLEY_KNOWN_SIGNERS, VALLEY_INTEGRATOR_SIGNER and
@@ -157,6 +160,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runChanges(g, args, stdout, stderr)
 	case "pending":
 		err = runPending(g, args, stdout, stderr)
+	case "walk":
+		return runWalk(g, args, stdout, stderr)
 	case "telemetry":
 		err = runTelemetry(g, args, stdout, stderr)
 	case "self-update":

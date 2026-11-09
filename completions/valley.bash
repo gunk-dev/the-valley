@@ -36,7 +36,7 @@ _valley() {
   elif [ "${COMP_WORDS[1]}" = approve ]; then
     mapfile -t COMPREPLY < <(compgen -W "$(_valley_branches --no-merged=origin/main)" -- "$cur")
   elif [ "${COMP_WORDS[1]}" = review ] && [ "${cur:0:1}" = - ]; then
-    mapfile -t COMPREPLY < <(compgen -W '-v --build-here' -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W '-v --build-here --repo' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = rebase ] && [ "${cur:0:1}" = - ]; then
     mapfile -t COMPREPLY < <(compgen -W '--known-signers --integrator-name' -- "$cur")
   elif [ "$COMP_CWORD" -eq 2 ] && [[ "${COMP_WORDS[1]}" =~ ^(review|rebase)$ ]]; then

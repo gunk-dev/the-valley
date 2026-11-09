@@ -210,6 +210,7 @@ type entry struct {
 	section  string
 	repo     string             // the project it is in
 	id       string             // the change ID, for a change
+	version  int                // a change's active version
 	record   string             // the change's record commit
 	name     string             // what the block's first line names
 	ref      string             // what the entry is typed as: its handle, or its branch
@@ -258,21 +259,9 @@ func writePending(repos []listed, h handleMap, l listing, c *costs, w, stderr io
 		p("\n")
 	}
 	defer phase("branches")()
-	var waiting, moving []*entry
 	var drafts, branches []block
 	nDrafts, nBranches := 0, 0
-	for _, r := range repos {
-		if r.err != nil {
-			continue
-		}
-		end := phase("changes")
-		view := r.pendingView(h)
-		end()
-		end = phase("checks")
-		r.addChecks(&view, c, stderr)
-		end()
-		wa, mo := r.queue(view, h, l, l.verbose)
-		waiting, moving = append(waiting, wa...), append(moving, mo...)
+	waiting, moving := operatorQueue(repos, h, l, c, stderr, func(r listed, view jsonRepo) {
 		nDrafts, nBranches = nDrafts+len(*view.Drafts), nBranches+len(view.Branches)
 		if l.drafts && len(*view.Drafts) > 0 {
 			drafts = append(drafts, block{r.name, r.draftStacks(view, h, l)})
@@ -280,9 +269,7 @@ func writePending(repos []listed, h handleMap, l listing, c *costs, w, stderr io
 		if l.branches && len(view.Branches) > 0 {
 			branches = append(branches, block{r.name, r.branchStacks(view)})
 		}
-	}
-	byLanding(waiting)
-	byLanding(moving)
+	})
 	for _, line := range t.rows(waiting, moving, l, named) {
 		p("%s\n", line)
 	}

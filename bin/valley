@@ -325,6 +325,22 @@ EOF
 help_review() {
   cat <<'EOF'
 usage: valley review [-v] [--build-here] <change>
+       valley review [-v] [--build-here] [--repo <name>]
+
+  review [-v] [--build-here] [--repo <name>]
+                   with no change, review each change that needs you, as
+                   valley pending --all lists them, in landing order, or
+                   those of the project --repo names. each step opens
+                   with `[1/3] <project> · <handle> v<N> · <checks>` and
+                   is the review below, run where the project is read:
+                   this checkout, or the clone valley keeps of another
+                   project, lent this checkout's valley.principal,
+                   user.name and user.email. a change that landed, is
+                   not ready or has no branch since is not reviewed; one
+                   at a new version is reviewed at it. the walk ends with
+                   each change's outcome and what still needs you. a
+                   project that did not read is said first and last.
+                   ctrl-c ends the walk with what it walked, exit 130.
 
   review [-v] [--build-here] <change>
                    page through the change's branch: its log and diff vs
@@ -1277,7 +1293,10 @@ reject() {
   local branch="$1" answer
   local -a lease=()
   if [ -n "$CHANGE_HEAD" ]; then
-    check_recorded_tip "$branch" "nothing deleted" || return 1
+    check_recorded_tip "$branch" "nothing deleted" || {
+      WALK_REFUSED=yes
+      return 1
+    }
     lease=("--force-with-lease=refs/heads/$branch:$CHANGE_HEAD")
   fi
   printf 'really delete origin/%s? [y/N] ' "$branch"
@@ -1289,11 +1308,16 @@ reject() {
       ! moved || return 0
       if ! git push --quiet "${lease[@]}" origin --delete "$branch"; then
         refuse "origin did not delete $branch, which may have moved since the fetch; nothing deleted"
+        WALK_REFUSED=yes
         return 1
       fi
       echo "rejected $branch: deleted from origin"
+      walk_outcome rejected "$branch"
       ;;
-    *) echo "kept $branch" ;;
+    *)
+      echo "kept $branch"
+      walk_outcome kept "$branch"
+      ;;
   esac
 }
 
@@ -1716,8 +1740,12 @@ page_buffer() {
 cleanup_scratch() {
   local status=$?
   # An approval attempt still open when the session exits was cut short:
-  # by a signal, or by a step that ended the session.
+  # by a signal, or by a step that ended the session. So was a walk's step
+  # with no outcome yet.
   if [ -n "$TEL_RUN" ]; then tel_end interrupted; fi
+  if [ -z "$WALK_WRITTEN" ]; then
+    if [ "$status" -eq 130 ]; then walk_outcome interrupted; else walk_outcome error; fi
+  fi
   cleanup_approve_wt
   cleanup_policy_tmp
   cleanup_instance_tmp
@@ -2016,6 +2044,11 @@ approve() {
   local status=0
   approve_attempt "$@" || status=$?
   if [ "$status" -eq 0 ]; then tel_end filed; else tel_end refused; fi
+  if [ "$status" -eq 0 ]; then
+    walk_outcome approved "$CHANGE_ID" "$CHANGE_HANDLE" "$APPROVE_VERSION" "$APPROVE_HEAD"
+  else
+    WALK_REFUSED=yes
+  fi
   return "$status"
 }
 
@@ -2923,24 +2956,31 @@ moved() {
   [ -n "$CHANGE_ID" ] || return 1
   if ! read_standing; then
     echo "could not read $h again from origin; nothing done"
+    walk_outcome error
     return 0
   fi
   case "$STANDING_STATE" in
     withdrawn)
       echo "$h changed while you were reviewing: it was withdrawn (since $STANDING_SINCE), so there is nothing to approve."
+      walk_outcome moved
       return 0
       ;;
     draft)
       echo "$h changed while you were reviewing: it was returned to draft (since $STANDING_SINCE), so there is nothing to approve now. It comes back when it is ready again."
+      walk_outcome moved
       return 0
       ;;
   esac
   if [ -n "$STANDING_LANDED" ]; then
     echo "$h landed as $STANDING_LANDED while you were reviewing; there is nothing left to approve."
+    walk_outcome moved
     return 0
   fi
   if [ "$STANDING_VERSION" != "$CHANGE_VERSION" ] || [ "$STANDING_HEAD" != "$CHANGE_HEAD" ]; then
-    carried || return 0
+    carried || {
+      walk_outcome moved
+      return 0
+    }
   fi
   return 1
 }
@@ -3096,6 +3136,7 @@ decide() {
         ;;
       s)
         echo "$stopped"
+        walk_skipped
         return
         ;;
       *) echo "answer $answers" ;;
@@ -3260,12 +3301,13 @@ base_stack() {
           read_stack || die "could not read the stack under $TOP_NAME again after the rebase"
           summarize_stack
         else
-          clause="not rebased" stopped=""
+          clause="not rebased" stopped="" WALK_REFUSED=yes
         fi
         ;;
       v) view_full "$CHANGE_BRANCH" ;;
       s)
         echo "stopped reviewing ${L_NAME[n - 1]} before its first layer$stopped"
+        walk_skipped
         return 1
         ;;
       *) echo "answer $answers" ;;
@@ -3419,6 +3461,7 @@ review_stack() {
         v) view_layer "$k" ;;
         s)
           echo "stopped reviewing ${L_NAME[top]} at change $((k + 1)) of $n, ${L_NAME[k]}; nothing done"
+          walk_skipped
           return
           ;;
         *) echo "answer $answers" ;;
@@ -3440,28 +3483,90 @@ print_stack_notes() {
   done
 }
 
+# A review run as a step of a walk (valley-go walk, status/walk.go) is
+# told what the walker's queue held of the change, as "<change ID>
+# <version> <head>", and the file its outcome goes to. Both are empty for
+# any other review. WALK_REFUSED is set when an answer is refused, so a
+# skip after it is said as one.
+WALK_QUEUED="" WALK_FILE="" WALK_WRITTEN="" WALK_REFUSED=""
+
+# walk_outcome <outcome> [<field>...]: how the step ended, as one line of
+# tab-separated fields for the walker. The last one written stands.
+walk_outcome() {
+  [ -n "$WALK_FILE" ] || return 0
+  (IFS=$'\t' && printf '%s\n' "$*") > "$WALK_FILE" && WALK_WRITTEN=yes
+}
+
+# walk_skipped: the outcome of a step whose review was skipped or stopped.
+walk_skipped() {
+  if [ -n "$WALK_REFUSED" ]; then walk_outcome refused; else walk_outcome skipped; fi
+}
+
+# walk_queued: in a walk, compare the change with what the queue held. A
+# change that landed, is no longer ready or has no branch on origin is not
+# reviewed, and the step ends; one ready at another version is reviewed at
+# it, saying so first. Fails when the step ends here.
+walk_queued() {
+  local id version head why=""
+  [ -n "$WALK_QUEUED" ] || return 0
+  read -r id version head <<< "$WALK_QUEUED"
+  read_standing || STANDING_LANDED=""
+  if [ -n "$STANDING_LANDED" ]; then
+    why="it landed as $STANDING_LANDED"
+  elif [ "$CHANGE_STATE" != ready ]; then
+    why="it is ${CHANGE_STATE/draft/a draft}"
+  elif [ -z "$CHANGE_BRANCH" ] || ! ref_oid "refs/remotes/origin/$CHANGE_BRANCH" > /dev/null; then
+    why="its branch is gone from origin"
+  fi
+  if [ -n "$why" ]; then
+    echo "$CHANGE_HANDLE is not reviewed: $why"
+    walk_outcome not-reviewed "$why"
+    return 1
+  fi
+  [ "$CHANGE_ID $CHANGE_VERSION $CHANGE_HEAD" = "$id $version $head" ] \
+    || echo "$CHANGE_HANDLE moved to v$CHANGE_VERSION since the queue was read"
+}
+
 cmd_review() {
-  local name="" verbose=() arg
-  local usage="usage: valley review [-v] [--build-here] <change>"
-  for arg in "$@"; do
-    case "$arg" in
+  local name="" verbose=() repo=()
+  local usage="usage: valley review [-v] [--build-here] [<change> | --repo <name>]"
+  while [ $# -gt 0 ]; do
+    case "$1" in
       -v) verbose=(-v) VERBOSE=yes ;;
       --build-here) BUILD_HERE=yes ;;
+      --repo)
+        [ $# -gt 1 ] || die "$usage"
+        repo=(--repo "$2")
+        shift
+        ;;
       -*) die "$usage" ;;
       *)
         [ -z "$name" ] || die "$usage"
-        name="$arg"
+        name="$1"
         ;;
     esac
+    shift
   done
-  [ -n "$name" ] || die "$usage"
+  # With no change, review walks what needs the operator (status/walk.go),
+  # running this verb once for each change.
+  if [ -z "$name" ]; then
+    command -v valley-go > /dev/null 2>&1 \
+      || die "review with no change needs the valley-go helper; nix run .#valley bundles it"
+    fetch_origin
+    VALLEY_COMMAND="$0" VALLEY_TELEMETRY_SINCE="$TEL_T0" VALLEY_TELEMETRY_VERSION="$VALLEY_STAMP" \
+      exec valley-go walk "${verbose[@]}" ${BUILD_HERE:+--build-here} "${repo[@]}"
+  fi
+  [ "${#repo[@]}" -eq 0 ] || die "$usage"
   set -- "$name"
   REVIEWING=yes
+  WALK_QUEUED="${VALLEY_WALK_QUEUED:-}" WALK_FILE="${VALLEY_WALK_OUTCOME:-}"
+  unset VALLEY_WALK_QUEUED VALLEY_WALK_OUTCOME
   resolve_change "$1" || exit 1
+  fetch_origin
+  walk_queued || exit 0
   need_branch review
   local branch="$CHANGE_BRANCH"
   TOP_NAME="$1"
-  fetch_origin
   ref_oid "refs/remotes/origin/$branch" >/dev/null \
     || die "no such branch on origin: $branch"
   bind_review

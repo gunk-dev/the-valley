@@ -238,6 +238,10 @@ stops review from offering approval for that layer or anything above it. A stack
 bottom up; approving its top includes the layers below. Review lists a layer below the top that is
 already approved but does not page it. Name that layer to review it.
 
+Run `valley review` with no handle to review everything under `needs you`, across every project the
+host serves, in landing order. Each change gets the same prompt, and the walk ends with what you did
+to each and what still needs you.
+
 A change behind `main` is approved as it is. The integrator applies the change onto `main` as `main`
 stands, and a host that runs the restacker rebases ready changes itself. The prompt's header says
 so, as in `kqxm v3 · behind main (integrator merges)`. When the restacker reports a conflict, it

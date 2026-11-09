@@ -163,6 +163,7 @@ _valley() {
     local -a opts=(
       '-v:say why no knot is shown'
       '--build-here:let approve build the nix checks origin holds no evidence for on this machine'
+      '--repo:with no change, walk one project'
     )
     _describe -t options 'valley review option' opts
   elif [[ ${words[2]} == (review|approve|rebase|status|unready|withdraw) ]] \

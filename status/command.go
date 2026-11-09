@@ -209,6 +209,9 @@ var (
 // -- is read, since everything there is a value.
 func commandWords(args []string) (verb, sub string, flags []string) {
 	verb, flags = args[0], []string{}
+	if verb == "walk" { // what valley review runs with no change (walk.go)
+		verb = "review"
+	}
 	if !knownVerbs[verb] {
 		verb = "unknown"
 	}

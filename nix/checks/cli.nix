@@ -1,7 +1,8 @@
 # bin/valley: that it stays a lint-clean script, what its review verb
 # anchors a note to, what its deriver makes of a policy and a diff, that
 # the-valley's own policy composes and names only checks that exist, what
-# its review verb publishes when it files an integration request, what its
+# its review verb publishes when it files an integration request, what it
+# walks with no change, what its
 # Go verbs' unit tests and the rebase engine's hold, what its ready and withdraw verbs write to a
 # change's record through the real push hook, what its knot verbs write to
 # the plan graph, what its plan verb shows of that graph, what its
@@ -76,6 +77,12 @@ let
     modules = [
       { services.valley.integrator.knownSignersFile = lib.mkForce "${reuseKeys}/hook_signers"; }
     ];
+  };
+
+  # The integrator host with the operator valley-walk approves as holding
+  # the approve grant, so its hook takes the requests the walk files.
+  walkHost = hosts.integratorHost.extendModules {
+    modules = [ { services.valley.grants.approve = [ "alice" ]; } ];
   };
 in
 {
@@ -412,6 +419,26 @@ in
     # The floor --checks derives under.
     floor = ../../examples/policy/instance;
   } (builtins.readFile ./valley-changes.sh);
+
+  # valley review with no change, walking what needs the operator across
+  # the projects of the test host valley-changes makes: three ready changes
+  # in two projects, the other project's read through the walk's cache
+  # clone, approved, rejected and skipped there; a stale stack in that
+  # clone based with [b]ase; changes unreadied and readied at a new version
+  # while the walk is under way; Ctrl-C at a prompt on a terminal; a
+  # project that does not read; and an empty queue. It runs the packaged
+  # CLI, so the verification schema is the package's.
+  valley-walk = pkgs.runCommand "valley-walk" {
+    nativeBuildInputs = [
+      pkgs.git
+      pkgs.util-linux # script(1), for Ctrl-C on a terminal
+      packages.valley-script
+      packages.valley-go
+    ];
+    initScript = walkHost.config.systemd.services.valley-init.script;
+    passAsFile = [ "initScript" ];
+    floor = ../../examples/policy/instance;
+  } (builtins.readFile ./valley-walk.sh);
 
   # valley knot against local bare repositories that run no hook, as any
   # git remote would: every verb, the ref's shape after each write, a

@@ -2,7 +2,8 @@ package main
 
 // The operator's queue: the ready changes that wait on an approval, in the
 // order they would land, and the ready changes that move without one.
-// valley pending prints it (pending.go).
+// valley pending prints it (pending.go), and valley review with no change
+// walks it (walk.go).
 //
 // A ready change whose active version has not landed is moving when a
 // current restack report says its restack stopped short of complete, when
@@ -27,6 +28,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 
@@ -74,6 +76,34 @@ func (r listed) queue(view jsonRepo, h handleMap, l listing, measured bool) (wai
 			r.snap.measure(e)
 		}
 	}
+	return waiting, moving
+}
+
+// operatorQueue is the queue across every readable repository in repos,
+// as valley pending and valley review's walk (walk.go) both read it: the
+// rows that wait on an approval and the moving rows, each in landing
+// order. A change's checks are read before it is classed, so a change
+// whose check failed is moving rather than waiting. each, when it is not
+// nil, is given every repository's view as it is read.
+func operatorQueue(repos []listed, h handleMap, l listing, c *costs, stderr io.Writer, each func(listed, jsonRepo)) (waiting, moving []*entry) {
+	for _, r := range repos {
+		if r.err != nil {
+			continue
+		}
+		end := phase("changes")
+		view := r.pendingView(h)
+		end()
+		end = phase("checks")
+		r.addChecks(&view, c, stderr)
+		end()
+		wa, mo := r.queue(view, h, l, l.verbose)
+		waiting, moving = append(waiting, wa...), append(moving, mo...)
+		if each != nil {
+			each(r, view)
+		}
+	}
+	byLanding(waiting)
+	byLanding(moving)
 	return waiting, moving
 }
 
@@ -140,7 +170,7 @@ func (r listed) states() map[handleKey]string {
 // changeEntry is a recorded change as an entry of section.
 func (r listed) changeEntry(section string, c jsonChange, h handleMap, l listing, states map[handleKey]string) *entry {
 	v := c.Versions[c.Active-1]
-	e := &entry{section: section, repo: r.name, id: c.ChangeID, record: c.Record,
+	e := &entry{section: section, repo: r.name, id: c.ChangeID, version: v.N, record: c.Record,
 		name: fmt.Sprintf("%s v%d", c.Handle, v.N), ref: c.Handle, head: v.Head, title: readable(v.Title)}
 	if len(c.Knots) > 0 {
 		e.knot = readable(c.Knots[0].ID)

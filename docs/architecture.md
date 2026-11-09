@@ -2204,17 +2204,18 @@ Nothing in the-valley calls `sigverify` yet.
 
 `bin/valley` is a shell script, also packaged with its schema (`nix/packages.nix`). Its `status`,
 `ready`, `unready`, `withdraw`, `rebase`, `changes`, `pending`, `knot`, `plan` and `self-update`
-verbs are a Go program, `valley-go` (`status/`), which the package puts on the script's `PATH`.
-`valley-go` rebases with the rebase engine, a Go module of its own (`rebase/`), which also reads how
-far each version has landed for its listings. The package stamps its version on the script, and
-`valley self-update` keeps a user's `valley` at the tip of a branch (see
-[Version and self-update](#version-and-self-update)).
+verbs, and `review` with no change, are a Go program, `valley-go` (`status/`), which the package
+puts on the script's `PATH`. `valley-go` rebases with the rebase engine, a Go module of its own
+(`rebase/`), which also reads how far each version has landed for its listings. The package stamps
+its version on the script, and `valley self-update` keeps a user's `valley` at the tip of a branch
+(see [Version and self-update](#version-and-self-update)).
 
 | Command                      | What it does                                                                                          |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------- |
 | `valley pending`             | Lists the ready changes not yet landed, then the branches no change is on, then the drafts.           |
 | `valley changes --json`      | Prints every change in every state, across the host with `--all`, as `valley-changes/v1`.             |
 | `valley review <change>`     | Shows a change, then offers `[a]pprove`, `[v]iew diff`, `[r]eject` and `[s]kip`.                      |
+| `valley review`              | Reviews each change that needs the operator, across the host's projects, in landing order.            |
 | `valley approve <change>`    | Approves one head of the change, as `[a]pprove` does. `--head <sha>` names the head.                  |
 | `valley rebase <change>`     | Rebases the change's whole stack, and adds each rebased head as a new version.                        |
 | `valley checks`              | Reports the checks the policy requires of a change, grouped by declared cost. It runs nothing.        |
@@ -2640,6 +2641,36 @@ on origin, under the branch's request name. It takes one `ls-remote` snapshot of
 decision, and fetches the objects it names, without moving a local branch or writing `FETCH_HEAD`.
 It reads ancestry first: a head already in `origin/main` is integrated, even if recording the
 outcome failed. An outcome record it does not recognise is `unknown`, never a success.
+
+### Walking what needs the operator
+
+`valley review` with no change walks the changes `valley pending` lists under needs you, across
+every project the serving host publishes, or the one `--repo` names, in landing order
+(`status/walk.go`, `implemented`). It reads the queue once, through the function `valley pending`
+reads it with, so the two agree on what needs the operator and in what order. For each change it
+prints a header, `[1/3] <project> · <handle> v<N> · stack of N · checks 18/18`, and then runs
+`valley review <change ID>` as a child in the change's repository: the current checkout's top level,
+or the cache clone the listing reads another project through. The child has the walker's terminal,
+so it pages and prompts as a review run by hand does.
+
+A cache clone has no configuration of its own. The child gets the current checkout's
+`valley.principal`, `user.name` and `user.email` through `GIT_CONFIG_COUNT`, for each key the
+clone's own configuration does not set, and nothing is written into the clone. With them,
+`[a]pprove` and `[r]eject` push to the clone's `origin`, and `[b]ase onto main` rebases and commits
+there as the operator.
+
+The walk grants nothing. Each step is the review the operator would run by hand, behind the same
+gates, and the queue only chooses what comes next. Before a step shows anything, the review compares
+the change with what the queue held. A change that landed, is not ready, or has no branch on origin
+is not reviewed, and the walk goes on. A change ready at another version is said to have moved, and
+that version is reviewed. The review writes how the step ended to a file the walker names. A step
+that leaves no outcome the walker can read counts as an error, never as a success. Ctrl-C ends the
+step and the walk: the walker prints what it walked and exits 130.
+
+The walk says what it could not read. A project that did not read, and a failed discovery that left
+the walk with the current project alone, are said before the first step and again in the summary.
+The walk says that nothing needs the operator only when every project read. The summary gives each
+step's outcome, then reads the queue again and names what still needs the operator.
 
 ### Review against the approved version
 

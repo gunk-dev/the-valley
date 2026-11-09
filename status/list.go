@@ -156,34 +156,43 @@ type source struct {
 }
 
 // sources are the repositories a listing covers, in name order, and the
-// host they are served from.
+// host they are served from. When discovery fails, --all lists the current
+// repository alone, and says so on stderr.
 func sources(g git, l listing, stderr io.Writer) ([]source, string, error) {
+	list, host, gap, err := findSources(g, l)
+	if gap != nil {
+		fmt.Fprintf(stderr, "valley: discovery is unavailable: %v; listing %s only\n", gap, list[0].name)
+	}
+	return list, host, err
+}
+
+// findSources is sources, with the discovery error that left --all with the
+// current repository alone given in gap rather than said.
+func findSources(g git, l listing) (list []source, host string, gap, err error) {
 	if !g.succeeds(true, "rev-parse", "--git-dir") {
-		return nil, "", failure("not a git repository")
+		return nil, "", nil, failure("not a git repository")
 	}
 	originURL, err := g.output(true, "remote", "get-url", "origin")
 	if err != nil {
-		return nil, "", failure("this repository has no origin to read")
+		return nil, "", nil, failure("this repository has no origin to read")
 	}
 	here := source{name: project(g), url: originURL, g: g}
 	if (!l.all && l.repo == "") || l.repo == here.name {
-		return []source{here}, hostOf(originURL), nil
+		return []source{here}, hostOf(originURL), nil, nil
 	}
 	instance, names, err := discover(g)
 	if err != nil && (l.repo == "" || instance == "") {
 		if l.repo != "" {
-			return nil, "", failure(fmt.Sprintf("cannot find %s: discovery is unavailable: %v", l.repo, err))
+			return nil, "", nil, failure(fmt.Sprintf("cannot find %s: discovery is unavailable: %v", l.repo, err))
 		}
-		fmt.Fprintf(stderr, "valley: discovery is unavailable: %v; listing %s only\n", err, here.name)
-		return []source{here}, hostOf(originURL), nil
+		return []source{here}, hostOf(originURL), err, nil
 	}
 	if l.repo != "" {
 		if names != nil && !contains(names, l.repo) {
-			return nil, "", failure(fmt.Sprintf("the host lists no project %s at %s", l.repo, projectsRef))
+			return nil, "", nil, failure(fmt.Sprintf("the host lists no project %s at %s", l.repo, projectsRef))
 		}
 		names = []string{l.repo}
 	}
-	var list []source
 	for _, name := range names {
 		if name == here.name {
 			list = append(list, here)
@@ -196,7 +205,7 @@ func sources(g git, l listing, stderr io.Writer) ([]source, string, error) {
 		}
 		list = append(list, s)
 	}
-	return list, hostOf(instance), nil
+	return list, hostOf(instance), nil, nil
 }
 
 func contains(list []string, s string) bool {

@@ -63,6 +63,7 @@ project: {
 		"valley-status",
 		"valley-ready",
 		"valley-changes",
+		"valley-walk",
 		"valley-knot",
 		"valley-plan",
 		"valley-darwin-eval",
@@ -396,6 +397,7 @@ project: {
 	// they rebase and read landings with (rebase/), and its completions.
 	// valley-ready drives ready, withdraw, rebase and the verbs that take a
 	// change's handle, valley-changes drives changes and pending,
+	// valley-walk drives review with no change across a host's projects,
 	// valley-plan drives plan against the golden files under
 	// status/testdata/plan/, and valley-self-update drives --version and
 	// self-update. derive-unit holds the script's deriver to the Go one.
@@ -414,6 +416,7 @@ project: {
 		requires: "valley-status":      true
 		requires: "valley-ready":       true
 		requires: "valley-changes":     true
+		requires: "valley-walk":        true
 		requires: "valley-knot":        true
 		requires: "valley-plan":        true
 		requires: "valley-self-update": true
@@ -595,6 +598,7 @@ project: {
 		follows: "worker-e2e":                 true
 		requires: "restack-host-e2e":          true
 		requires: "valley-changes":            true
+		requires: "valley-walk":               true
 	}
 
 	// A check's own files require that check: its script,

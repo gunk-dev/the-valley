@@ -64,7 +64,7 @@
 #   cli.nix          valley-cli, review-notes, policy-deriver,
 #                    own-policy, valley-request, rebase-unit,
 #                    valley-go-unit, valley-status, valley-ready,
-#                    valley-changes, valley-knot, valley-plan,
+#                    valley-changes, valley-walk, valley-knot, valley-plan,
 #                    selfupdate-unit, valley-self-update,
 #                    valley-darwin-eval — bin/valley, its Go verbs, the
 #                    rebase engine, self-update and its home-manager

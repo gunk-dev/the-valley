@@ -423,18 +423,32 @@ usage: valley review [-v] [--build-here] <change>
                    land, stale or reject outcome on origin names, under
                    c-<change id> or a branch name of the change that
                    nothing else maps to (valley-go compare). with none,
-                   or an ambiguous one, review pages the whole diff. when
+                   or an ambiguous one, review pages the whole diff. its
+                   first line says what changed since you approved v<m>:
+                     `<change> v<n> at <head>: rebased since you approved
+                     v<m> at <old head>, with the same file changes.`
                    each version's diff from its merge base with main
-                   changes the same files the same way (valley-delta-v1),
-                   review prints `<change> v<n> at <head>: clean restack
-                   of approved v<m> at <old head>.`, the two bases, and
-                   the commits main landed between them, and pages
-                   nothing. otherwise it pages `changed since approved
-                   v<m>`, the files whose change differs, git
+                   changes the same files the same way (valley-delta-v1).
+                   review prints the commits main landed between the
+                   bases, and pages nothing.
+                     `... rebased since you approved v<m> at <old head>.`
+                   the commits are the same patches, messages and
+                   authors, but main also edited files the change edits.
+                   review pages each file whose change differs, with the
+                   landings that edited it, then the shown version's diff
+                   of those files.
+                     `... edited since you approved v<m> at <old head>.`
+                   a commit's patch, message or author differs. review
+                   pages how many commits changed, the files whose change
+                   differs with the landings that edited them, git
                    range-diff of the two versions, and the shown
-                   version's diff of those files. a changed commit
-                   message or author is shown either way. this is
-                   information only: it files nothing and skips no check.
+                   version's diff of those files, or prints a changed
+                   message or author when the files are the same. -v adds
+                   each file's mode and SHA-256 in each version. on a
+                   terminal, unless NO_COLOR is set, the title, the
+                   section headings and the hashes are styled; the buffer
+                   the editor opens is plain. this is information only:
+                   it files nothing and skips no check.
                    when [a]pprove's checks fail, the prompt says approving
                    needs a new head and stops offering [a]pprove until the
                    change has one. any other refusal keeps the prompt as
@@ -498,9 +512,9 @@ usage: valley review [-v] [--build-here] <change>
                    every line you insert there is a note. it is anchored to
                    the file and new-side line it sits on — to the file alone
                    when it sits above the first hunk. range-diff gives no
-                   line numbers, so on a changed version a note keeps its
-                   file and line only in the shown version's diff at the
-                   end of the page. each note is then appended to
+                   line numbers, so set against an approved version a
+                   note keeps its file and line only in the section
+                   headed `── v<n>'s diff of these files against main`. each note is then appended to
                    $XDG_STATE_HOME/valley/notes/<branch>.md (default
                    ~/.local/state) and printed after the verdict. notes
                    survive a stack's [b]ase onto main. lines you change
@@ -1243,15 +1257,20 @@ diff_pager() {
 # structure-preserving filter (pager.diff = `delta --color-only`) makes it
 # exact. No anchor depends on it: a note is anchored by where it was
 # inserted, not by where the editor opened.
+#
+# valley-go style (status/style.go) is the rendering's last step, after
+# the pager, so the pager never reads its escapes and the raw buffer has
+# none. It keeps every line in its place.
 page_file() {
-  local file="$1" shown="${1%.diff}.shown" pager
+  local file="$1" shown="${1%.diff}.shown" pager view=less
   [ -t 1 ] || { cat -- "$file"; return; } # a non-tty just cats
   pager="$(diff_pager)"
   case "${pager%%[[:space:]]*}" in
     less | */less)
-      # Already less: give it the file and there is no filter to run.
-      sh -c "$pager \"\$1\"" sh "$file"
-      return
+      # Already less, with its options: the rendering is style's alone, and
+      # without it there is no filter to run, so less is given the file.
+      command -v valley-go > /dev/null 2>&1 || { sh -c "$pager \"\$1\"" sh "$file"; return; }
+      view="$pager" pager='cat'
       ;;
   esac
   # Without less there is no editor key; fall back to filtering into a pipe.
@@ -1259,6 +1278,7 @@ page_file() {
     sh -c "$pager" < "$file"
     return
   }
+  ! command -v valley-go > /dev/null 2>&1 || pager="$pager | valley-go style --paged"
   sh -c "$pager" < "$file" > "$shown"
   # -R because the filter's color is the whole point of running it. No
   # LESSOPEN, since the filter has run and less answers v on a file read
@@ -1269,7 +1289,7 @@ page_file() {
     VALLEY_PAGE_EDIT='eval "${VISUAL:-${EDITOR:-vi}} \"\$@\" \"\$VALLEY_PAGE_RAW\""
       sh -c "$VALLEY_PAGE_RENDER" < "$VALLEY_PAGE_RAW" > "$VALLEY_PAGE_SHOWN"' \
     LESSEDIT='sh -c "$VALLEY_PAGE_EDIT" sh ?lm+%lm.' \
-    env -u LESSOPEN -u LESSCLOSE less -R -- "$shown"
+    env -u LESSOPEN -u LESSCLOSE sh -c "$view -R -- \"\$1\"" sh "$shown"
 }
 
 # pending is valley-go's (status/pending.go). The fetch first keeps this
@@ -1500,11 +1520,12 @@ print_notes() {
 #   - clean: the file delta is the approved version's. review prints that
 #     in a few lines, with the landings between the two bases, and pages
 #     nothing.
-#   - changed: review pages the files whose change differs, the
-#     range-diff between the two versions, and the shown version's diff
-#     of those files. range-diff's hunks carry no line numbers, so a note
-#     taken beside them is unanchored. That last diff is in git's ordinary
-#     form, so a note taken there keeps its file and line (anchor_buffer).
+#   - changed: review pages the files whose change differs, with the
+#     landings that edited them, the range-diff when a commit was edited,
+#     and the shown version's diff of those files. range-diff's hunks
+#     carry no line numbers, so a note taken beside them is unanchored.
+#     That last diff is in git's ordinary form, so a note taken there
+#     keeps its file and line (anchor_buffer).
 #
 # A changed commit message or author is in valley-go's text either way.
 # [v]iew full diff pages the whole diff at every prompt. The comparison
@@ -1523,7 +1544,7 @@ compare_shown() {
   : > "$REVIEW_TMP/compare"
   [ -n "$1" ] || return 0
   if ! tip="$(ref_oid refs/remotes/origin/main)" \
-    || ! valley-go compare --tip "$tip" "$1" "$2" "$3" > "$out"; then
+    || ! valley-go compare ${VERBOSE:+-v} --tip "$tip" "$1" "$2" "$3" > "$out"; then
     printf 'valley: warning: could not compare v%s of change %s with its approved version; reviewing it in full\n' \
       "$2" "$1" >&2
     return 0
@@ -1566,7 +1587,7 @@ show_compared() {
     fi
   } > "$REVIEW_TMP/review.diff"
   if [ "$COMPARE_KIND" = clean ]; then
-    cat "$REVIEW_TMP/review.diff"
+    valley-go style < "$REVIEW_TMP/review.diff"
     cleanup_review_tmp
   else
     page_buffer "$key" "$sha"

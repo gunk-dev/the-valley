@@ -115,9 +115,12 @@ in
   # on to review a stack layer by layer, and a stale stack: approving its
   # top refused, its bottom approved, and review's [b]ase before the first
   # page, after which the pages and the request are at the rebased heads,
-  # and the layer approved before the rebase is printed as a clean restack
-  # instead of paged. Last, a note written beside an edited line of a
-  # version paged as changed since its approval keeps its file and line.
+  # and the layer approved before the rebase is printed as rebased with the
+  # same file changes instead of paged. Last, a note written beside an
+  # edited line of a version paged as edited since its approval keeps its
+  # file and line, through a structure-preserving renderer and through
+  # less, whose views are styled while the buffer the editor opens is
+  # plain.
   review-notes = pkgs.runCommand "valley-review-notes" {
     nativeBuildInputs = [
       pkgs.git

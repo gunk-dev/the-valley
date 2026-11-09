@@ -2743,45 +2743,68 @@ long: an encoding holds only the target's hash, which shows neither. Conformance
 `delta/testdata/` fix the encoding and digest. A Python script there computes their expected results
 from the specification alone, independent of the Go code. Checked by `delta-unit`.
 
-**What review shows.** When the two deltas are equal, `review` prints, and pages nothing:
+**What review shows.** The first line answers whether the change's own commits changed. Each commit
+from B₁ to H₁ is set against the one in its place from B₀ to H₀ by its patch
+(`git patch-id --verbatim` of its diff from its first parent, binary content and modes included),
+its message and its author field (name, email and date). The version is _rebased_ when every commit
+is the same and B₀ is not B₁, _edited_ when any commit differs, and _recommitted_ otherwise.
+
+When the two deltas are equal, `review` prints, and pages nothing:
 
 ```text
-<change> v<N> at <head>: clean restack of approved v<M> at <old-head>.
-File delta unchanged. Base <old-base> -> <new-base>.
-Landings between bases:
+<change> v<N> at <head>: rebased since you approved v<M> at <old-head>, with the same file changes.
+Main moved <old-base> → <new-base>, landing <n> commits:
   <commit> <subject>
 ```
 
 The landings are every commit on T's first-parent history in (B₀, B₁], oldest first.
 
-When they differ, `review` pages this, and then `git range-diff B₀..H₀ B₁..H₁`:
+When the deltas differ and the commits are the same, main edited files the change edits too.
+`review` pages which landings did, then the shown version's diff of those files:
 
 ```text
-<change> v<N> at <head>: changed since approved v<M> at <old-head>.
-Review the range-diff before approving.
-Base <old-base> -> <new-base>.
-Files whose change differs from v<M>'s, as mode and SHA-256 of the content:
-  <path>
-    v<M>: <pre> -> <post>
-    v<N>: <pre> -> <post>
+<change> v<N> at <head>: rebased since you approved v<M> at <old-head>.
+Its commit is unchanged: same patch, same message.
+Main moved <old-base> → <new-base> and also edited 2 of its files:
+  <path>  <commit> <subject>
+
+── v<N>'s diff of these 2 files against main <new-base> ──
 ```
 
-range-diff compares patches, and a binary file's patch says only that it differs, so range-diff can
-call two commits equal when a binary file or a mode differs between them. The list of files shows
-every such difference.
+When a commit differs, `review` pages how many did, each file whose change differs with the landings
+in (B₀, B₁] that edited it, then `git range-diff B₀..H₀ B₁..H₁` and the shown version's diff:
 
-The page ends with the shown version's own diff of those files, from B₁ to H₁, in git's ordinary
-form. range-diff's hunks carry no line numbers, so a note written beside them has no anchor. A note
-written beside a line of that last diff keeps its file and line.
+```text
+<change> v<N> at <head>: edited since you approved v<M> at <old-head>.
+Main moved <old-base> → <new-base>.
+1 of 2 commits changed, and 3 files differ from v<M>:
+  <path>  <commit> <subject>
+  <path>  not edited on main
 
-Either way, the commits from each base to its head are compared for their messages and their author
-fields (name, email and date), apart from the files. A difference is shown under its own heading,
-`Commit messages changed since approved v<M>.` or `Commit authors changed since approved v<M>:`,
-whatever the files say. Every prompt after a change is shown offers `[v]iew diff`, which pages the
-change's log and whole diff and asks again. The log shows each commit's short hash and subject, then
-its body indented four spaces: a change lands with its head commit's message, and the indent keeps a
-body line from reading as a diff header. Checked by `valley-go-unit`, `valley-ready` and
-`review-notes`.
+── git range-diff <old-base>..<old-head> <new-base>..<head> ──
+
+── v<N>'s diff of these 3 files against main <new-base> ──
+```
+
+`valley review -v` adds each file's change in each version, as the mode and SHA-256 of each image,
+so a binary file or a mode that differs is visible without its diff. The shown version's diff is
+from B₁ to H₁, in git's ordinary form. range-diff's hunks carry no line numbers, so a note written
+beside them has no anchor. A note written beside a line of the last diff keeps its file and line.
+
+Either way, a message or an author that differs is shown under its own heading,
+`Commit messages edited since you approved v<M>.` or
+`Commit authors edited since you approved v<M>:`, whatever the files say. Every prompt after a
+change is shown offers `[v]iew diff`, which pages the change's log and whole diff and asks again.
+The log shows each commit's short hash and subject, then its body indented four spaces: a change
+lands with its head commit's message, and the indent keeps a body line from reading as a diff
+header.
+
+The text is plain. On a terminal, unless `NO_COLOR` is set, `valley-go style` renders it last, after
+the diff pager, so that the pager never reads its escapes: the title in bold, `edited` in yellow,
+`unchanged` and `same file changes` in green, hashes dim, and section headings in cyan. It keeps
+every line in its place, so the editor opens the buffer on the line the view shows, and the buffer
+the editor opens and notes are read from holds no escapes. Checked by `valley-go-unit`,
+`valley-ready` and `review-notes`.
 
 ### The status object
 

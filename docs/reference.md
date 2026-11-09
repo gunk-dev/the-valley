@@ -358,11 +358,17 @@ valley review [-v] [--build-here] [--repo <name>]
     [`valley-delta-v1`](#canonical-digest-manifests-valley-tree-v1-valley-inputs-v1-valley-delta-v1)
     between each version's merge base and its head:
     - `clean`: Both versions produce the identical `valley-delta-v1` file delta. `valley review`
-      prints `<change> v<n> at <head>: clean restack of approved v<m> at <old head>.`, the two
-      bases, and any commits `main` landed between them, and pages nothing.
-    - `changed`: The deltas differ. `valley review` pages `changed since approved v<m>`, the paths
-      whose delta entries differ, `git range-diff`, and the shown version's diff restricted to those
-      changed paths.
+      prints
+      `<change> v<n> at <head>: rebased since you approved v<m> at <old head>, with the same file changes.`,
+      any commits `main` landed between the bases, and any changed commit message or author, and
+      pages nothing.
+    - `changed`: The deltas differ. `valley review` pages `rebased since you approved v<m>` when
+      each commit has the same patch, message and author, or `edited since you approved v<m>`
+      otherwise; the paths whose delta entries differ, each with the landings between the bases that
+      edited it; `git range-diff` when a commit is edited; and the shown version's diff restricted
+      to those paths. `valley review -v` adds each path's mode and SHA-256 in each version.
+    - On a terminal, unless `NO_COLOR` is set, `valley-go style` styles the view after the diff
+      pager, line for line; the buffer the editor opens stays plain.
     - `none`: No approved version can be compared; `valley review` pages the log, each commit with
       its whole message, and the diff against `origin/main` (or the layer below in a stack).
 - **Interactive prompt actions:**

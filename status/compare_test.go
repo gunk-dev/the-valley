@@ -118,7 +118,18 @@ func (r *compareRepo) outcomeRecord(head, decision string) string {
 
 func (r *compareRepo) compare(id string, version int, head string) (kind, text string) {
 	r.t.Helper()
-	out := r.valley("compare", "--tip", r.git("rev-parse", "origin/main"), id, strconv.Itoa(version), head)
+	return r.compareWith(id, version, head)
+}
+
+func (r *compareRepo) compareVerbose(id string, version int, head string) (kind, text string) {
+	r.t.Helper()
+	return r.compareWith(id, version, head, "-v")
+}
+
+func (r *compareRepo) compareWith(id string, version int, head string, flags ...string) (kind, text string) {
+	r.t.Helper()
+	args := append(append([]string{"compare"}, flags...), "--tip", r.git("rev-parse", "origin/main"), id, strconv.Itoa(version), head)
+	out := r.valley(args...)
 	kind, text, _ = strings.Cut(out, "\n")
 	return kind, text
 }
@@ -146,7 +157,7 @@ func TestTheApprovedVersionIsNamedUnambiguously(t *testing.T) {
 
 	clean := func(why string) {
 		t.Helper()
-		if kind, text := r.compare(id, 2, v2); kind != compareClean || !strings.Contains(text, "clean restack of approved v1 at "+short(v1)) {
+		if kind, text := r.compare(id, 2, v2); kind != compareClean || !strings.Contains(text, "rebased since you approved v1 at "+short(v1)+", with the same file changes.") {
 			t.Fatalf("%s: %s\n%s", why, kind, text)
 		}
 	}
@@ -198,7 +209,7 @@ func TestTheApprovedVersionIsNamedUnambiguously(t *testing.T) {
 	r.git("checkout", "--quiet", "main")
 	v3 := r.git("rev-parse", "a/b")
 	r.setRef(requestPrefix+"c-"+id, v3)
-	if kind, text := r.compare(id, 3, v3); kind != compareChanged || !strings.Contains(text, "changed since approved v1 at "+short(v1)) {
+	if kind, text := r.compare(id, 3, v3); kind != compareChanged || !strings.Contains(text, "edited since you approved v1 at "+short(v1)+".") {
 		t.Fatalf("v3 is not set against v1, the greatest version below it with an approval: %s\n%s", kind, text)
 	}
 	r.setRef(requestPrefix+"c-"+id, "")
@@ -236,18 +247,61 @@ func TestAnotherChangesReservedNameIsNoEvidence(t *testing.T) {
 				t.Fatalf("a request and an outcome under %s counted for %s: %s\n%s", reserved, id[:4], kind, text)
 			}
 			r.setRef(requestPrefix+"c-"+id, v1)
-			if kind, text := r.compare(id, 2, v2); kind != compareClean || !strings.Contains(text, "clean restack of approved v1 at "+short(v1)) {
+			if kind, text := r.compare(id, 2, v2); kind != compareClean || !strings.Contains(text, "rebased since you approved v1 at "+short(v1)+", with the same file changes.") {
 				t.Fatalf("a request under the change's own c-<change ID>: %s\n%s", kind, text)
 			}
 		})
 	}
 }
 
-// clean names the landings between the two bases, oldest first; changed
-// lists the files whose change differs, the range-diff, and the shown
-// version's diff of those files in git's ordinary form, whatever the
-// person's diff configuration; and a message or an author that changed is
-// shown whatever the files say.
+// land adds a commit to main on origin that writes a file, as a landing
+// would, and fetches it. It returns main's new tip.
+func (r *compareRepo) land(name, content, subject string) string {
+	r.git("checkout", "--quiet", "main")
+	r.file(name, content)
+	r.git("commit", "--quiet", "-m", subject)
+	r.git("push", "--quiet", "origin", "main")
+	return r.git("rev-parse", "HEAD")
+}
+
+// amend replaces the branch's last commit with the work tree's staged
+// files, keeping its message, and returns the new head after readying it.
+func (r *compareRepo) amend(id, branch string, args ...string) string {
+	r.git(append([]string{"commit", "--quiet", "--amend"}, args...)...)
+	r.git("push", "--quiet", "--force", "origin", branch)
+	r.valley("ready", "--change", id, branch)
+	r.git("checkout", "--quiet", "main")
+	return r.git("rev-parse", branch)
+}
+
+// lines is one line for each of n, numbered, with the line at edit
+// replaced.
+func lines(n, edit int, replacement string) string {
+	var b strings.Builder
+	for i := 1; i <= n; i++ {
+		if i == edit {
+			b.WriteString(replacement + "\n")
+		} else {
+			b.WriteString("line " + strconv.Itoa(i) + "\n")
+		}
+	}
+	return b.String()
+}
+
+func mustSay(t *testing.T, what, text string, want ...string) {
+	t.Helper()
+	for _, line := range want {
+		if !strings.Contains(text, line) {
+			t.Fatalf("%s does not say %q:\n%s", what, line, text)
+		}
+	}
+}
+
+// A clean restack names the landings between the two bases, oldest
+// first. An edited version lists the files whose change differs, the
+// range-diff, and the shown version's diff of those files in git's
+// ordinary form, whatever the person's diff configuration. A message or
+// an author that changed is an edit, shown whatever the files say.
 func TestCompareSaysWhatChanged(t *testing.T) {
 	r := newCompareRepo(t)
 	id := strings.Repeat("z", 32)
@@ -266,9 +320,8 @@ func TestCompareSaysWhatChanged(t *testing.T) {
 	r.git("fetch", "--quiet", "origin")
 
 	kind, text := r.compare(id, 2, v2)
-	want := "zzzz v2 at " + short(v2) + ": clean restack of approved v1 at " + short(v1) + ".\n" +
-		"File delta unchanged. Base " + short(b0) + " -> " + short(two) + ".\n" +
-		"Landings between bases:\n" +
+	want := "zzzz v2 at " + short(v2) + ": rebased since you approved v1 at " + short(v1) + ", with the same file changes.\n" +
+		"Main moved " + short(b0) + " → " + short(two) + ", landing 2 commits:\n" +
 		"  " + short(one) + " land one\n" +
 		"  " + short(two) + " land two\n"
 	if kind != compareClean || text != want {
@@ -277,7 +330,7 @@ func TestCompareSaysWhatChanged(t *testing.T) {
 
 	// v3: the binary file's content and the tool's mode change. git
 	// range-diff calls the two commits equal, since a binary file's patch
-	// says only that it differs, so the listing of files is what shows it.
+	// says only that it differs, but the commit's patch is not the same.
 	r.setRef(requestPrefix+"c-"+id, v2)
 	r.git("checkout", "--quiet", "topic")
 	r.file("image.bin", "\x00\x02")
@@ -285,56 +338,40 @@ func TestCompareSaysWhatChanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.git("add", "tool.sh")
-	r.git("commit", "--quiet", "--amend", "--no-edit")
-	r.git("push", "--quiet", "--force", "origin", "topic")
-	r.valley("ready", "--change", id, "topic")
-	r.git("checkout", "--quiet", "main")
-	v3 := r.git("rev-parse", "topic")
+	v3 := r.amend(id, "topic", "--no-edit")
 	r.git("config", "diff.noprefix", "true")
 	kind, text = r.compare(id, 3, v3)
 	r.git("config", "--unset", "diff.noprefix")
-	for _, line := range []string{
-		"zzzz v3 at " + short(v3) + ": changed since approved v2 at " + short(v2) + ".\nReview the range-diff before approving.\n",
-		"Files whose change differs from v2's, as mode and SHA-256 of the content:\n  image.bin\n    v2: absent -> 100644 ",
-		"  tool.sh\n    v2: absent -> 100644 ",
-		"    v3: absent -> 100755 ",
-		"git range-diff " + short(two) + ".." + short(v2) + " " + short(two) + ".." + short(v3) + ":\n",
-		"1:  " + short(v2) + " = 1:  " + short(v3) + " add the tool",
-		"\nv3's diff of the files whose change differs, from its base " + short(two) +
-			". A note written beside a line of it keeps its file and line:\ndiff --git a/image.bin b/image.bin\n",
+	mustSay(t, "an edited commit", text,
+		"zzzz v3 at "+short(v3)+": edited since you approved v2 at "+short(v2)+".\n"+
+			"Its base is still "+short(two)+".\n"+
+			"1 of 1 commit changed, and 2 files differ from v2:\n  image.bin\n  tool.sh\n\n",
+		"── git range-diff "+short(two)+".."+short(v2)+" "+short(two)+".."+short(v3)+" ──\n",
+		"1:  "+short(v2)+" = 1:  "+short(v3)+" add the tool",
+		"\n── v3's diff of these 2 files against main "+short(two)+" ──\ndiff --git a/image.bin b/image.bin\n",
 		"Binary files /dev/null and b/image.bin differ\ndiff --git a/tool.sh b/tool.sh\nnew file mode 100755\n",
 		"@@ -0,0 +1 @@\n+#!/bin/sh\n",
-	} {
-		if !strings.Contains(text, line) {
-			t.Fatalf("changed does not say %q:\n%s", line, text)
-		}
+	)
+	if kind != compareChanged || strings.Contains(text, "Commit messages") || strings.Contains(text, "v2: absent") {
+		t.Fatalf("an edited commit: %s\n%s", kind, text)
 	}
-	if kind != compareChanged || strings.Contains(text, "Commit messages") || strings.Contains(text, "Commit authors") {
-		t.Fatalf("changed: %s\n%s", kind, text)
-	}
+	_, verbose := r.compareVerbose(id, 3, v3)
+	mustSay(t, "-v", verbose, "  image.bin\n    v2: absent -> 100644 ", "  tool.sh\n    v2: absent -> 100644 ", "    v3: absent -> 100755 ")
 
 	// v4: the same files, with another message and another author.
 	r.setRef(requestPrefix+"c-"+id, v3)
 	r.git("checkout", "--quiet", "topic")
-	r.git("commit", "--quiet", "--amend", "-m", "add the tool, renamed", "--author", "Someone Else <else@localhost>")
-	r.git("push", "--quiet", "--force", "origin", "topic")
-	r.valley("ready", "--change", id, "topic")
-	r.git("checkout", "--quiet", "main")
-	v4 := r.git("rev-parse", "topic")
+	v4 := r.amend(id, "topic", "-m", "add the tool, renamed", "--author", "Someone Else <else@localhost>")
 	kind, text = r.compare(id, 4, v4)
-	for _, line := range []string{
-		": clean restack of approved v3 at " + short(v3) + ".\nFile delta unchanged. Base " + short(two) + " -> " + short(two) + ".\n",
-		"Commit messages changed since approved v3. Read them before approving:\n" +
-			"  v3, commit 1 of 1, " + short(v3) + ":\n    add the tool\n" +
-			"  v4, commit 1 of 1, " + short(v4) + ":\n    add the tool, renamed\n",
-		"Commit authors changed since approved v3:\n  v3, commit 1 of 1, " + short(v3) + ": compare-test <compare-test@localhost> ",
-		"  v4, commit 1 of 1, " + short(v4) + ": Someone Else <else@localhost> ",
-		"Landings between bases: none.\n",
-	} {
-		if !strings.Contains(text, line) {
-			t.Fatalf("a changed message and author do not say %q:\n%s", line, text)
-		}
-	}
+	mustSay(t, "a changed message and author", text,
+		": edited since you approved v3 at "+short(v3)+", with the same file changes.\n",
+		"Commit messages edited since you approved v3. Read them before approving:\n"+
+			"  v3, commit 1 of 1, "+short(v3)+":\n    add the tool\n"+
+			"  v4, commit 1 of 1, "+short(v4)+":\n    add the tool, renamed\n",
+		"Commit authors edited since you approved v3:\n  v3, commit 1 of 1, "+short(v3)+": compare-test <compare-test@localhost> ",
+		"  v4, commit 1 of 1, "+short(v4)+": Someone Else <else@localhost> ",
+		"Its base is still "+short(two)+".\n",
+	)
 	if kind != compareClean {
 		t.Fatalf("a changed message alone is still a clean file delta: %s", kind)
 	}
@@ -343,5 +380,111 @@ func TestCompareSaysWhatChanged(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"compare", "--tip", two, id, "3", v4}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "v3 of change zzzz records the head") {
 		t.Fatalf("compare took a head its version does not record: %d %s", code, stderr.String())
+	}
+}
+
+// A rebase whose commit is untouched, onto landings that edited the same
+// file, says the commit is unchanged and names those landings, with no
+// range-diff. An edit after it names, for each file whose change
+// differs, the landings that edited it or none, then the range-diff.
+func TestCompareAttributesFilesMainAlsoEdited(t *testing.T) {
+	r := newCompareRepo(t)
+	id := strings.Repeat("w", 32)
+	r.land("shared.txt", lines(20, 0, ""), "add shared")
+	b0 := r.git("rev-parse", "main")
+	r.git("checkout", "--quiet", "-b", "topic")
+	r.file("shared.txt", lines(20, 2, "topic's line 2"))
+	r.git("commit", "--quiet", "-m", "edit line 2")
+	r.git("push", "--quiet", "origin", "topic")
+	r.valley("ready", "--change", id, "topic")
+	v1 := r.git("rev-parse", "topic")
+	r.setRef(requestPrefix+"c-"+id, v1)
+	shared := r.land("shared.txt", lines(20, 18, "main's line 18"), "edit line 18 of shared, with a subject long enough that the listing has to cut it short")
+	b1 := r.moveMain("unrelated")
+	v2 := r.rebaseOnto("topic")
+	r.valley("ready", "--change", id, "topic")
+	r.git("fetch", "--quiet", "origin")
+
+	kind, text := r.compare(id, 2, v2)
+	mustSay(t, "a rebase onto a file main also edited", text,
+		"wwww v2 at "+short(v2)+": rebased since you approved v1 at "+short(v1)+".\n"+
+			"Its commit is unchanged: same patch, same message.\n"+
+			"Main moved "+short(b0)+" → "+short(b1)+" and also edited 1 of its files:\n"+
+			"  shared.txt  "+short(shared)+" edit line 18 of shared, with a subject long enough that the listing has to cu…\n"+
+			"\n── v2's diff of this file against main "+short(b1)+" ──\ndiff --git a/shared.txt b/shared.txt\n",
+		"-line 2\n+topic's line 2\n",
+	)
+	if kind != compareChanged || strings.Contains(text, "range-diff") {
+		t.Fatalf("a rebase onto a file main also edited: %s\n%s", kind, text)
+	}
+
+	// v3: the commit is edited and adds a file, after main edits the
+	// shared file again.
+	r.setRef(requestPrefix+"c-"+id, v2)
+	again := r.land("shared.txt", lines(20, 18, "main's line 18, again"), "edit line 18 again")
+	b2 := r.git("rev-parse", "main")
+	r.rebaseOnto("topic")
+	r.git("checkout", "--quiet", "topic")
+	r.file("shared.txt", strings.Replace(r.git("show", "HEAD:shared.txt")+"\n", "topic's line 2", "topic's line 2, edited", 1))
+	r.file("new.txt", "new\n")
+	v3 := r.amend(id, "topic", "--no-edit")
+	r.git("fetch", "--quiet", "origin")
+	kind, text = r.compare(id, 3, v3)
+	mustSay(t, "an edit after a rebase", text,
+		"wwww v3 at "+short(v3)+": edited since you approved v2 at "+short(v2)+".\n"+
+			"Main moved "+short(b1)+" → "+short(b2)+".\n"+
+			"1 of 1 commit changed, and 2 files differ from v2:\n"+
+			"  new.txt     not edited on main\n"+
+			"  shared.txt  "+short(again)+" edit line 18 again\n"+
+			"\n── git range-diff "+short(b1)+".."+short(v2)+" "+short(b2)+".."+short(v3)+" ──\n",
+		"1:  "+short(v3)+" edit line 2\n",
+		"\n── v3's diff of these 2 files against main "+short(b2)+" ──\ndiff --git a/new.txt b/new.txt\n",
+	)
+	if kind != compareChanged {
+		t.Fatalf("an edit after a rebase: %s", kind)
+	}
+}
+
+// style changes no line's text, styles a comparison's title, headings and
+// summary, and leaves a diff's lines as they are; with NO_COLOR set, or
+// for no terminal, it copies the page.
+func TestStyleKeepsEveryLine(t *testing.T) {
+	page := "layer heading\n" +
+		"zzzz v3 at 1234abc: edited since you approved v2 at 5678def.\n" +
+		"does oc-1234567: a knot\n" +
+		"Main moved 1111aaa → 2222bbb.\n" +
+		"  shared.txt  3333ccc edit line 18\n" +
+		"\n── v3's diff of this file against main 2222bbb ──\n" +
+		"diff --git a/f b/f\n" +
+		"+edited 4444ddd\n"
+	style := func(args ...string) string {
+		var out bytes.Buffer
+		if err := runStyle(args, strings.NewReader(page), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	t.Setenv("NO_COLOR", "")
+	styled := style("--paged")
+	if got := styleEscape.ReplaceAllString(styled, ""); got != page {
+		t.Fatalf("style changed the text:\n%s", got)
+	}
+	for _, want := range []string{
+		"layer heading\n",
+		"\x1b[1mzzzz v3 at 1234abc: \x1b[33medited\x1b[39m since you approved v2 at 5678def.\x1b[22m\n",
+		"Main moved \x1b[2m1111aaa\x1b[22m → \x1b[2m2222bbb\x1b[22m.\n",
+		"\x1b[36m── v3's diff of this file against main 2222bbb ──\x1b[39m\n",
+		"diff --git a/f b/f\n+edited 4444ddd\n",
+	} {
+		if !strings.Contains(styled, want) {
+			t.Fatalf("style does not give %q:\n%q", want, styled)
+		}
+	}
+	if got := style(); got != page {
+		t.Fatalf("style styled a page for no terminal:\n%q", got)
+	}
+	t.Setenv("NO_COLOR", "1")
+	if got := style("--paged"); got != page {
+		t.Fatalf("style styled a page with NO_COLOR set:\n%q", got)
 	}
 }

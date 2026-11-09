@@ -31,19 +31,27 @@
 // base is its merge base with T, which must be one commit: B₀ and B₁. B₀
 // must be B₁ or below it on T's first-parent history. Then the file delta
 // from B₀ to H₀ is set against the one from B₁ to H₁ (valley-delta-v1,
-// ../delta). Equal deltas are a clean restack, and review shows the
-// landings in (B₀, B₁] instead of the diff. Different deltas are a change,
-// and review shows the files whose change differs, git range-diff
-// B₀..H₀ B₁..H₁, and the diff of those files from B₁ to H₁. range-diff's
-// hunks carry no line numbers, so a note review takes beside them has no
-// anchor. The diff is in git's ordinary form, so a note taken beside a
-// line of it keeps its file and line. Either way, the commits' messages
-// and authors, from each base to its head, are compared separately, and a
-// difference is shown whatever the files say.
+// ../delta), and each commit from B₁ to H₁ against the one in its place
+// from B₀ to H₀, by patch (git patch-id), message and author.
+//
+// The text opens with the answer: the shown version is rebased, when its
+// commits are the same and B₀ is not B₁; edited, when a commit is not the
+// same; and otherwise recommitted. Equal deltas are a clean restack, and
+// review shows the landings in (B₀, B₁] instead of the diff. Different
+// deltas list each file whose change differs, with the landings in
+// (B₀, B₁] that edited it, since a rebase onto a file main also edited
+// changes the file's delta and not the commit. Then, when a commit is
+// edited, comes git range-diff B₀..H₀ B₁..H₁, and last the diff of those
+// files from B₁ to H₁. range-diff's hunks carry no line numbers, so a
+// note review takes beside them has no anchor. The diff is in git's
+// ordinary form, so a note taken beside a line of it keeps its file and
+// line. Either way, a message or an author that differs is shown whatever
+// the files say.
 //
 // The output is one line naming the kind, none, clean or changed, and then
-// the text review shows. none has text only when an approved version was
-// found or was ambiguous, and says why it is not compared.
+// the text review shows, in plain text: style (style.go) styles it for a
+// terminal. none has text only when an approved version was found or was
+// ambiguous, and says why it is not compared.
 
 package main
 
@@ -62,7 +70,7 @@ import (
 	"the-valley/delta"
 )
 
-const compareUsage = "usage: valley-go compare --tip <commit> <change ID> <version> <head>"
+const compareUsage = "usage: valley-go compare [-v] --tip <commit> <change ID> <version> <head>"
 
 // The kinds of comparison.
 const (
@@ -78,6 +86,7 @@ var approvalDecisions = map[string]bool{"land": true, "stale": true, "reject": t
 type compareArgs struct {
 	tip, id, head string
 	version       int
+	verbose       bool // list each differing file's change as modes and hashes
 }
 
 func parseCompareArgs(args []string) (compareArgs, error) {
@@ -90,6 +99,8 @@ func parseCompareArgs(args []string) (compareArgs, error) {
 			i++
 		case strings.HasPrefix(args[i], "--tip="):
 			a.tip = strings.TrimPrefix(args[i], "--tip=")
+		case args[i] == "-v":
+			a.verbose = true
 		default:
 			rest = append(rest, args[i])
 		}
@@ -318,20 +329,20 @@ func compareVersion(g git, h *history, a compareArgs) (kind, text string, err er
 		shown := fmt.Sprintf("%s v%d at %s", h.handle, a.version, short(a.head))
 		return compareNone, fmt.Sprintf("%s: %s; reviewing it in full.\n", shown, ref.unclear), nil
 	}
-	c, err := compareWith(g, h, a.tip, ref, a.version)
+	c, err := compareWith(g, h, a.tip, ref, a.version, a.verbose)
 	return c.kind, c.text, err
 }
 
 // compareWith compares version n with the reference, against main's tip,
 // as the file's comment describes.
-func compareWith(g git, h *history, tip string, ref reference, n int) (comparison, error) {
-	a := compareArgs{tip: tip, id: h.id, version: n, head: h.head(n)}
+func compareWith(g git, h *history, tip string, ref reference, n int, verbose bool) (comparison, error) {
+	a := compareArgs{tip: tip, id: h.id, version: n, head: h.head(n), verbose: verbose}
 	shown := fmt.Sprintf("%s v%d at %s", h.handle, a.version, short(a.head))
 	old := ref.version
 	h0 := h.head(old)
-	since, approved, by := fmt.Sprintf("v%d", old), fmt.Sprintf("v%d at %s", old, short(h0)), ""
+	approved, by := fmt.Sprintf("v%d at %s", old, short(h0)), ""
 	if ref.by != "" {
-		since, approved, by = "approved "+since, "approved "+approved, " ("+ref.by+")"
+		approved, by = "approved "+approved, " ("+ref.by+")"
 	}
 	withheld := func(why string) (comparison, error) {
 		return comparison{kind: compareNone, text: fmt.Sprintf("%s: %s%s is not compared, since %s; reviewing it in full.\n",
@@ -377,22 +388,42 @@ func compareWith(g git, h *history, tip string, ref reference, n int) (compariso
 	if err != nil {
 		return comparison{}, err
 	}
+	ids, err := patchIDs(g, append(oidsOf(c0), oidsOf(c1)...))
+	if err != nil {
+		return comparison{}, err
+	}
+	edited := editedCommits(c0, c1, ids)
+	moved, sameDelta := b0 != b1, d0.Digest() == d1.Digest()
+	verb := "edited"
+	if edited == 0 && len(c0) == len(c1) {
+		switch {
+		case moved:
+			verb = "rebased"
+		case sameDelta:
+			verb = "recommitted"
+		}
+	}
+	// since names the earlier version: the one the operator approved, or
+	// for carry the one review showed.
+	since := fmt.Sprintf("v%d", old)
+	if ref.by != "" {
+		since = "you approved " + since
+	}
 	meta := metadataChanges(c0, c1, since, old, a.version)
 	c := comparison{meta: meta != "", base: b1, head: a.head, landings: firstParent[i1 : i0+1]}
 
 	var b strings.Builder
-	if d0.Digest() == d1.Digest() {
+	if sameDelta {
 		c.kind = compareClean
-		fmt.Fprintf(&b, "%s: clean restack of %s.\n", shown, approved)
-		fmt.Fprintf(&b, "File delta unchanged. Base %s -> %s.\n", short(b0), short(b1))
+		fmt.Fprintf(&b, "%s: %s since %s at %s, with the same file changes.\n", shown, verb, since, short(h0))
 		b.WriteString(meta)
 		landings := firstParent[i1:i0]
-		if len(landings) == 0 {
-			b.WriteString("Landings between bases: none.\n")
+		if !moved {
+			fmt.Fprintf(&b, "Its base is still %s.\n", short(b1))
 			c.text = b.String()
 			return c, nil
 		}
-		b.WriteString("Landings between bases:\n")
+		fmt.Fprintf(&b, "Main moved %s → %s, landing %s:\n", short(b0), short(b1), counted(len(landings), "commit"))
 		commits, err := readCommits(g, landings)
 		if err != nil {
 			return comparison{}, err
@@ -404,27 +435,74 @@ func compareWith(g git, h *history, tip string, ref reference, n int) (compariso
 		return c, nil
 	}
 	c.kind = compareChanged
-	fmt.Fprintf(&b, "%s: changed since %s.\n", shown, approved)
-	b.WriteString("Review the range-diff before approving.\n")
+	fmt.Fprintf(&b, "%s: %s since %s at %s.\n", shown, verb, since, short(h0))
 	b.WriteString(meta)
-	fmt.Fprintf(&b, "Base %s -> %s.\n", short(b0), short(b1))
-	fmt.Fprintf(&b, "Files whose change differs from v%d's, as mode and SHA-256 of the content:\n", old)
-	listing, paths := deltaDifferences(d0, d1, old, a.version)
-	b.WriteString(listing)
-	fmt.Fprintf(&b, "\ngit range-diff %s..%s %s..%s:\n", short(b0), short(h0), short(b1), short(a.head))
-	out, err := g.output(true, "range-diff", "--no-color", b0+".."+h0, b1+".."+a.head)
-	if err != nil {
-		b.WriteString("  (git range-diff failed; view the full diff)\n")
-	} else {
-		b.WriteString(out + "\n")
+	files := deltaDifferences(d0, d1)
+	paths := make([]string, len(files))
+	for i, f := range files {
+		paths[i] = f.path
 	}
-	fmt.Fprintf(&b, "\nv%d's diff of the files whose change differs, from its base %s. A note written beside a line of it keeps its file and line:\n",
-		a.version, short(b1))
+	edits, err := landingEdits(g, firstParent[i1:i0+1], paths)
+	if err != nil {
+		return comparison{}, err
+	}
+	if verb == "rebased" {
+		if len(c1) == 1 {
+			b.WriteString("Its commit is unchanged: same patch, same message.\n")
+		} else {
+			fmt.Fprintf(&b, "Its %d commits are unchanged: same patches, same messages.\n", len(c1))
+		}
+		touched := 0
+		for _, f := range files {
+			if len(edits[f.path]) > 0 {
+				touched++
+			}
+		}
+		of := fmt.Sprintf("%d of its files", touched)
+		if touched < len(files) {
+			of = fmt.Sprintf("%d of the %d files whose change differs", touched, len(files))
+		}
+		fmt.Fprintf(&b, "Main moved %s → %s and also edited %s:\n", short(b0), short(b1), of)
+	} else {
+		if moved {
+			fmt.Fprintf(&b, "Main moved %s → %s.\n", short(b0), short(b1))
+		} else {
+			fmt.Fprintf(&b, "Its base is still %s.\n", short(b1))
+		}
+		had := ""
+		if len(c0) != len(c1) {
+			had = fmt.Sprintf(" (v%d had %d)", old, len(c0))
+		}
+		differ := fmt.Sprintf("%d files differ", len(files))
+		if len(files) == 1 {
+			differ = "1 file differs"
+		}
+		fmt.Fprintf(&b, "%d of %s changed%s, and %s from v%d:\n", edited, counted(len(c1), "commit"), had, differ, old)
+	}
+	listing, err := fileListing(g, files, edits, moved, a.verbose, old, a.version)
+	if err != nil {
+		return comparison{}, err
+	}
+	b.WriteString(listing)
+	if verb != "rebased" {
+		fmt.Fprintf(&b, "\n── git range-diff %s..%s %s..%s ──\n", short(b0), short(h0), short(b1), short(a.head))
+		out, err := g.output(true, "range-diff", "--no-color", b0+".."+h0, b1+".."+a.head)
+		if err != nil {
+			b.WriteString("  (git range-diff failed; view the full diff)\n")
+		} else {
+			b.WriteString(out + "\n")
+		}
+	}
+	these := fmt.Sprintf("these %d files", len(files))
+	if len(files) == 1 {
+		these = "this file"
+	}
+	fmt.Fprintf(&b, "\n── v%d's diff of %s against main %s ──\n", a.version, these, short(b1))
 	// The prefixes and the options are fixed, so that the person's
 	// configuration cannot change the form review anchors notes by. The
 	// paths are taken literally, as the delta has them, and a rename is a
 	// deletion and an addition, as it is in the delta.
-	out, err = g.output(true, append([]string{"--literal-pathspecs", "diff", "--no-color", "--no-ext-diff", "--no-textconv",
+	out, err := g.output(true, append([]string{"--literal-pathspecs", "diff", "--no-color", "--no-ext-diff", "--no-textconv",
 		"--no-renames", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", b1, a.head, "--"}, paths...)...)
 	switch {
 	case err != nil:
@@ -457,12 +535,17 @@ func indexOf(list []string, s string) int {
 	return -1
 }
 
-// deltaDifferences lists each path whose change differs between two
-// deltas: its change in the approved version's, then in the shown one's.
-// Each image is its mode and the first twelve hex digits of its hash, so a
-// binary file or a mode that changed is listed like any other. It returns
-// the listing and the paths, sorted.
-func deltaDifferences(d0, d1 delta.Delta, old, shown int) (string, []string) {
+// fileDifference is a path whose change differs between two deltas, and
+// its change in each: nil where a delta leaves it alone.
+type fileDifference struct {
+	path     string
+	old, new *delta.Change
+}
+
+// deltaDifferences are the paths whose change differs between two
+// deltas, sorted. A binary file or a mode that changed is one like any
+// other.
+func deltaDifferences(d0, d1 delta.Delta) []fileDifference {
 	byPath := map[string][2]*delta.Change{}
 	for side, d := range []delta.Delta{d0, d1} {
 		for i := range d {
@@ -471,20 +554,161 @@ func deltaDifferences(d0, d1 delta.Delta, old, shown int) (string, []string) {
 			byPath[d[i].Path] = pair
 		}
 	}
-	paths := make([]string, 0, len(byPath))
+	var files []fileDifference
 	for p, pair := range byPath {
 		if pair[0] != nil && pair[1] != nil && *pair[0] == *pair[1] {
 			continue
 		}
-		paths = append(paths, p)
+		files = append(files, fileDifference{path: p, old: pair[0], new: pair[1]})
 	}
-	sort.Strings(paths)
+	sort.Slice(files, func(i, j int) bool { return files[i].path < files[j].path })
+	return files
+}
+
+// fileListing lists the files whose change differs. When main moved,
+// each names the landings that edited it, oldest first, with their
+// subjects cut to fit 100 columns. verbose adds each file's change in
+// each version, as the mode and the first twelve hex digits of the
+// SHA-256 of each image.
+func fileListing(g git, files []fileDifference, edits map[string][]string, moved, verbose bool, old, shown int) (string, error) {
+	var oids []string
+	for _, f := range files {
+		oids = append(oids, edits[f.path]...)
+	}
+	subjects := map[string]string{}
+	commits, err := readCommits(g, oids)
+	if err != nil {
+		return "", err
+	}
+	for _, c := range commits {
+		subjects[c.oid] = visible(c.subject())
+	}
+	width := 0
+	for _, f := range files {
+		width = max(width, columns(quotedPath(f.path)))
+	}
 	var b strings.Builder
-	for _, p := range paths {
-		pair := byPath[p]
-		fmt.Fprintf(&b, "  %s\n    v%d: %s\n    v%d: %s\n", quotedPath(p), old, described(pair[0]), shown, described(pair[1]))
+	for _, f := range files {
+		name := quotedPath(f.path)
+		lead := "  " + name + strings.Repeat(" ", width-columns(name)) + "  "
+		switch {
+		case !moved:
+			b.WriteString("  " + name + "\n")
+		case len(edits[f.path]) == 0:
+			b.WriteString(lead + "not edited on main\n")
+		}
+		for i, oid := range edits[f.path] {
+			if i > 0 {
+				lead = strings.Repeat(" ", columns(lead))
+			}
+			line := short(oid) + " " + subjects[oid]
+			b.WriteString(lead + fit(line, 100-columns(lead)) + "\n")
+		}
+		if verbose {
+			fmt.Fprintf(&b, "    v%d: %s\n    v%d: %s\n", old, described(f.old), shown, described(f.new))
+		}
 	}
-	return b.String(), paths
+	return b.String(), nil
+}
+
+// landingEdits maps each path to the landings in chain that edited it,
+// oldest first. chain is main's first-parent history from B₁ down to B₀,
+// so each landing is diffed against the commit after it, its first
+// parent, and B₀ is no landing.
+func landingEdits(g git, chain, paths []string) (map[string][]string, error) {
+	edits := map[string][]string{}
+	if len(chain) < 2 || len(paths) == 0 {
+		return edits, nil
+	}
+	var in strings.Builder
+	landing := map[string]bool{}
+	for k := len(chain) - 2; k >= 0; k-- {
+		fmt.Fprintf(&in, "%s %s\n", chain[k], chain[k+1])
+		landing[chain[k]] = true
+	}
+	out, err := g.input(true, strings.NewReader(in.String()), append([]string{"--literal-pathspecs", "diff-tree", "--stdin",
+		"-r", "--name-only", "-z", "--no-renames", "--no-ext-diff", "--"}, paths...)...)
+	if err != nil {
+		return nil, failure("could not read which landings edited the files")
+	}
+	current := ""
+	for _, field := range strings.Split(out, "\x00") {
+		switch {
+		case landing[field]:
+			current = field
+		case field != "" && current != "":
+			edits[field] = append(edits[field], current)
+		}
+	}
+	return edits, nil
+}
+
+// patchIDs maps each commit to git patch-id --verbatim of its diff from
+// its first parent. The diff is in a fixed form, with binary content,
+// modes and whole object names, so that the person's configuration
+// cannot change it and two commits share an ID only when they make the
+// same edit. A commit whose diff is empty has none.
+func patchIDs(g git, oids []string) (map[string]string, error) {
+	ids := map[string]string{}
+	if len(oids) == 0 {
+		return ids, nil
+	}
+	patches, err := g.input(true, strings.NewReader(strings.Join(oids, "\n")+"\n"), "log", "--stdin", "--no-walk=unsorted",
+		"--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/",
+		"--binary", "--full-index", "--diff-merges=first-parent", "--patch", "--format=commit %H")
+	if err != nil {
+		return nil, failure("could not read the commits' patches")
+	}
+	out, err := g.input(true, strings.NewReader(patches+"\n"), "patch-id", "--verbatim")
+	if err != nil {
+		return nil, failure("could not read the commits' patch IDs")
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if id, oid, ok := strings.Cut(line, " "); ok {
+			ids[oid] = id
+		}
+	}
+	return ids, nil
+}
+
+// editedCommits counts the shown version's commits that are not the
+// earlier version's, by patch, message and author. With as many commits
+// on each side, each is set against the one in its place, so commits
+// reordered are edited. Otherwise a commit is edited when no commit of
+// the earlier version is the same.
+func editedCommits(c0, c1 []commitText, ids map[string]string) int {
+	key := func(c commitText) string {
+		return ids[c.oid] + "\x00" + c.encoding + "\x00" + c.author + "\x00" + c.message
+	}
+	n := 0
+	if len(c0) == len(c1) {
+		for i := range c0 {
+			if key(c0[i]) != key(c1[i]) {
+				n++
+			}
+		}
+		return n
+	}
+	left := map[string]int{}
+	for _, c := range c0 {
+		left[key(c)]++
+	}
+	for _, c := range c1 {
+		if left[key(c)] > 0 {
+			left[key(c)]--
+		} else {
+			n++
+		}
+	}
+	return n
+}
+
+func oidsOf(commits []commitText) []string {
+	oids := make([]string, len(commits))
+	for i, c := range commits {
+		oids[i] = c.oid
+	}
+	return oids
 }
 
 // described is a path's change in one delta, or unchanged for none.
@@ -586,7 +810,7 @@ func parseCommit(oid string, data []byte) commitText {
 // metadataChanges says how the shown version's commits' messages and
 // authors differ from the earlier version's, from each base to its head:
 // nothing when they are the same. since names the earlier version, as
-// "approved v<n>" or "v<n>". With as many commits on each side, each
+// "you approved v<n>" or "v<n>". With as many commits on each side, each
 // commit is set against the one in its place, and only those whose
 // message or author differs are shown. Otherwise every commit on each
 // side is, with its author and its message.
@@ -607,8 +831,8 @@ func metadataChanges(c0, c1 []commitText, since string, old, shown int) string {
 		fmt.Fprintf(&b, "  v%d, commit %d of %d, %s:%s\n", v, i+1, len(list), short(list[i].oid), show(list[i]))
 	}
 	if len(c0) != len(c1) {
-		fmt.Fprintf(&b, "Commits changed since %s: v%d has %s, and v%d has %s. Read their authors and messages before approving:\n",
-			since, old, counted(len(c0), "commit"), shown, counted(len(c1), "commit"))
+		fmt.Fprintf(&b, "Commits edited since %s: v%d has %s, and v%d had %s. Read their authors and messages before approving:\n",
+			since, shown, counted(len(c1), "commit"), old, counted(len(c0), "commit"))
 		both := func(c commitText) string { return author(c) + message(c) }
 		for i := range c0 {
 			entry(old, c0, i, both)
@@ -623,9 +847,9 @@ func metadataChanges(c0, c1 []commitText, since string, old, shown int) string {
 		of      func(commitText) string
 		show    func(commitText) string
 	}{
-		{"Commit messages changed since %s. Read them before approving:\n",
+		{"Commit messages edited since %s. Read them before approving:\n",
 			func(c commitText) string { return c.encoding + "\x00" + c.message }, message},
-		{"Commit authors changed since %s:\n",
+		{"Commit authors edited since %s:\n",
 			func(c commitText) string { return c.author }, author},
 	} {
 		headed := false

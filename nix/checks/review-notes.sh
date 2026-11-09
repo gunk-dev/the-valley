@@ -426,20 +426,23 @@ if grep -q "$(git rev-parse --short "$onehead")" stale-page1; then exit 1; fi
 grep -qF '[a]pprove all 3  [v]iew diff  [r]eject pppp  [s]top: ' stale-review.out
 [ "$(git -C "$stack" rev-parse "$requests/c-$p")" = "$newthree" ]
 # qqqq's v1 was approved earlier, and the rebase gave it v2 with the same
-# file delta, so its layer is printed as a clean restack of v1, and not
-# paged. pppp has no approved version, so its layer is paged in full.
-grep -qx "qqqq v2 at [0-9a-f]*: clean restack of approved v1 at $(git rev-parse --short "$two")\." stale-review.out
+# file delta, so its layer is printed as rebased with the same file
+# changes, and not paged. pppp has no approved version, so its layer is
+# paged in full.
+grep -qx "qqqq v2 at [0-9a-f]*: rebased since you approved v1 at $(git rev-parse --short "$two"), with the same file changes\." stale-review.out
 awk '/change 2 of 3: /{ on = 1 } /change 3 of 3: /{ on = 0 } on' stale-review.out > stale-page2
 if grep -q '^diff --git' stale-page2; then exit 1; fi
 awk '/change 3 of 3: /{ on = 1 } on' stale-review.out > stale-page3
 [ "$(grep '^diff --git' stale-page3)" = 'diff --git a/three.md b/three.md' ]
 
 # ----------------------------------------------------------------------
-# A note taken on a changed comparison. v1 of a change is approved, and
-# v2 edits line 9 of its file, so review pages v2 as changed since v1.
+# A note taken on an edited comparison. v1 of a change is approved, and
+# v2 edits line 9 of its file, so review pages v2 as edited since v1.
 # range-diff's hunks carry no line numbers, so the page ends with v2's
 # own diff of the file, and the note written beside the edited line there
-# keeps its file and line.
+# keeps its file and line. The view is styled on a terminal, through a
+# structure-preserving renderer and through less alone, while the buffer
+# the editor opens stays plain.
 git checkout --quiet -b edited main
 seq 1 12 | sed 's/^/line /' > lines.md
 git add lines.md
@@ -457,18 +460,28 @@ cat > "$TMPDIR/changed-editor" << 'EOF'
 #!/bin/sh
 f="$1"
 case "$1" in +*) f="$2" ;; esac
-sed -i '/^+line 9 edited$/a why edit line 9?' "$f"
+if grep -q "$(printf '\033')" "$f"; then touch "$TMPDIR/escaped-buffer"; fi
+sed -i "/^+line 9 edited\$/a $NOTE" "$f"
 EOF
 chmod +x "$TMPDIR/changed-editor"
-# shellcheck disable=SC2094 # the answers wait on the review's own output
-{
-  printf vq
-  answer_after changed-tty.log '\]kip: ' : 's\n'
-  wait_for changed-tty.log '1 note(s) on edited'
-} | EDITOR="$TMPDIR/changed-editor" script -qec "valley review mmmm" /dev/null > changed-tty.log 2>&1
-sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r//g' changed-tty.log > changed-plain.log
-grep -q "| mmmm v2 at [0-9a-f]*: changed since approved v1 at " changed-plain.log
-grep -qx 'lines.md:9: why edit line 9?' "$XDG_STATE_HOME/valley/notes/edited.md"
-grep -q '^  lines.md:9: why edit line 9?$' changed-plain.log
+esc="$(printf '\033')"
+for pager in cat less; do
+  git config --global pager.diff "$pager"
+  # shellcheck disable=SC2094 # the answers wait on the review's own output
+  {
+    printf vq
+    answer_after "changed-$pager.log" '\]kip: ' : 's\n'
+    wait_for "changed-$pager.log" '1 note(s) on edited'
+  } | NOTE="why edit line 9, through $pager?" EDITOR="$TMPDIR/changed-editor" LESSCHARSET=utf-8 \
+    script -qec "valley review mmmm" /dev/null > "changed-$pager.log" 2>&1
+  sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r//g' "changed-$pager.log" > changed-plain.log
+  grep -q "mmmm v2 at [0-9a-f]*: edited since you approved v1 at " changed-plain.log
+  grep -q "── v2's diff of this file against main " changed-plain.log
+  grep -q "${esc}\[1mmmmm v2 at [0-9a-f]*: ${esc}\[33medited${esc}\[39m since" "changed-$pager.log"
+  grep -q "${esc}\[36m── git range-diff " "changed-$pager.log"
+  grep -qx "lines.md:9: why edit line 9, through $pager?" "$XDG_STATE_HOME/valley/notes/edited.md"
+  grep -q "^  lines.md:9: why edit line 9, through $pager?\$" changed-plain.log
+done
+[ ! -e "$TMPDIR/escaped-buffer" ]
 
 touch "$out"

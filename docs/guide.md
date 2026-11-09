@@ -257,7 +257,9 @@ changes keeps your answer instead:
 and approving v3 lands those changes.
 
 For a revised change, review automatically compares it with an earlier approved version when one can
-be identified. A clean restack gets a short summary. Use `[v]iew diff` to see the whole change. The
+be identified. Its first line says whether the change's own commits changed: rebased, with the same
+file changes, gets a short summary; rebased onto files main also edited names the landings that
+edited them; edited adds the range-diff. Use `[v]iew diff` to see the whole change. The
 [comparison rules](./architecture.md#review-against-the-approved-version) explain what can be
 compared.
 

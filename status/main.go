@@ -37,7 +37,8 @@
 // to main. versions lists a change's versions, for approve, and standing
 // says where a change stands now, for review (standing.go). carry says
 // whether review's answer about the version it showed carries to the
-// version the change moved to (carry.go).
+// version the change moved to (carry.go). style styles review's page for
+// a terminal (style.go).
 //
 // A change is named by its full change ID, by its handle (the shortest
 // prefix of the ID, four letters at least, that no other change on origin
@@ -68,8 +69,9 @@ const usage = `usage: valley-go status [--json] [-v] <change>
        valley-go brings [--change <id>] <head>
        valley-go versions <change ID>
        valley-go standing <change ID>
-       valley-go compare --tip <commit> <change ID> <version> <head>
+       valley-go compare [-v] --tip <commit> <change ID> <version> <head>
        valley-go carry <change ID> <version shown> <later version>
+       valley-go style [--paged] < page
        valley-go checks [--schema <file>] --instance <dir> --project <dir> <base> <head>
        valley-go coverage --head <sha> [--check <name>=<attribute>]...
        valley-go verdict approved|refused|unknown|checking|prompt [args]
@@ -150,6 +152,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runCompare(g, args, stdout)
 	case "carry":
 		err = runCarry(g, args, stdout)
+	case "style":
+		err = runStyle(args, os.Stdin, stdout)
 	case "checks":
 		err = runChecks(g, args, stdout)
 	case "coverage":

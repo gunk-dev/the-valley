@@ -63,7 +63,7 @@ func runCarry(g git, args []string, w io.Writer) error {
 	if err := fetch(g, h.tip, h.head(from), h.head(to)); err != nil {
 		return err
 	}
-	c, err := compareWith(g, h, h.tip, reference{version: from}, to)
+	c, err := compareWith(g, h, h.tip, reference{version: from}, to, false)
 	if err != nil {
 		return err
 	}

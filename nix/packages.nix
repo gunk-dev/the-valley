@@ -1052,15 +1052,16 @@ rec {
 
   # The Phase 3 integrator (dcr-439b771). Go, standard library only,
   # same trade as attest, so no module is fetched. It reads change records
-  # with the one reading of a record the push hook shares (../change), and
+  # with the one reading of a record the push hook shares (../change),
   # verifier keys with the one reading of a key the note format defines
-  # (../note).
+  # (../note), and derives required checks with the deriver (../derive).
   integrator-unwrapped = goModule {
     pname = "valley-integrator";
     dir = ../integrator;
     modules = [
       ../change
       ../composed
+      ../derive
       ../note
       ../telemetry
     ];
@@ -1070,7 +1071,7 @@ rec {
     preBuild = readsGoMod;
     tests = {
       # The policy bridge's tests compose a policy under the verification
-      # schema with real cue, and check a deriver's report against real git.
+      # schema with real cue, and derive over diffs in real git.
       reads = [ ../schema/verification.cue ];
       nativeCheckInputs = [
         pkgs.git
@@ -1082,8 +1083,8 @@ rec {
 
   # The shipping form. The integrator drives four programs rather than
   # reimplementing what they do: attest judges every statement and
-  # every note, the valley deriver and cue compose the policy, and git
-  # holds the requests and the refs. All four are pinned to this
+  # every note, cue composes the policy, git holds the requests and the
+  # refs, and nats publishes its events. All four are pinned to this
   # flake's nixpkgs so an instance's integrators agree; `nix` is
   # deliberately absent for the same reason it is absent from attest —
   # a closure must be recomputed by the nix the machine actually runs.
@@ -1102,7 +1103,6 @@ rec {
               pkgs.cue
               pkgs.natscli
               attest
-              valley-script
             ]
           } \
           --set-default VALLEY_ATTEST_SCHEMA ${../schema/attestation.cue} \

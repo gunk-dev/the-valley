@@ -1,10 +1,10 @@
 package main
 
-// The policy bridge. The integrator does not derive required checks; it
-// asks the deriver, which is `valley checks` (dcr-f41f718). The whole of
-// the mandatory-versus-overridable distinction is CUE unification, so a
-// second implementation of the composition here would be a second copy of
-// the decision.
+// The policy bridge. The integrator derives required checks in-process:
+// cue composes the two layers under the schema into one model, as the
+// composed-policy reader (../composed) reads it, and the deriver
+// (../derive) matches a diff's paths against that model. Composition is
+// cue's alone, so the integrator holds no second copy of it.
 //
 // Both layers are resolved from the integrator's own side and never from
 // the submitted tree (bd-eaefe82): the project layer from the target tip,
@@ -23,14 +23,11 @@ package main
 
 import (
 	"the-valley/composed"
+	"the-valley/derive"
 	"the-valley/integrator/verdict"
 
 	"context"
 	"fmt"
-	"os/exec"
-	"regexp"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -59,13 +56,17 @@ type policySource struct {
 	schema     string // the verification schema
 	layer      composed.Floor
 	projectDir string // the project layer's directory in the target tip's tree
-	valley     string // the deriver
-	cue        string // the composer, for the catalogue the deriver does not print
+	cue        string // the composer
 
-	// Both layers as directories of *.cue on disk, resolved by open and
-	// good for one pass.
+	// diff reads every side of a diff in a repository; derive.Diff when
+	// nil.
+	diff func(ctx context.Context, dir string, env []string, base, head string) ([]string, error)
+
+	// Both layers as directories of *.cue on disk, and the policy they
+	// compose, resolved and read by open and good for one request.
 	instance string
 	project  string
+	model    *composed.Model
 
 	// note is the one thing a pass has to say about how the layers
 	// resolved, when that is not what the configuration reads as. Empty
@@ -73,10 +74,11 @@ type policySource struct {
 	note string
 }
 
-// open resolves both layers and returns a source that reads them from disk,
-// together with what ends the pass. Held for the whole pass rather than
-// resolved per call, so the deriver and the composer are given the same
-// bytes: they are two readings of one policy, not two policies.
+// open resolves both layers, reads the policy they compose, and returns a
+// source that derives under it, together with what ends the request's use
+// of it. The policy is read once per request, so the request's candidate
+// derivation, its intervening derivation, the check definitions and the
+// digest its landing records are all of one model.
 func (p policySource) open(tip *worktree) (policySource, func(), error) {
 	dir, done, err := p.layer.Open(context.Background(), "valley-integrator-floor")
 	if err != nil {
@@ -88,7 +90,24 @@ func (p policySource) open(tip *worktree) (policySource, func(), error) {
 		done()
 		return p, func() {}, err
 	}
+	if err := p.read(); err != nil {
+		endProject()
+		done()
+		return p, func() {}, err
+	}
 	return p, func() { endProject(); done() }, nil
+}
+
+// read composes the resolved layers under the schema into the model. The
+// integrator never reads whether a requirement is mandatory, so it reads
+// the model without asking cue that of every requirement.
+func (p *policySource) read() error {
+	m, err := composed.ReadUnpinned(context.Background(), p.cue, p.schema, p.instance, p.project)
+	if err != nil {
+		return err
+	}
+	p.model = m
+	return nil
 }
 
 // openProject resolves the project's own layer at the target tip, read
@@ -113,9 +132,16 @@ func (p *policySource) openProject(tip *worktree) (func(), error) {
 	return done, nil
 }
 
-// derived is one run of the deriver over a diff: how many changed paths it
-// read, which classes the diff matched, which checks that made required,
-// and the change's carry mode.
+// derived is one derivation over a diff: how many changed paths it read,
+// which classes the diff matched, which checks that made required, and the
+// change's carry mode.
+//
+// A path no class covers puts the name `unclassified` in classes, and a
+// check the policy's `unclassified` set requires names it among the classes
+// requiring it. A class the policy itself names `unclassified` folds into
+// that one name. That only widens what an intervening change reads as
+// touching, so it can stop an observation transferring and never let one
+// through.
 type derived struct {
 	paths    int
 	classes  map[string]bool
@@ -123,32 +149,41 @@ type derived struct {
 	carry    string              // how far an approval carries across a rebase
 }
 
-// carryModes are the modes a report may state (schema/verification.cue's
-// #Carry). The integrator reads the mode and does not act on it: approval
-// carry is what reads it.
-var carryModes = map[string]bool{"same-paths": true, "same-class": true, "exact": true}
-
-// derive runs the deriver over a diff, in a checkout of the target tip. The
-// checkout supplies the commits the diff names; both layers come from
-// outside it.
+// derive derives the checks a diff requires under the request's model, in
+// a checkout of the target tip. The checkout supplies the commits the diff
+// names; the policy comes from outside it.
 func (p policySource) derive(tip *worktree, from, to string) (derived, error) {
-	cmd := exec.Command(p.valley, "checks",
-		"--schema", p.schema,
-		"--instance", p.instance,
-		"--project", p.project,
-		from, to)
-	cmd.Dir = tip.dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return derived{}, fmt.Errorf("deriving required checks for %s..%s: %w\n%s", verdict.Short(from), verdict.Short(to), err, strings.TrimSpace(string(out)))
-	}
-	d, err := parseDerived(string(out))
-	if err != nil {
+	fail := func(err error) (derived, error) {
 		return derived{}, fmt.Errorf("deriving required checks for %s..%s: %w", verdict.Short(from), verdict.Short(to), err)
 	}
-	// A diff the deriver failed to read reads as no changed paths, and no
-	// changed paths require nothing. So a report of none is believed only when
-	// git agrees that the two trees are the same.
+	diff := p.diff
+	if diff == nil {
+		diff = derive.Diff
+	}
+	paths, err := diff(context.Background(), tip.dir, nil, from, to)
+	if err != nil {
+		return fail(err)
+	}
+	r, err := derive.Derive(p.model, paths)
+	if err != nil {
+		return fail(err)
+	}
+	d := derived{paths: len(r.Paths), classes: map[string]bool{}, requires: map[string][]string{}, carry: r.Carry}
+	for _, c := range r.Classes {
+		d.classes[c] = true
+	}
+	if len(r.Unclassified) > 0 {
+		d.classes["unclassified"] = true
+	}
+	for _, q := range r.Required {
+		by := append([]string{}, q.Classes...)
+		if q.Unclassified {
+			by = append(by, "unclassified")
+		}
+		d.requires[q.Name] = by
+	}
+	// A diff misread as empty requires nothing, so no changed paths are
+	// believed only when git agrees that the two trees are the same.
 	if d.paths == 0 {
 		if _, err := git(tip.dir, "diff-tree", "--quiet", from, to); err != nil {
 			return derived{}, fmt.Errorf("the deriver read no changed paths in %s..%s, and git does not agree: %w", verdict.Short(from), verdict.Short(to), err)
@@ -157,153 +192,14 @@ func (p policySource) derive(tip *worktree, from, to string) (derived, error) {
 	return d, nil
 }
 
-// reportHeader is the first line of the deriver's report: the two commits,
-// and how many changed paths it read between them.
-var reportHeader = regexp.MustCompile(`^\S+\.\.\S+: ([0-9]+) changed path\(s\)$`)
-
-// parseDerived reads what `valley checks` printed. The deriver reports for
-// a person, so this is the one place the two programs are coupled by
-// output; the coupling is pinned by the integrator's own checks rather
-// than assumed.
-//
-// Output that is not a whole report is refused rather than read as one
-// that requires nothing: no header, no carry mode or one that is not a
-// mode, no required-checks section, a required-checks heading with no
-// checks under it, or classes that disagree with the number of changed
-// paths. The deriver never prints any of those, so each is a deriver that
-// failed partway and still exited zero.
-//
-// A report that says one thing twice is refused too: a second header,
-// classes line, carry mode or required-checks section, or a second row for
-// one check. The deriver prints each once, so a second is a forged line,
-// and reading the last one would let the forgery win.
-func parseDerived(out string) (derived, error) {
-	d := derived{classes: map[string]bool{}, requires: map[string][]string{}}
-	header, classes, required := false, false, false
-	lines := strings.Split(out, "\n")
-	for i := 0; i < len(lines); i++ {
-		line := lines[i]
-		switch {
-		case reportHeader.MatchString(line):
-			if header {
-				return derived{}, fmt.Errorf("the deriver printed a second header line, %q", line)
-			}
-			n, err := strconv.Atoi(reportHeader.FindStringSubmatch(line)[1])
-			if err != nil {
-				return derived{}, fmt.Errorf("the deriver printed %q, which is not a count of changed paths", line)
-			}
-			d.paths, header = n, true
-		case strings.HasPrefix(line, "classes matched:"):
-			if classes {
-				return derived{}, fmt.Errorf("the deriver printed a second classes line, %q", line)
-			}
-			classes = true
-			rest := strings.TrimSpace(strings.TrimPrefix(line, "classes matched:"))
-			if rest == "none" {
-				continue
-			}
-			for _, c := range strings.Split(rest, ",") {
-				if c = strings.TrimSpace(c); c != "" {
-					d.classes[c] = true
-				}
-			}
-		case strings.HasPrefix(line, "carry mode:"):
-			mode := strings.TrimSpace(strings.TrimPrefix(line, "carry mode:"))
-			if !carryModes[mode] {
-				return derived{}, fmt.Errorf("the deriver printed %q, which is not a carry mode", line)
-			}
-			if d.carry != "" {
-				return derived{}, fmt.Errorf("the deriver printed a second carry mode, %q", line)
-			}
-			d.carry = mode
-		case line == "required checks:":
-			if required {
-				return derived{}, fmt.Errorf("the deriver printed a second required-checks section")
-			}
-			required = true
-			rows := len(d.requires)
-			for i++; i < len(lines); i++ {
-				body := lines[i]
-				if !strings.HasPrefix(body, "  ") || strings.TrimSpace(body) == "" {
-					i--
-					break
-				}
-				// "  <name>  <mandatory|default>  <class>[, <class>…]"
-				fields := strings.Fields(body)
-				if len(fields) < 2 {
-					return derived{}, fmt.Errorf("the deriver printed %q, which is not a required-check line", body)
-				}
-				name := fields[0]
-				if _, twice := d.requires[name]; twice {
-					return derived{}, fmt.Errorf("the deriver printed a second row for check %s, %q", name, body)
-				}
-				var by []string
-				for _, c := range strings.Split(strings.Join(fields[2:], " "), ",") {
-					if c = strings.TrimSpace(c); c != "" {
-						by = append(by, c)
-					}
-				}
-				d.requires[name] = by
-			}
-			if len(d.requires) == rows {
-				return derived{}, fmt.Errorf("the deriver printed a required-checks heading with no checks under it")
-			}
-		case strings.HasPrefix(line, "required checks: none"):
-			// Nothing is required; the map stays empty.
-			if required {
-				return derived{}, fmt.Errorf("the deriver printed a second required-checks section")
-			}
-			required = true
-		}
-	}
-	switch {
-	case !header:
-		return derived{}, fmt.Errorf("the deriver printed no header line counting the changed paths, so this is not a report")
-	case d.carry == "":
-		return derived{}, fmt.Errorf("the deriver printed no carry mode, so this is not a report")
-	case !required:
-		return derived{}, fmt.Errorf("the deriver printed no required-checks section, so this is not a report")
-	case d.paths > 0 && len(d.classes) == 0:
-		// Every changed path matches a class, or else it is unclassified,
-		// which the deriver reports as a class of that name.
-		return derived{}, fmt.Errorf("the deriver read %d changed path(s) and matched no class", d.paths)
-	case d.paths == 0 && (len(d.classes) > 0 || len(d.requires) > 0):
-		return derived{}, fmt.Errorf("the deriver read no changed paths and still matched classes or required checks")
-	}
-	return d, nil
-}
-
-// catalogueEntry is one check as the composed policy defines it: how it is
-// run, and how long an observation of it stays good.
-type catalogueEntry = composed.Check
-
-// catalogue reads the composed policy's check definitions. The deriver
-// prints which checks are required and not what a check is, and the
-// integrator needs the latter: a pure check's attribute is what it
-// evaluates a closure over, and an effectful check's window is Δ.
-//
-// This is the same composition the deriver ran, over the same layers and
-// the same schema — `cue export` of a field the deriver does not print,
-// not a second opinion about what the policy says. The restacker reads its
-// cap through the same reader (composed.Compose).
-//
-// The digest it returns is of the whole export, so everything the policy
-// composes is in it: every check, every class's paths, requirements and
-// carry mode, and the restacker's cap.
-func (p policySource) catalogue() (map[string]catalogueEntry, string, error) {
-	pol, err := composed.Compose(context.Background(), p.cue, p.schema, p.instance, p.project)
-	if err != nil {
-		return nil, "", err
-	}
-	return pol.Checks, pol.Digest, nil
-}
-
-// required turns a derivation and a catalogue into the check set the
-// verdict is computed over.
-func (p policySource) required(d derived, cat map[string]catalogueEntry) ([]verdict.Required, error) {
+// required turns a derivation into the check set the verdict is computed
+// over, with each check as the model defines it: a pure check's attribute
+// is what the integrator evaluates a closure over, and an effectful
+// check's window is Δ.
+func (p policySource) required(d derived) ([]verdict.Required, error) {
 	var out []verdict.Required
 	for name, classes := range d.requires {
-		entry, ok := cat[name]
+		entry, ok := p.model.Checks[name]
 		if !ok {
 			return nil, fmt.Errorf("the policy requires %q and defines no check by that name", name)
 		}

@@ -191,10 +191,9 @@ type integrator struct {
 	sightings *sightings
 
 	// The programs it drives. Every judgement about a statement or a note
-	// is attest's, and every judgement about what a policy says is the
-	// deriver's and cue's.
+	// is attest's, and cue composes the policy the integrator derives
+	// required checks from.
 	attest string
-	valley string
 	cue    string
 	nats   string
 
@@ -245,7 +244,7 @@ func main() {
 		os.Exit(2)
 	}
 	// Before anything runs git, so that every git this process starts — its
-	// own, and the ones attest and the deriver start — inherits the result.
+	// own and the ones attest starts — inherits the result.
 	os.Clearenv()
 	for _, kv := range gitEnvironment(environ) {
 		name, value, _ := strings.Cut(kv, "=")
@@ -333,7 +332,7 @@ func run(args []string, loop bool) error {
 	for _, tool := range []struct {
 		name string
 		into *string
-	}{{"attest", &in.attest}, {"valley", &in.valley}, {"cue", &in.cue}, {"nats", &in.nats}} {
+	}{{"attest", &in.attest}, {"cue", &in.cue}, {"nats", &in.nats}} {
 		if *tool.into, err = exec.LookPath(tool.name); err != nil && tool.name != "nats" {
 			return fmt.Errorf("%s is not on the path; the integrator drives it rather than reimplementing it", tool.name)
 		}
@@ -362,7 +361,6 @@ func run(args []string, loop bool) error {
 		schema:     abs(*schema),
 		layer:      layer,
 		projectDir: *projectPolicy,
-		valley:     in.valley,
 		cue:        in.cue,
 	}
 	if *now != "" {

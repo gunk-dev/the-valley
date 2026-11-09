@@ -1676,8 +1676,9 @@ A project's required checks come from three CUE layers, unified as
 Both layers are read from integrated tips, never from the change being judged
 (`integrator/policy.go`, `composed/composed.go`). A path class maps path globs to checks. A change
 requires the union of the checks of every class one of its paths matches. A path no class matches
-requires the `unclassified` checks. The integrator gets this answer by running `valley checks`,
-which diffs with renames counted on both sides. Checked by `policy-deriver` and `cue-vet`.
+requires the `unclassified` checks. The integrator gets this answer from the Go deriver in-process,
+and approval from `valley checks`. Both diff with renames counted on both sides. Checked by
+`policy-deriver`, `cue-vet` and `integrator-unit`.
 
 A layer's documents are the entries bash's glob `"$dir"/*.cue` names. The directory is a name and
 never a pattern, so a directory named `policy[1]` is read, and `policy1` is not. A name beginning
@@ -1691,12 +1692,11 @@ change requires would then depend on the locale of the operator's shell or the i
 Checked by `derive-unit`.
 
 The derivation fails closed. A failed read of the diff, the target, a policy layer or the composed
-policy makes `valley checks` exit non-zero and print no report. Without that, the failure would read
-as an empty list, and an empty list derives a change that requires nothing. The integrator also
-refuses output that is not a whole report: no header, no required-checks section, or a
-required-checks heading with no checks under it. It believes a report of no changed paths only when
-git agrees that the two trees are the same. Checked by `policy-deriver`, `valley-request` and
-`integrator-unit`.
+policy makes `valley checks` exit non-zero and print no report, and refuses the integrator's
+evaluation of the change. Without that, the failure would read as an empty list, and an empty list
+derives a change that requires nothing. The integrator believes a derivation of no changed paths
+only when git agrees that the two trees are the same. Checked by `policy-deriver`, `valley-request`
+and `integrator-unit`.
 
 A policy cannot forge a line of what it renders. `valley checks` reads the composed policy as lines
 of tab-separated fields, and the policy's own strings are fields of those lines. A newline in one
@@ -1704,11 +1704,10 @@ would end its line and start a forged one, such as a looser carry mode for a cla
 So the schema refuses control characters in path globs, and its name shape already keeps them out of
 class and check names. `valley checks` also refuses a rendered line holding one. It refuses a second
 line for anything the policy states once, such as a class's carry mode or a class's requirement of a
-check. The integrator refuses a report that states one thing twice, such as two carry modes or two
-rows for one check. Checked by `cue-vet`, `policy-deriver` and `integrator-unit`.
+check. Checked by `cue-vet` and `policy-deriver`.
 
-A second deriver is written in Go (`derive/`). The check worker runs it, while `valley checks`,
-approval and the integrator use the one in `bin/valley`. It reads the whole composed policy through
+A second deriver is written in Go (`derive/`). The check worker and the integrator run it, while
+`valley checks` and approval use the one in `bin/valley`. It reads the whole composed policy through
 `composed.Read` (`composed/model.go`): every class's paths, requirements and carry mode, the
 `unclassified` set, and each check's runner, cost and validity. It asks cue whether each requirement
 is mandatory the way `valley checks` asks: it vets the layers with a document setting that
@@ -1716,6 +1715,15 @@ requirement to `false`. It reads a diff as `valley checks` does, with renames co
 and keeps every path whole, whatever bytes it holds. It matches globs byte by byte, as
 `valley checks` does. It reads a layer's documents as `valley checks` does. Checked by
 `derive-unit`.
+
+The integrator reads the composed policy through `composed.ReadUnpinned`, which asks cue nothing
+about whether a requirement is mandatory, because the integrator never reads that. It reads it once
+for each request it evaluates. The request's own derivation, the derivation of what intervening
+landings touched, the check definitions and the policy digest its landing records all come from that
+one model (`implemented`, `integrator/policy.go`, `integrator/refs.go`). A path no class covers
+reads, in the integrator's derivation, as the class `unclassified`, and a class the policy names
+`unclassified` folds into that name. That only widens what an intervening landing touched, so it can
+stop an effectful observation transferring and never let one through. Checked by `integrator-unit`.
 
 `derive-unit` holds the two derivers to the same answer. It runs both over this repository's own
 policy, the example policies under `examples/policy/`, and paths drawn from a fixed seed. It runs

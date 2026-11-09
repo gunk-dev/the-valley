@@ -378,9 +378,9 @@ func (in *integrator) materialize(r request, tip, floor string, watch *stopwatch
 
 	// The policy is read from the integrator's own side and never from the
 	// tree being gated: the project layer from the target tip, the floor
-	// from the instance repository's integrated tip. Both
-	// are resolved once and held for the whole pass: the floor as the
-	// copy the pass's inputs were read from.
+	// from the instance repository's integrated tip. Both are resolved
+	// and composed once for this request, and the one model is what every
+	// derivation below and the landing's policy digest are of.
 	done = watch.stage(stagePolicy)
 	source := in.policy
 	source.layer = composed.Floor{Path: floor}
@@ -391,18 +391,13 @@ func (in *integrator) materialize(r request, tip, floor string, watch *stopwatch
 	}
 	defer closePolicy()
 	land.composition = pol.note
-	cat, policyDigest, err := pol.catalogue()
-	if err != nil {
-		done()
-		return ch, verdict.Snapshot{}, land, err
-	}
-	land.policy = policyDigest
+	land.policy = pol.model.Digest
 	derived, err := pol.derive(wt, base, r.head)
 	if err != nil {
 		done()
 		return ch, verdict.Snapshot{}, land, err
 	}
-	required, err := pol.required(derived, cat)
+	required, err := pol.required(derived)
 	done()
 	if err != nil {
 		return ch, verdict.Snapshot{}, land, err
@@ -451,9 +446,9 @@ func (in *integrator) materialize(r request, tip, floor string, watch *stopwatch
 		snap.Apply = verdict.Applied{Clean: true, Tree: land.digest}
 
 		// What intervening landings touched, in the policy's own terms:
-		// the classes the deriver matches over base..tip. Asking the
-		// deriver rather than matching globs here keeps one implementation
-		// of what a class covers.
+		// the classes the deriver matches over base..tip under the same
+		// model. Asking the deriver rather than matching globs here keeps
+		// one implementation of what a class covers.
 		done = watch.stage(stagePolicy)
 		intervening, err := pol.derive(wt, base, tip)
 		done()

@@ -13,8 +13,8 @@ settle into `main`.
 2. **Review** — An operator lists ready changes (`valley pending`) and inspects one
    (`valley review <change>`).
 3. **Approve** — A [principal](./docs/concepts.md#principals-and-grants) allowed to approve approves
-   the change (`valley approve <change>`, or `[a]pprove` in `valley review`), running and signing
-   the required checks and writing an integration request for that commit.
+   the change (`valley approve <change>`, or `[a]pprove` in `valley review`), writing an integration
+   request for that commit.
 4. **Integrate** — When enabled on the
    [host](./docs/concepts.md#the-host-the-hook-and-the-integrator), the **integrator** checks each
    request, verifies a ready change's signed check evidence against the verification policy, and
@@ -38,8 +38,8 @@ valley review kqxm              # inspect the diff (and interactively approve)
   principals may approve, and enabling the integrator or identity compiler are host choices
   (`valley.cue`, `services.valley`); push mirrors receive only `main` and tags, not
   [project storage](./docs/concepts.md#records-project-storage-the-plan-graph-and-knots).
-- **Not built yet:** Automatic approval carry across restacks, hardware-key (`sk-*`) touch-bound
-  approval envelopes, and atomic multi-ref landing transactions are not built yet.
+- **Not built yet:** Automatic approval carry across restacks and hardware-key (`sk-*`) touch-bound
+  approval envelopes are not built yet.
 
 ## Documentation
 

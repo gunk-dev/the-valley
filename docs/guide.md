@@ -49,9 +49,9 @@ to the valley host, and Nix with flakes enabled.
    It does not grant permission. The host checks the principal associated with the key you actually
    use.
 
-3. Check that the client can verify merged landings. You do not need to configure anything. The host
-   publishes its trusted signers file and the integrator's signing name in the instance repository,
-   and the client reads them when it needs them. This command shows the publication:
+3. Check that the client can verify recorded landings. No client configuration is needed: the client
+   reads the host's trusted signers file and integrator signing name from the instance repository
+   (**implemented**). Show the host's publication:
 
    ```sh
    git ls-remote git@valley.example:instance refs/the-valley/signers

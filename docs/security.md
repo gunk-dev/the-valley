@@ -130,18 +130,24 @@ Readiness is different. A change record's state is the author's workflow signal,
 enforces it as closely as refs allow. It does not enforce it atomically. A record written between
 the integrator's last read of the records and its move of the target can be missed. That can land a
 head the operator approved and the author has since paused. It can never land content the operator
-did not approve. The race-free design binds each approval to the record's withdraw generation in a
-signed approval statement (**not built**).
+did not approve. The race-free design binds each approval to the record commit the approver read in
+a signed `the-valley/approval/v1` statement (`implemented`, see
+[Approval statement](./reference.md#approval-statement-the-valleyapprovalv1); storing approvals and
+gating landings on them are **not built**).
 
 ### 3. Filing takes a touch (not built)
 
 This gate is **not built**. Its design gives the `approve` grant to hardware keys that need a touch
-for every signature, and verifies each filing with `sigverify`. Until it is built, filing a request
-needs the operator's principal and no touch. `sigverify` itself is checked by `sigverify-unit` and
-`sigverify-e2e`, including a touchless-signature negative test. Enrolling a hardware-backed key is
-`implemented`: the registry schema accepts `bound: "hardware"` with an attestation, the identity
-renderer verifies the attestation, and it lists qualifying keys in the hardware approval-signers
-output. Enforcing a touch when an approval is filed is **not built**.
+for every signature, and verifies each filing with `sigverify` or `approval`. Until it is built,
+filing a request needs the operator's principal and no touch. `sigverify` itself is checked by
+`sigverify-unit` and `sigverify-e2e`, including a touchless-signature negative test. Enrolling a
+hardware-backed key and signing an approval statement on a YubiKey PIV slot are `implemented` (see
+[Approval signers files](./reference.md#approval-signers-files) and
+[Approval statement](./reference.md#approval-statement-the-valleyapprovalv1)): the registry schema
+accepts `bound: "hardware"` with an attestation, the identity renderer verifies the attestation and
+lists touch-always keys in `approval-signers-hardware`, and the `approval` command signs statements
+with the key in a YubiKey's PIV slot. Enforcing a touch when an approval is filed or integrated is
+**not built**.
 
 ### 4. Hosts deploy only what the operator signed (not built)
 

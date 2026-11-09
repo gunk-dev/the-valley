@@ -38,6 +38,10 @@ The parts are:
 - read access, which reads and evaluates the two consents for reading a project (`readaccess/`);
 - `valley-restacker`, the restacker, which rebases ready changes onto `main` as its own principal,
   one controller for each project a host lists (`restack/`);
+- `valley-telemetry`, which collects host and workstation diagnostics (`telemetry/`);
+- `approval`, which writes and verifies `the-valley/approval/v1` statements and signs them with a
+  software key or YubiKey PIV slot (`approval/`, **implemented**). Storage and approval gates are
+  **not built**;
 - the review record and its history, which nothing writes or admits yet (`review/`);
 - `sigverify`, a hardware-key signature verifier that nothing calls yet (`sigverify/`).
 
@@ -260,7 +264,7 @@ the plan graph by `knots-e2e`.
 | `refs/the-valley/knots`                                                       | Any named principal                                                                              | The plan graph, that name exactly. One commit on the tip that keeps the graph valid; never deleted (see [The plan graph](#the-plan-graph), `valleyhook/knots.go`).                                                                                            |
 | `refs/the-valley/projects` (instance repository)                              | Nobody                                                                                           | `valley-init` writes it on disk: the host's project list (see [valley-init](#valley-init-and-the-push-hold)).                                                                                                                                                 |
 | `refs/the-valley/signers` (instance repository)                               | Nobody                                                                                           | `valley-signers` writes it on disk, and the integrator can: what clients verify transfer statements with (see [The signers publication](#the-signers-publication)).                                                                                           |
-| Every other `refs/the-valley/*`                                               | Nobody                                                                                           | This covers the integrator's outcome records, `refs/the-valley/integration-outcomes/<target>/<c>`, its landing records, `refs/the-valley/integration-landings/<target>/<head>`, and review histories (see [Reviews](#reviews)).                               |
+| Every other `refs/the-valley/*`                                               | Nobody                                                                                           | Covers the integrator's outcome, inputs and landing records (`integration-outcomes`, `integration-inputs`, `integration-landings`), and review histories (see [Reviews](#reviews)).                                                                           |
 | `refs/replace/*`, `refs/notes/*`                                              | Nobody                                                                                           | A replace ref would let git show other content under a watched name.                                                                                                                                                                                          |
 | Symbolic refs                                                                 | Nobody                                                                                           |                                                                                                                                                                                                                                                               |
 | `refs/refs/*`, `refs/heads/refs/*`, `refs/tags/refs/*`, `refs/remotes/refs/*` | Nobody creates or updates one                                                                    | A ref named like another ref. When that ref is missing, git reads, fetches and pushes to this one in its place. A delete follows the rule of its namespace.                                                                                                   |
@@ -310,8 +314,9 @@ and can leave an old request in place. So `valley withdraw` warns when origin ho
 the change, and `valley unready` notes one. The request is looked for under `c-<change-id>`, and
 under the name a branch's request has, for the branch of each of the change's versions. Only an
 `approve` holder may touch a request ref, so the warning says the operator must drop it if the
-change is readied first. Approvals have no records of their own: signed approval statements are
-**not built**.
+change is readied first. Approvals have no records of their own on origin: `approval` writes, signs,
+and verifies `the-valley/approval/v1` statements (`approval/statement.go`), while storing approvals
+and gating landings on them are **not built**.
 
 The ref `refs/the-valley/changes/main/<change-id>` points at a record commit. The commit's tree
 holds one entry, `record.json`, as a plain file. Its schema is `valley-change-record/v1`, read by
@@ -563,8 +568,12 @@ on how long a request waits is checked.
    the pass found, so a request filed again since stands.
 3. **Skip what is decided.** The outcome record
    `refs/the-valley/integration-outcomes/<target>/<change>` holds the head, the target tip, a hash
-   of all attestation refs, and the outcome. If the first three still match, the request is skipped.
-   A `failed` outcome is retried after 10 minutes. A refusal from step 4 is never skipped this way.
+   of all attestation refs, and the outcome, and the inputs record
+   `refs/the-valley/integration-inputs/<target>/<change>` holds a digest of the floor documents, the
+   accepted signers files, the project name, and the integrator's signing name alongside the outcome
+   blob (`integrator/inputs.go`). If the head, tip, evidence hash, and inputs digest still match,
+   the request is skipped. A `failed` outcome is retried after 10 minutes. A refusal from step 4 is
+   never skipped this way.
 4. **Refuse what the records refuse.** A request is refused with the outcome `refused-not-ready`
    when either of these holds:
    - it is named `c-<change-id>`, and the record `refs/the-valley/changes/<target>/<change-id>` is
@@ -692,8 +701,10 @@ Readiness is the author's workflow signal, and the integrator enforces it as clo
 It does not enforce it atomically. The integrator reads the records last just before it moves the
 target, and a record written between that read and the move is not seen. So a head the operator
 approved can still land after its author has paused it. Content the operator did not approve can
-never land this way. The race-free design binds each approval to the record's withdraw generation in
-a signed approval statement (**not built**).
+never land this way. Eliminating this race calls for binding each approval to the record commit the
+approver read. Signed `the-valley/approval/v1` statements support that binding
+(`approval/statement.go`, **implemented**). Storing them on origin and gating landings on them are
+**not built**.
 
 The records are read with the parser the hook and the CLI share (`change/`), under the bounds the
 hook admits them under (`integrator/records.go`). Each pass reads every ref under
@@ -1813,16 +1824,17 @@ the-valley's own project layer is `policy/project/policy.cue`. It gives each par
 a class that requires the checks reading that part. A Go module requires its unit tests, and its
 end-to-end check where it has one. The CLI requires its script and status checks. The Nix, the
 schemas and the policy require their evaluations and vets. The NixOS module also requires the
-end-to-end checks that run what it renders, and two of those boot NixOS machines. A change to
-`flake.nix` or `flake.lock` does not require them, so a nixpkgs bump boots no machine. A check's own
-files, such as its script under `nix/checks/`, require that check. A change to documentation alone
-requires the floor's `prose-format` and nothing else, which checks Markdown formatting and relative
-links and heading anchors across `README.md`, `AGENTS.md` and `docs/*.md`
-(`nix/checks/prose-format.sh`). A project layer that stopped composing would stop every derivation
-once it landed, including the derivation of its own fix. So the `own-policy` check composes the
-layer with the example floor before it lands. It fails if the layer names a check this flake does
-not define, if a script under `nix/checks/` requires no check of its own, or if a docs-only change
-would require more than `prose-format`.
+end-to-end checks that run what it renders, while slow end-to-end checks that a class lists in
+`follows` run on `main` after a landing rather than gating changes. A change to `flake.nix` or
+`flake.lock` does not require them, so a nixpkgs bump boots no machine. A check's own files, such as
+its script under `nix/checks/`, require that check. A change to documentation alone requires the
+floor's `prose-format` and nothing else, which checks Markdown formatting and relative links and
+heading anchors across `README.md`, `AGENTS.md` and `docs/*.md` (`nix/checks/prose-format.sh`). A
+project layer that stopped composing would stop every derivation once it landed, including the
+derivation of its own fix. So the `own-policy` check composes the layer with the example floor
+before it lands. It fails if the layer names a check this flake does not define, if a script under
+`nix/checks/` requires no check of its own, or if a docs-only change would require more than
+`prose-format`.
 
 In the-valley's layer, four parts are `same-class`: the hook, the integrator, the signature
 verifier, and the identity compiler with `schema/identity.cue`. The policy is `exact`: `policy/` and
@@ -1993,10 +2005,10 @@ space, and the host module holds the list it renders to the same rule. A file th
 names a signer twice, holds a word that is not printable ASCII, names a signer no verifier key can
 carry, or names the controller's own `--name` stops the controller before it judges anything. The
 last is refused because a restricted signer under the integrator's own name could also sign transfer
-statements, which clients believe in every project. The publisher refuses the same files. A changed
-list does not by itself re-judge a request whose answer is recorded: a request a narrower list held
-back waits until its head, the target's tip or the stored evidence moves. Checked by
-`integrator-e2e`, `integrator-unit`, `note-unit`, `module-eval`, `signers-e2e` and `restack-e2e`.
+statements, which clients believe in every project. The publisher refuses the same files. The inputs
+digest includes the `signer-projects` list (`integrator/inputs.go`), so changing a signer's accepted
+projects causes pending requests to be judged again. Checked by `integrator-e2e`, `integrator-unit`,
+`note-unit`, `module-eval`, `signers-e2e` and `restack-e2e`.
 
 Check definitions come from the change being judged. `attest` builds the flake checks of the
 exported tree, so a change can edit the check it is judged by. The policy that names the checks
@@ -2114,9 +2126,10 @@ The identity registry is CUE under `identity/` in the instance repository, read 
 of its `main` (`identity/registry.go`, `schema/identity.cue`). It declares principals and
 boundaries.
 
-- A principal has a kind (`human`, `machine` or `service`), one or more `ssh-ed25519` keys, and
-  grants. A key may also sign attestations, under a name it declares, and may carry a YubiKey PIV
-  attestation that the compiler verifies (`identity/attestation.go`).
+- A principal has a kind (`human`, `machine` or `service`), `ssh-ed25519` keys (at least one when
+  the principal holds a grant at a boundary other than `edge-read`), and grants. A key may also sign
+  attestations, under a name it declares, and may carry a YubiKey PIV attestation that the compiler
+  verifies (`identity/attestation.go`).
 - A grant names a boundary. A boundary has a kind: `git-push`, `registry`, `approve`, `restack` or
   `edge-read`. The kind `approve` is also accepted as `request`. A registry using either name
   compiles the same files. A grant at an `edge-read` boundary is a read grant and names the projects
@@ -2325,7 +2338,7 @@ prompt's header then says `checks failed at <head>`. It offers only `[v]iew diff
 failure, such as a lost lease race, keeps the prompt as it was.
 
 `review` reads the change's state from its record before it shows the change. A change that is not
-ready says so on the first line shown, above its diff, and again in place of the usual prompt:
+ready says so on the first line shown, above its diff, and in the prompt header:
 
 - A draft:
   `nxvp v2 is a draft: its owner (alice) hasn't marked it ready, so it can't be approved yet.`
@@ -2378,14 +2391,14 @@ too.
 - `review` first lists the layers. It warns of each lower layer that is a draft or withdrawn, since
   the integrator refuses to land it or anything above it. Its last line says how the review goes:
   read each layer and go on with `[n]`, and approving the top lands every layer.
-- When the bottom does not fast-forward from `main`, the summary ends with a prompt, before any
-  layer is paged, such as
-  `one, at the bottom, does not fast-forward from main: [b]ase all 3 onto main, [s]top?`.
-  - `[b]ase` rebases the whole stack, as `valley rebase` does. `review` then reads the stack again,
-    lists it again, and pages the rebased layers. So the heads paged are the heads approved.
-  - `[s]top` ends the review, and nothing is done.
+- When the bottom does not fast-forward from `main`, the summary ends with a prompt before any layer
+  is paged.
+  - `[b]ase onto main` rebases the whole stack, as `valley rebase` does. `review` rereads and lists
+    the stack before paging its rebased layers, so approval covers the heads shown.
+  - `[v]iew diff` pages the top's whole diff against `main`.
+  - `[s]kip` ends the review, and nothing is done.
   - When the rebase is refused or left unfinished, `review` says what happened and offers only
-    `[s]top`.
+    `[v]iew diff` and `[s]kip`.
 - Each layer's page is headed `change <k> of <n>: <name> on <below>`. The page shows the layer's log
   and its diff from the layer below. Notes taken on it are kept under its own branch.
 - After each lower layer, `review` asks a prompt that names the layer and its place, such as
@@ -4937,10 +4950,10 @@ supplies the host configuration, the project declaration and the secrets (**depl
 | What                                         | State                                                                                                                                                                                                                                                                              |
 | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `sigverify`                                  | On `main` and tested. Nothing calls it.                                                                                                                                                                                                                                            |
-| Hardware-backed keys in the registry         | `identity compile` verifies YubiKey PIV attestations. No host service or gate uses them.                                                                                                                                                                                           |
+| Hardware-backed keys in the registry         | `identity compile` verifies YubiKey PIV attestations and writes `approval-signers-hardware`; `approval sign --piv` signs statements on a YubiKey PIV slot. No host service or gate uses them.                                                                                      |
 | SSHSIG evidence                              | Attestations use the signed-note format.                                                                                                                                                                                                                                           |
-| Approvals                                    | The integrator checks evidence only. No approval is required for any path class.                                                                                                                                                                                                   |
-| Approval carry                               | `valley checks` reports a change's carry mode. Nothing acts on it.                                                                                                                                                                                                                 |
+| Approvals                                    | `approval` writes, signs, and verifies `the-valley/approval/v1` statements. The integrator checks evidence only, and nothing stores or gates on approvals.                                                                                                                         |
+| Approval carry                               | `valley checks` reports a change's carry mode, and `valley review` keeps a reviewer's answer across a restack during review when the mode allows it. Carrying a filed approval is not built.                                                                                       |
 | The restacker                                | The host module runs it on every integrated project, or on the projects the host lists (`services.valley.restacker`). It is off by default, and a deployment registers its principal.                                                                                              |
 | The check worker                             | The host module runs it on a timer (`services.valley.worker`). It is off by default.                                                                                                                                                                                               |
 | The build slice                              | `services.valley.buildSlice` caps every build of the nix daemon. It is off by default.                                                                                                                                                                                             |
@@ -4951,8 +4964,7 @@ supplies the host configuration, the project declaration and the secrets (**depl
 | Clones from the edge                         | `valley-web` serves no git clone route.                                                                                                                                                                                                                                            |
 | Read grants over ssh                         | sshd lets every admitted key fetch every repository (`valleyhook/shell.go`). Read grants govern only web exports.                                                                                                                                                                  |
 | Reviews                                      | `review/` defines the record and its history. The hook refuses every push to them.                                                                                                                                                                                                 |
-| A crash-safe landing ledger                  | Landing is several separate ref updates.                                                                                                                                                                                                                                           |
-| Policy and registry snapshot in the outcome  | The outcome record holds the head, the tip and an evidence hash.                                                                                                                                                                                                                   |
+| A crash-safe landing ledger                  | Landing is one `git update-ref --stdin` transaction, though with the files ref backend a crash inside git's commit phase can leave some refs moved and others not (`integrator/refs.go`).                                                                                          |
 | Registry compile on an instance landing      | The compiler runs on its 5-minute timer only.                                                                                                                                                                                                                                      |
 | Bus authentication                           | The bus listens on localhost with no authentication.                                                                                                                                                                                                                               |
 | Telemetry from remote components             | The collector takes reports from a remote component's reporter principal. No component of the-valley sends them; a web receiver is observed only when it runs on the host.                                                                                                         |

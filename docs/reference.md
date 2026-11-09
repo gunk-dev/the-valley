@@ -487,13 +487,17 @@ valley approve [-v] [--head <sha>] [--build-here] <change>
     `refs/the-valley/integration-requests/main/<request>` (leased on the prior request value) in one
     `git push --atomic`. When the request already names the head and there is no new evidence, it
     makes no push.
-  - Ends with a summary: `request` with the request ref and head, `evidence` for each attestation
-    ref it published, `reused` for each ref on `origin` whose evidence it reused, `missing` for the
-    required `nix` checks it filed without evidence, and `checks` for every required check.
-  - Prints a `time` line after each check's `check` line: the check's name, its result, how long it
-    took, and how it was satisfied. It passes `--timings` to `attest run`, so each check is also
-    logged to the local [timing log](#the-timing-log). The log is not evidence, and a log that
-    cannot be written is a warning: approval continues.
+  - Ends with one verdict line (`✓`, `◐`, `◇`, `⊘`, or `?`), the change and what happened to it, and
+    one indented `run:` or `see:` line only when the person must act. When the request already stood
+    at the approved head and a re-read of `origin` fails or finds the request consumed meanwhile, it
+    reports `?` (`approved · state unknown` or `approved · request consumed meanwhile`) rather than
+    `not approved`. While checks run locally, one progress line redraws in place on a terminal (or
+    prints a start line in a pipe) and shows a failed check's log tail on failure. `-v, --verbose`
+    prints the reused signers, `attest run`'s `check` and `time` lines, and the `request`, `tree`,
+    `evidence`, `reused`, `missing`, and `checks` summary.
+  - Passes `--timings` to `attest run`, so each check that runs locally is logged to the local
+    [timing log](#the-timing-log). The log is not evidence, and a log that cannot be written is a
+    warning: approval continues.
 
 ### `valley rebase`
 
@@ -676,8 +680,8 @@ valley help [<verb>]
 - **`valley help [<verb>]`** (also `valley -h`, `valley --help`, or `valley` with no arguments):
   Prints a one-screen command summary when called with no `<verb>`, or detailed usage for `<verb>`
   (`pending`, `changes`, `review`, `approve`, `rebase`, `status`, `ready`, `unready`, `withdraw`,
-  `knot`, `plan`, `checks`, `tail`, `replay`, or `self-update`). `valley <verb> --help` and
-  `valley <verb> -h` print the same per-verb help.
+  `knot`, `plan`, `checks`, `tail`, `replay`, `telemetry`, or `self-update`). `valley <verb> --help`
+  and `valley <verb> -h` print the same per-verb help.
 
 ### `valley telemetry`
 
@@ -755,7 +759,7 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
 - **`attest`** ([`attest/main.go`](../attest/main.go)): Composes, signs, stores, and verifies
   `the-valley/attestation/v1` notes and computes canonical digests. Exits `0` on success, `1` on
   verification or runtime failure, `2` on invalid flags.
-  - `attest run [--repo <dir>] [--rev <rev>] [--check <name>[=<attr>]]... [--command <name>=<cmd>]... [--environment <name>] --key <path> [--name <name>] [--provenance <file>] [--schema <file>] [--system <system>] [--push <remote>] [--branch <ref> | --ref-only] [--timings] [--change <id>] [--change-version <n>] [--cost <name>=<class>]... [--slots <n>] [--gc-roots <dir>] [--eval-reservations <dir> --eval-budget <bytes> [--eval-estimate <bytes>]] [--eval-peak <file>]`
+  - `attest run [--repo <dir>] [--rev <rev>] [--check <name>[=<attr>]]... [--command <name>=<cmd>]... [--environment <name>] --key <path> [--name <name>] [--provenance <file>] [--schema <file>] [--system <system>] [--push <remote>] [--branch <ref> | --ref-only] [--timings] [--change <id>] [--change-version <n>] [--cost <name>=<class>]... [--telemetry <dir> [--telemetry-run <id>] [--project <name>] [--capacity <line>]] [--slots <n>] [--gc-roots <dir>] [--eval-reservations <dir> --eval-budget <bytes> [--eval-estimate <bytes>]] [--eval-peak <file>]`
     — prints a `time` line per check. `--timings` appends each check's timing to the
     [timing log](#the-timing-log); `--change`, `--change-version` and `--cost` supply the fields
     `attest` cannot read itself. `--push` publishes the branch and the ref in one atomic push, and
@@ -833,9 +837,9 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     key line.
 - **`valley-go`** ([`status/main.go`](../status/main.go)): Internal helper binary invoked by
   `bin/valley` for `status`, `ready`, `unready`, `withdraw`, `changes`, `pending`, `rebase`, `knot`,
-  `plan`, and `self-update`, plus internal plumbing verbs (`resolve <change>`, `stack <change>`,
-  `does [-v] <change-id>...`, `brings [--change <id>] <head>`, `versions <change-id>`,
-  `compare --tip <commit> <change-id> <version> <head>`,
+  `plan`, `telemetry`, and `self-update`, plus internal plumbing verbs (`resolve <change>`,
+  `stack <change>`, `does [-v] <change-id>...`, `brings [--change <id>] <head>`,
+  `versions <change-id>`, `compare --tip <commit> <change-id> <version> <head>`,
   `coverage --head <sha> [--check <name>=<attribute>]...`), and
   `checks [--schema <file>] --instance <dir> --project <dir> <base> <head>`, which prints the Go
   deriver's `valley-checks/v1` document and which `bin/valley` does not run. `work` is the check
@@ -1194,7 +1198,7 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
 
 ## Environment variables and configuration
 
-`valley` and its helpers read three `valley.*` git configuration keys, environment variables for
+`valley` and its helpers read five `valley.*` git configuration keys, environment variables for
 signing and schema paths, and local state and cache files.
 
 ### Git configuration
@@ -1252,7 +1256,7 @@ export VALLEY_ATTEST_NAME=operator
 | `XDG_CACHE_HOME`             | `pending`, `changes`, `plan`, `knot`, `valley-worker`           | Base directory for cached cross-project clones (defaults to `~/.cache`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `EDITOR`                     | `review` (via `less`)                                           | Editor invoked when pressing `v` while paging a diff in `valley review`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `GIT_PAGER`, `PAGER`, `LESS` | `review`                                                        | Pager and diff-renderer environment variables read by `valley review` (`LESS` defaults to `FRX` when unset).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `NO_COLOR`                   | `pending`, `plan`                                               | When set to a non-empty value, disables ANSI bold and color sequences on terminal output.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `NO_COLOR`                   | `pending`, `plan`, `approve`, `review`                          | When set to a non-empty value, disables ANSI bold and color sequences on terminal output.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `NATS_URL`                   | `tail`, `replay` (via `nats`)                                   | NATS server URL used by the `nats` CLI when streaming or replaying bus events.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ### Client state and cache files
@@ -4751,7 +4755,7 @@ cue vet -c schema/identity.cue examples/identity/registry/*.cue
 | Definition / field                 | Type / default                                | Rules                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | :--------------------------------- | :-------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `boundaries.<name>` (`#Boundary`)  | `[#Name]: #Boundary`                          | Enforcement boundaries run by the instance (`#Name`: `=~"^[a-zA-Z0-9][a-zA-Z0-9._-]*$"`). Every boundary has `kind: "git-push" \| "registry" \| "approve" \| "request" \| "restack" \| "edge-read"`. A boundary of kind `edge-read` requires `destination: #Name`, and boundaries of other kinds forbid it (`readScopes`). Every `boundary` referenced by a grant must exist in `boundaries`.                                                                                                                                                                                                                                                                                                                                                                                       |
-| `principals.<name>` (`#Principal`) | `[#Name]: #Principal`                         | Named principals: `kind: "human" \| "machine" \| "service"`, `keys: [#Key, ...#Key]`, `grants: [#Name]: #Grant` (`{ boundary: #Name, projects?: #Scope }`), `external: #External \| *null` (`{ kind: "domain" \| "did", handle: =~"^[^\\s]+$" }`), and `expires?: =~"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"`. `expires` is **required** whenever `kind != "human"` or `external != null`. Principal names cannot be `anyone`.                                                                                                                                                                                                                                                                                                                                                                |
+| `principals.<name>` (`#Principal`) | `[#Name]: #Principal`                         | Named principals: `kind: "human" \| "machine" \| "service"`, `keys: [...#Key]` (at least one key is required when the principal holds a grant at a boundary whose `kind` is not `"edge-read"`), `grants: [#Name]: #Grant` (`{ boundary: #Name, projects?: #Scope }`), `external: #External \| *null` (`{ kind: "domain" \| "did", handle: =~"^[^\\s]+$" }`), and `expires?: =~"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"`. `expires` is **required** whenever `kind != "human"` or `external != null`. Principal names cannot be `anyone`.                                                                                                                                                                                                                                                      |
 | `#Scope`                           | `"all" \| close({[#ProjectName]: #Identity})` | The projects a read grant covers: `"all"` for every project, or a map from project name to the publication identity declared in that project's `policy/read` ([Read policy](#read-policy-schemareadcue)). `{}` covers no projects. Every grant at an `edge-read` boundary requires `projects`, and grants at other boundaries forbid it (`readScopes`).                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `anyone` (`#Anyone`)               | `{ grants: [#Name]: #Grant }`                 | Optional. The read grants for a reader who presents no credential. `anyone` has no keys, no external identity, and no expiry, can hold grants only at `edge-read` boundaries (`readScopes`), and cannot be `genesis`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `#Key`                             | `class: "ssh-ed25519"`                        | `bound: "hardware" \| "host"`, `public: =~"^ssh-ed25519 [A-Za-z0-9+/]+={0,2}( [^\\n]*)?$"`, and optional `signs?: =~"^[^\\s+]+$"` (when set, `identity compile` emits a verifier key in `known-signers`), and optional `attestation?: #Attestation`. A key with an `attestation` must be `bound: "hardware"`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |

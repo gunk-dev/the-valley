@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -329,6 +330,39 @@ func TestChangedRefusesWhatGitDoesNotWrite(t *testing.T) {
 	}
 }
 
+// TestChangedReadsOnlyWholeRecords holds Changed to a stream of records of
+// every status git writes, cut at every byte: a cut at the end of a record
+// reads the paths of the records before it, in order, and every other cut
+// is refused.
+func TestChangedReadsOnlyWholeRecords(t *testing.T) {
+	var stream []byte
+	var paths []string
+	whole := map[int][]string{0: nil}
+	for _, rec := range []struct {
+		raw   string
+		paths []string
+	}{
+		{"A\x00a b\x00", []string{"a b"}},
+		{"M\x00x.md\tq\x00", []string{"x.md\tq"}},
+		{"R075\x00old\nname\x00caf\xe9/new\x00", []string{"old\nname", "caf\xe9/new"}},
+		{"D\x00\xff*\x00", []string{"\xff*"}},
+		{"T\x00link\x00", []string{"link"}},
+		{"C050\x00src\x00dst\x00", []string{"src", "dst"}},
+	} {
+		stream = append(stream, rec.raw...)
+		paths = append(paths, rec.paths...)
+		whole[len(stream)] = slices.Clone(paths)
+	}
+	for cut := range len(stream) + 1 {
+		got, err := Changed(stream[:cut])
+		if want, ok := whole[cut]; !ok && err == nil {
+			t.Errorf("Changed(%q) read %q from a record cut short", stream[:cut], got)
+		} else if ok && (err != nil || !slices.Equal(got, want)) {
+			t.Errorf("Changed(%q) = %q, %v; want %q", stream[:cut], got, err, want)
+		}
+	}
+}
+
 // TestMatch is the glob language by example.
 func TestMatch(t *testing.T) {
 	for _, c := range []struct {
@@ -357,6 +391,19 @@ func TestMatch(t *testing.T) {
 		{"c.(x)", "cx(x)", false},
 		{"docs/", "docs", true}, // one trailing slash is dropped
 		{"docs//", "docs/", true},
+		{"**/**/x", "x", true},
+		{"*", "\xff", true},
+		{"**", "a\nb/c", true},
+		// Every byte but `*`, `?` and `/` matches itself, a backslash and
+		// what a regular expression treats specially included.
+		{"a[b]", "a[b]", true},
+		{"a[b]", "ab", false},
+		{"x+", "xx", false},
+		{"a|b", "a", false},
+		{"^a$", "^a$", true},
+		{"{x}", "{x}", true},
+		{`a\b`, `a\b`, true},
+		{`\*`, `\x`, true},
 	} {
 		if got := Match(c.glob, c.path); got != c.want {
 			t.Errorf("Match(%q, %q) = %v", c.glob, c.path, got)

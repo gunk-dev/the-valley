@@ -55,7 +55,7 @@ func TestHostOf(t *testing.T) {
 	}
 }
 
-// pointerURL reads policy/valley as bin/valley's pointer_url does.
+// pointerURL reads the owning valley's address out of policy/valley.
 func TestPointerURL(t *testing.T) {
 	got := pointerURL("# the owning valley\n\n  git@valley-host:valley.git  # floor\nother\n")
 	if got != "git@valley-host:valley.git" {

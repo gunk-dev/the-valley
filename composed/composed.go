@@ -154,9 +154,7 @@ const (
 // cue both read a layer as those documents, so they are what is taken.
 // The scratch directory is removed unless the layer is present.
 //
-// It decides as bin/valley's copy_layer, which approve reads the layers
-// with, so the two cannot disagree about which layer is there. The
-// directory is listed with a pathspec, taken literally, so a directory
+// The directory is listed with a pathspec, taken literally, so a directory
 // named policy[1] is that directory and not policy1. A directory that is
 // not there is an empty listing, and a listing git could not read, of a
 // tree-ish or a tree object that is missing, is an error: read as absent,
@@ -165,10 +163,9 @@ const (
 // is read as a blob, so one that is a directory or a submodule is an error
 // too.
 //
-// A name beginning with a dot is copied as copy_layer copies it, and
-// counts toward a present layer. The composer leaves it out (layer), so a
-// layer holding dotfiles alone is present, holds no document, and is
-// refused when it is composed, as bin/valley refuses it.
+// A name beginning with a dot is copied, and counts toward a present
+// layer. The composer leaves it out (layer), so a layer holding dotfiles
+// alone is present, holds no document, and is refused when it is composed.
 //
 // The listing is NUL-separated, so every name is read as it is. A
 // newline-separated listing quotes a name with non-ASCII characters in it,
@@ -446,16 +443,13 @@ func documents(schema, instance, project string) ([]string, error) {
 	return docs, nil
 }
 
-// layer is the documents of one policy layer: the entries directly in dir
-// that bin/valley's `"$dir"/*.cue` names, in its order.
+// layer is the documents of one policy layer: the *.cue entries directly
+// in dir, sorted bytewise.
 //
-// dir is a name and never a pattern, as it is quoted there, so a directory
-// named policy[1] is that directory and not policy1. Its entries are
-// listed, and an entry is a document when its name ends in .cue and does
-// not begin with a dot, because bash's glob leaves a dotfile out. They are
-// sorted bytewise, as bash sorts them in the C locale bin/valley derives
-// in. The first must be a regular file, as bin/valley's `[ -f ]` asks, or
-// the layer holds no documents.
+// dir is a name and never a pattern, so a directory named policy[1] is
+// that directory and not policy1. Its entries are listed, and an entry is
+// a document when its name ends in .cue and does not begin with a dot. The
+// first must be a regular file, or the layer holds no documents.
 func layer(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

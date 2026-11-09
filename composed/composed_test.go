@@ -98,7 +98,7 @@ func (r *layerRepo) project(dir string) (docs map[string]string, note string, er
 const addsNothing = "package verification\n"
 
 // A project layer is the *.cue entries directly in its directory at the
-// tip, dotfiles among them, as bin/valley's copy_layer copies them. A
+// tip, dotfiles among them. A
 // directory that is not there, or holds no *.cue, composes the floor
 // alone.
 func TestProjectReadsTheLayerAtTheTip(t *testing.T) {
@@ -117,7 +117,7 @@ func TestProjectReadsTheLayerAtTheTip(t *testing.T) {
 	}{
 		{"policy/project", map[string]string{"a.cue": "package verification // a\n", ".hidden.cue": "package verification // hidden\n"}, false},
 		// Present, and the composer reads no document in it (layer), so
-		// composing it is refused as bin/valley refuses it.
+		// composing it is refused.
 		{"policy/dotted", map[string]string{".only.cue": "package verification // only\n"}, false},
 		{"policy/missing", map[string]string{"adds-nothing.cue": addsNothing}, true},
 		{"policy/prose", map[string]string{"adds-nothing.cue": addsNothing}, true},
@@ -161,7 +161,7 @@ func TestProjectReadsADirectoryNamedLikeAPatternAsNamed(t *testing.T) {
 // A layer that cannot be read is refused, never composed as the floor
 // alone: a tip that names a missing object, a layer whose tree is gone, a
 // document whose blob is gone, and a *.cue entry that is a directory,
-// which copy_layer's cat-file blob refuses.
+// which reading it as a blob refuses.
 func TestProjectRefusesALayerThatCannotBeRead(t *testing.T) {
 	files := map[string]string{
 		"policy/project/a.cue":       "package verification\n",

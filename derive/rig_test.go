@@ -4,48 +4,34 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 
 	"the-valley/composed"
 )
 
-// The tests beside this file hold the Go deriver to bin/valley's, which is
-// the deriver every caller runs. This file is what they share: the
-// rig that runs both, the scratch repositories they run over, and the
-// reading of what bin/valley derived.
-//
-// bin/valley derives in the C locale whatever its caller's locale is
-// (derive_required), and this package matches bytes in every locale. The
-// agreement tests run bin/valley under the C locale and under UTF-8 ones
-// (locales), as an operator's shell and the integrator's unit may set them,
-// so a deriver whose answer changes with the locale disagrees.
+// The tests beside this file share this: the rig the deriver runs in, the
+// policies on disk it reads, and the scratch repositories it derives over.
 
-// rig is what both derivers need: bin/valley, the schema, cue, and an
-// environment of the test's own, with no configuration of the person
-// running it.
+// rig is what the deriver needs: the schema, cue, and an environment of the
+// test's own for git, with no configuration of the person running it.
 type rig struct {
-	root, script, schema, cue string
-	lib                       string   // bin/valley with its last line, which runs main, dropped
-	base                      []string // the environment, with no locale in it
-	env                       []string // base in the C locale
+	root, schema, cue string
+	env               []string
 }
 
 func newRig(t *testing.T) *rig {
 	t.Helper()
-	for _, tool := range []string{"bash", "git", "cue"} {
+	for _, tool := range []string{"git", "cue"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			if os.Getenv("VALLEY_TEST_TOOLS") == "required" {
 				t.Fatalf("no %s on PATH, and VALLEY_TEST_TOOLS=required", tool)
 			}
-			t.Skipf("no %s to run bin/valley's deriver with; the derive-unit check provides one", tool)
+			t.Skipf("no %s to derive with; the derive-unit check provides one", tool)
 		}
 	}
 	root, err := filepath.Abs("..")
@@ -53,18 +39,11 @@ func newRig(t *testing.T) *rig {
 		t.Fatal(err)
 	}
 	cue, _ := exec.LookPath("cue")
-	r := &rig{
-		root:   root,
-		script: filepath.Join(root, "bin", "valley"),
-		schema: filepath.Join(root, "schema", "verification.cue"),
-		cue:    cue,
+	r := &rig{root: root, schema: filepath.Join(root, "schema", "verification.cue"), cue: cue}
+	if _, err := os.Stat(r.schema); err != nil {
+		t.Fatalf("the tests read %s, and it is not there: %v", r.schema, err)
 	}
-	for _, f := range []string{r.script, r.schema} {
-		if _, err := os.Stat(f); err != nil {
-			t.Fatalf("the tests read %s, and it is not there: %v", f, err)
-		}
-	}
-	r.base = []string{
+	r.env = []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + t.TempDir(),
 		"TMPDIR=" + os.TempDir(),
@@ -73,68 +52,7 @@ func newRig(t *testing.T) *rig {
 		"GIT_COMMITTER_NAME=derive-test", "GIT_COMMITTER_EMAIL=derive-test@localhost",
 		"GIT_AUTHOR_DATE=2026-10-21T00:00:00Z", "GIT_COMMITTER_DATE=2026-10-21T00:00:00Z",
 	}
-	// Where nix's glibc finds the locales other than C and C.UTF-8.
-	if archive := os.Getenv("LOCALE_ARCHIVE"); archive != "" {
-		r.base = append(r.base, "LOCALE_ARCHIVE="+archive)
-	}
-	r.env = append(append([]string{}, r.base...), "LC_ALL=C")
-
-	script, err := os.ReadFile(r.script)
-	if err != nil {
-		t.Fatal(err)
-	}
-	const last = "\nmain \"$@\"\n"
-	if !bytes.HasSuffix(script, []byte(last)) {
-		t.Fatalf("bin/valley does not end in %q, so the tests cannot run its verbs one by one", last)
-	}
-	r.lib = filepath.Join(t.TempDir(), "valley-lib.bash")
-	if err := os.WriteFile(r.lib, script[:len(script)-len(last)+1], 0o644); err != nil {
-		t.Fatal(err)
-	}
 	return r
-}
-
-// locale is the locale a deriver is run in, and how its environment sets
-// it.
-type locale struct {
-	name string
-	env  []string
-	utf8 bool // whether bash's regular expressions read characters in it
-}
-
-// locales are those both derivers are held to agree under: C, C.UTF-8 set
-// by LC_ALL, and en_US.UTF-8 set by LANG alone, as a unit that systemd
-// gives the system's locale is run.
-var locales = []locale{
-	{"C", []string{"LC_ALL=C"}, false},
-	{"LC_ALL=C.UTF-8", []string{"LC_ALL=C.UTF-8"}, true},
-	{"LANG=en_US.UTF-8", []string{"LANG=en_US.UTF-8"}, true},
-}
-
-// locales are the locales this machine has, each shown to take: in a
-// UTF-8 one, bash's `?` matches é, two bytes, and in C it does not. A
-// UTF-8 locale that does not take would run bin/valley in C again and
-// prove nothing, so it is skipped, or fails the test when
-// VALLEY_TEST_TOOLS=required.
-func (r *rig) locales(t *testing.T) []locale {
-	t.Helper()
-	var out []locale
-	for _, loc := range locales {
-		cmd := exec.Command("bash", "-c", `[[ $'\xc3\xa9' =~ ^[^/]$ ]]`)
-		cmd.Env = append(append([]string{}, r.base...), loc.env...)
-		chars := cmd.Run() == nil
-		switch {
-		case chars == loc.utf8:
-			out = append(out, loc)
-		case !loc.utf8:
-			t.Fatalf("bash reads characters in %s", loc.name)
-		case os.Getenv("VALLEY_TEST_TOOLS") == "required":
-			t.Fatalf("%s does not take here, and VALLEY_TEST_TOOLS=required; LOCALE_ARCHIVE is %q", loc.name, os.Getenv("LOCALE_ARCHIVE"))
-		default:
-			t.Logf("%s does not take here; the derivers are not held to agree under it", loc.name)
-		}
-	}
-	return out
 }
 
 // path is a file of the repository the tests run in.
@@ -151,7 +69,7 @@ func (r *rig) glob(t *testing.T, pattern string) []string {
 }
 
 // layers is a policy on disk: the floor's directory and the project
-// layer's, as both derivers are given them.
+// layer's.
 type layers struct{ instance, project string }
 
 // naming is what a policy's layer directories are called, and the decoys
@@ -162,17 +80,16 @@ type naming struct {
 	decoys            []string
 }
 
-// namings are the layer directories the agreement tests rotate through:
-// plain names, and names a glob reads as patterns.
+// namings are the layer directories the tests rotate through: plain names,
+// and names a glob reads as patterns.
 var namings = []naming{
 	{"instance", "project", nil},
 	{"floor[1]", "proj*", []string{"floor1", "projX"}},
 	{`fl\oor?`, "pro ject[a-z]", []string{"floorX", "pro jectq"}},
 }
 
-// notCUE is what every decoy and dotfile document holds. A deriver that
-// composes one fails, so a deriver that reads the wrong documents cannot
-// pass by reading them the same way as the other.
+// notCUE is what every decoy and dotfile document holds, so a reader that
+// composes one of them fails.
 const notCUE = "package verification\nthis is not CUE, and no layer holds it\n"
 
 // newLayers copies the floor's documents and the project's into
@@ -236,256 +153,14 @@ func (r *rig) read(l layers) (*composed.Model, error) {
 	return composed.Read(context.Background(), r.cue, r.schema, l.instance, l.project)
 }
 
-// valley runs bin/valley's deriver, derive_required, over two commits of
-// the repository at dir, in the C locale, and reads what it derived. A run that fails returns
-// what it said, and must print nothing on stdout. env is added to the
-// rig's environment.
-func (r *rig) valley(t *testing.T, dir, schema string, l layers, base, head string, env ...string) (*vars, error) {
-	t.Helper()
-	return r.valleyIn(t, locales[0], dir, schema, l, base, head, env...)
-}
-
-// derivation are the globals bin/valley's derive_required answers with,
-// each with its kind: a list, a scalar or a map. Every one is read from
-// each run and compared with the Go deriver's answer (agree), and
-// TestEveryDerivationGlobal holds this list to the globals bin/valley
-// declares.
-var derivation = []struct {
-	name string
-	kind byte // 'L' a list, 'S' a scalar, 'M' a map
-}{
-	{"POLICY_LAYER", 'L'}, {"DERIVED_PATHS", 'L'}, {"DERIVED_MATCHED", 'L'},
-	{"DERIVED_UNCOVERED", 'L'}, {"DERIVED_UNCLASSIFIED", 'S'}, {"DERIVED_CARRY", 'S'},
-	{"DERIVED_REQUIRED", 'M'}, {"DERIVED_PINNED", 'M'}, {"CHECK_RUNNER", 'M'},
-	{"CHECK_ATTRIBUTE", 'M'}, {"CHECK_COMMAND", 'M'}, {"CHECK_COST", 'M'},
-}
-
-// valleyIn is valley in a locale. bin/valley's derive_required is called
-// as approve calls it. Then every global of the derivation is written out,
-// NUL-separated, so each is read whatever bytes it holds.
-func (r *rig) valleyIn(t *testing.T, loc locale, dir, schema string, l layers, base, head string, env ...string) (*vars, error) {
-	t.Helper()
-	var dump strings.Builder
-	for _, g := range derivation {
-		fmt.Fprintf(&dump, "rig_%c %s\n", g.kind, g.name)
-	}
-	program := `source "$1"
-out="$2"
-shift 2
-trap cleanup_policy_tmp EXIT
-derive_required "$@" || exit 1
-rig_L() { local -n rig_l="$1"; printf 'L\0%s\0%d\0' "$1" "${#rig_l[@]}"; [ "${#rig_l[@]}" -eq 0 ] || printf '%s\0' "${rig_l[@]}"; }
-rig_S() { printf 'S\0%s\0%s\0' "$1" "${!1}"; }
-rig_M() { local -n rig_m="$1"; local k; printf 'M\0%s\0%d\0' "$1" "${#rig_m[@]}"; for k in "${!rig_m[@]}"; do printf '%s\0%s\0' "$k" "${rig_m[$k]}"; done; }
-{
-` + dump.String() + `} > "$out"
-`
-	vars := filepath.Join(t.TempDir(), "derivation")
-	cmd := exec.Command("bash", "-c", program, "bash", r.lib, vars, schema, l.instance, l.project, base, head)
-	cmd.Dir = dir
-	cmd.Env = append(append(append([]string{}, r.base...), loc.env...), env...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		if stdout.Len() > 0 {
-			t.Errorf("bin/valley failed and printed to stdout:\n%s", stdout.String())
-		}
-		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-	out, err := os.ReadFile(vars)
-	if err != nil {
-		t.Fatal(err)
-	}
-	v, err := parseVars(out)
-	if err != nil {
-		t.Fatalf("bin/valley's derivation does not read: %v\n%q", err, out)
-	}
-	return v, nil
-}
-
-// derive is the Go deriver over the same two commits: Diff, then Derive.
+// derive is the deriver over two commits of the repository at dir: Diff,
+// then Derive. env is added to the rig's environment.
 func (r *rig) derive(m *composed.Model, dir, base, head string, env ...string) (*Result, error) {
 	paths, err := Diff(context.Background(), dir, append(append([]string{}, r.env...), env...), base, head)
 	if err != nil {
 		return nil, err
 	}
 	return Derive(m, paths)
-}
-
-// vars are the globals of bin/valley's derivation, by name.
-type vars struct {
-	lists   map[string][]string
-	scalars map[string]string
-	maps    map[string]map[string]string
-}
-
-// parseVars reads the globals valleyIn writes: for each, its kind, its
-// name, and for a list its length and its items, for a scalar its value,
-// and for a map its length and its keys, each followed by its value.
-func parseVars(out []byte) (*vars, error) {
-	v := &vars{lists: map[string][]string{}, scalars: map[string]string{}, maps: map[string]map[string]string{}}
-	fields := strings.Split(string(out), "\x00")
-	if len(fields) == 0 || fields[len(fields)-1] != "" {
-		return nil, fmt.Errorf("the output does not end in NUL")
-	}
-	fields = fields[:len(fields)-1]
-	next := func() (string, error) {
-		if len(fields) == 0 {
-			return "", fmt.Errorf("the output ends early")
-		}
-		f := fields[0]
-		fields = fields[1:]
-		return f, nil
-	}
-	count := func() (int, error) {
-		f, err := next()
-		if err != nil {
-			return 0, err
-		}
-		return strconv.Atoi(f)
-	}
-	for len(fields) > 0 {
-		kind, _ := next()
-		name, err := next()
-		if err != nil {
-			return nil, err
-		}
-		switch kind {
-		case "L":
-			n, err := count()
-			if err != nil {
-				return nil, err
-			}
-			list := []string{}
-			for range n {
-				item, err := next()
-				if err != nil {
-					return nil, err
-				}
-				list = append(list, item)
-			}
-			v.lists[name] = list
-		case "S":
-			if v.scalars[name], err = next(); err != nil {
-				return nil, err
-			}
-		case "M":
-			n, err := count()
-			if err != nil {
-				return nil, err
-			}
-			m := map[string]string{}
-			for range n {
-				k, err := next()
-				if err != nil {
-					return nil, err
-				}
-				if m[k], err = next(); err != nil {
-					return nil, err
-				}
-			}
-			v.maps[name] = m
-		default:
-			return nil, fmt.Errorf("a global of kind %q", kind)
-		}
-	}
-	for _, g := range derivation {
-		_, l := v.lists[g.name]
-		_, s := v.scalars[g.name]
-		_, m := v.maps[g.name]
-		if !l && !s && !m {
-			return nil, fmt.Errorf("no %s", g.name)
-		}
-	}
-	return v, nil
-}
-
-// agree reports every way the Go deriver's answer differs from what
-// bin/valley derived: every global of its derivation, each compared whole
-// and in order. bin/valley names the unclassified set as a class called
-// unclassified, so that is how the Go answer is read here.
-//
-// A check's validity is the one field of the Go answer bin/valley does not
-// read, so it is not compared.
-func agree(v *vars, m *composed.Model, res *Result) []string {
-	var diffs []string
-	differ := func(what string, bash, gos any) {
-		diffs = append(diffs, fmt.Sprintf("%s: bin/valley %q, Go %q", what, bash, gos))
-	}
-	agreeVars(v, m, res, differ)
-	sort.Strings(diffs)
-	return diffs
-}
-
-// agreeVars is agree for the globals of bin/valley's derivation.
-func agreeVars(v *vars, m *composed.Model, res *Result, differ func(string, any, any)) {
-	list := func(name string, want []string) {
-		if !slices.Equal(v.lists[name], want) {
-			differ(name, v.lists[name], want)
-		}
-	}
-	scalar := func(name, want string) {
-		if v.scalars[name] != want {
-			differ(name, v.scalars[name], want)
-		}
-	}
-	dict := func(name string, want map[string]string) {
-		if !maps.Equal(v.maps[name], want) {
-			differ(name, v.maps[name], want)
-		}
-	}
-
-	list("POLICY_LAYER", m.Documents)
-	list("DERIVED_PATHS", res.Paths)
-	matched := append([]string{}, res.Classes...)
-	if len(res.Unclassified) > 0 {
-		matched = append(matched, "unclassified")
-	}
-	sort.Strings(matched)
-	list("DERIVED_MATCHED", matched)
-	list("DERIVED_UNCOVERED", res.Unclassified)
-	scalar("DERIVED_CARRY", res.Carry)
-
-	unclassified := "0"
-	required, pinned := map[string]string{}, map[string]string{}
-	runner, attribute, command, cost := map[string]string{}, map[string]string{}, map[string]string{}, map[string]string{}
-	for _, q := range res.Required {
-		by := append([]string{}, q.Classes...)
-		if q.Unclassified {
-			by = append(by, "unclassified")
-			unclassified = "1"
-		}
-		sort.Strings(by)
-		required[q.Name] = strings.Join(by, ", ")
-		pinned[q.Name] = string(q.Pin)
-		// How each required check is run, as the Go answer gives it.
-		if q.Runner != v.maps["CHECK_RUNNER"][q.Name] || q.Attribute != v.maps["CHECK_ATTRIBUTE"][q.Name] ||
-			q.Command != v.maps["CHECK_COMMAND"][q.Name] || q.Cost != v.maps["CHECK_COST"][q.Name] {
-			differ("how "+q.Name+" is run (runner, attribute, command, cost)",
-				[]string{v.maps["CHECK_RUNNER"][q.Name], v.maps["CHECK_ATTRIBUTE"][q.Name], v.maps["CHECK_COMMAND"][q.Name], v.maps["CHECK_COST"][q.Name]},
-				[]string{q.Runner, q.Attribute, q.Command, q.Cost})
-		}
-	}
-	scalar("DERIVED_UNCLASSIFIED", unclassified)
-	dict("DERIVED_REQUIRED", required)
-	dict("DERIVED_PINNED", pinned)
-
-	// The whole catalogue, required or not: an attribute for the nix
-	// runner and a command for the command runner, as bin/valley renders
-	// them.
-	for name, c := range m.Checks {
-		runner[name], cost[name] = c.Runner, c.Cost
-		switch c.Runner {
-		case "nix":
-			attribute[name] = c.Attribute
-		case "command":
-			command[name] = c.Command
-		}
-	}
-	dict("CHECK_RUNNER", runner)
-	dict("CHECK_ATTRIBUTE", attribute)
-	dict("CHECK_COMMAND", command)
-	dict("CHECK_COST", cost)
 }
 
 func sameSet(a, b []string) bool {

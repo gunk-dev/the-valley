@@ -191,7 +191,7 @@ project: {
 	}
 
 	// The deriver of required checks, and the composed-policy reader it reads
-	// the whole policy through. derive-unit holds the deriver to bin/valley's,
+	// the whole policy through. derive-unit holds the deriver's answers,
 	// composed-unit holds the reader's layer reads, and valley-go-unit builds
 	// the verb that prints its answer with both.
 	classes: derive: {
@@ -400,8 +400,7 @@ project: {
 	// valley-walk drives review with no change across a host's projects,
 	// valley-plan drives plan against the golden files under
 	// status/testdata/plan/, and valley-self-update drives --version and
-	// self-update. derive-unit holds the script's deriver to the Go one.
-	// The web publisher reads the valley through plan, pending and knot
+	// self-update. The web publisher reads the valley through plan, pending and knot
 	// show, and its tests in web-unit run the CLI itself, as web-push-e2e
 	// runs the CLI's package.
 	classes: cli: {
@@ -421,7 +420,6 @@ project: {
 		requires: "valley-plan":        true
 		requires: "valley-self-update": true
 		requires: "policy-deriver":     true
-		requires: "derive-unit":        true
 		requires: "web-unit":           true
 		requires: "web-push-e2e":       true
 		requires: "integrator-e2e":     true
@@ -496,7 +494,7 @@ project: {
 
 	// The verification policy: this layer, the pointer to the owning
 	// valley, the schema a policy is written in, and the example policies
-	// the derivers and cue-vet read.
+	// the deriver and cue-vet read.
 	classes: policy: {
 		paths: "policy/**":               true
 		paths: "schema/verification.cue": true

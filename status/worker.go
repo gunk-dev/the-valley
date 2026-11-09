@@ -1484,8 +1484,7 @@ func (w *worker) save() {
 }
 
 // policyLayers resolves the two policy layers a project's changes are
-// derived under, as approve resolves them (bin/valley's
-// resolve_instance_layer and resolve_project_layer), and returns what
+// derived under, as approve resolves them, and returns what
 // removes them. Both are read at main's tip on origin.
 func policyLayers(g git, tip string) (instance, project string, done func(), err error) {
 	src, done, err := resolveLayers(g, tip, "", "")

@@ -282,8 +282,8 @@ import "list"
 // Names are lowercase, dash-separated, and short. They are quoted in
 // integrator output and carried in attestation payloads, so they are held
 // to the same shape as project names in schema/valley.cue. The shape also
-// keeps every control character out of a class or check name, which
-// `valley checks` relies on (see #Pattern).
+// keeps every control character out of a class or check name, so each
+// prints whole on a line of its own.
 #Name: =~"^[a-z0-9][a-z0-9-]*$"
 
 // A path glob, relative to the repository root. A leading slash and a `..`
@@ -291,12 +291,8 @@ import "list"
 // describing something a diff cannot contain, and silently matching
 // nothing is the expensive way to find that out.
 //
-// A control character is rejected too. `valley checks` reads the composed
-// policy as lines of tab-separated fields, and a pattern is one of those
-// fields. A newline in a pattern would end its line and start a forged one,
-// such as a carry mode for a class the floor pinned. A tab would add a
-// field. Git allows both in a path, but a policy has no use for a pattern
-// that matches one.
+// A control character is rejected too. Git allows one in a path, but a
+// policy has no use for a pattern that matches one.
 #Pattern: =~"^[^/]" & !~"(^|/)\\.\\.(/|$)" & !~"[\\x00-\\x1f\\x7f]"
 
 // ----------------------------------------------------------------------

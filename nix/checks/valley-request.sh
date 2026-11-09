@@ -1174,21 +1174,10 @@ for mode in report names; do
 done
 git checkout --quiet -
 
-# A write that fails is a failure of the derivation, not a shorter list.
-# diff_paths runs with errexit off, so its printf is the case: the function
-# is cut out of the script and given a full disk to write to.
-fn="$(sed -n '/^diff_paths() {/,/^}/p' "$cliScript")"
-[ -n "$fn" ] || { echo "valley-request: diff_paths not found in the script" >&2; exit 1; }
-if (
-  eval "$fn"
-  printf 'M\0docs/a.md\0R100\0old\0new\0' | diff_paths > /dev/full
-) 2> "$w/full.err"; then
-  echo "valley-request: diff_paths returned 0 after its write failed" >&2
-  exit 1
-fi
-# And end to end: with no file allowed to grow, every intermediate file the
-# derivation writes fails, and nothing may print. The pipe keeps the
-# refusal readable, since a file stream would be cut off too.
+# A write that fails is a failure of the derivation, not a shorter list:
+# with no file allowed to grow, every intermediate file the derivation
+# writes fails, and nothing may print. The pipe keeps the refusal readable,
+# since a file stream would be cut off too.
 for mode in report names; do
   margs=()
   [ "$mode" != names ] || margs=(--names)

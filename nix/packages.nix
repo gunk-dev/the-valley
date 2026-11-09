@@ -877,13 +877,10 @@ rec {
   # The deriver of required checks (derive/): a change's paths read from
   # git diff -z, globs matched byte by byte, and the required checks, pins,
   # carry mode and unclassified paths derived from the whole composed
-  # policy (../composed). Its tests, with go vet after them, hold it to
-  # bin/valley's deriver, run over the repository's own policy, the example
-  # policies and paths drawn from a fixed seed. So the tests read
-  # bin/valley, the schema and those policies, and need bash, git and cue.
-  # bin/valley is run under C.UTF-8 and en_US.UTF-8 as well as C, so the
-  # tests read the UTF-8 locales' archive. Go, standard library only, so no
-  # module is fetched.
+  # policy (../composed). Its tests, with go vet after them, derive over the
+  # repository's own policy and the example policies, with changes drawn
+  # from a fixed seed, so they read the schema and those policies, and need
+  # git and cue. Go, standard library only, so no module is fetched.
   derive = goModule {
     pname = "valley-derive";
     dir = ../derive;
@@ -891,21 +888,17 @@ rec {
     preBuild = readsGoMod;
     tests = {
       reads = [
-        ../bin/valley
         ../schema/verification.cue
         ../examples/policy
         ../policy/project
       ];
       nativeCheckInputs = [
-        pkgs.bash
         pkgs.git
         pkgs.cue
       ];
-      # A test that cannot find a tool it needs, or a locale, fails rather
-      # than skipping.
+      # A test that cannot find a tool it needs fails rather than skipping.
       preCheck = ''
         export VALLEY_TEST_TOOLS=required
-        export LOCALE_ARCHIVE=${pkgs.glibcLocalesUtf8}/lib/locale/locale-archive
       '';
       postCheck = ''
         go vet ./...
@@ -913,8 +906,8 @@ rec {
     };
   };
 
-  # The composed-policy reader (composed/): each layer read out of git as
-  # bin/valley's copy_layer reads it, present, absent or refused. Its tests
+  # The composed-policy reader (composed/): each layer read out of git,
+  # present, absent or refused. Its tests
   # read layers from real repositories, some with objects removed, and go
   # vet runs after them.
   composed = goModule {

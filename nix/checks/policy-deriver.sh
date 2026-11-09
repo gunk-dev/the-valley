@@ -40,29 +40,6 @@ named() {
 }
 
 # Start a case from the base tree; assert its check table.
-# bash_derive SCRIPT SCHEMA INSTANCE PROJECT [--names] BASE HEAD: SCRIPT's
-# own deriver, derive_required, which approve runs, over two object IDs. It
-# prints the required checks as rows under `required checks:` and then the
-# carry mode, or with --names the names alone, so the cases below read it
-# as they read the report.
-bash_derive() {
-  bash -c '
-    source <(sed "/^main \"\\\$@\"\$/d" "$1")
-    trap cleanup_policy_tmp EXIT
-    schema="$2" instance="$3" project="$4" names=0
-    shift 4
-    [ "$1" != --names ] || { names=1; shift; }
-    derive_required "$schema" "$instance" "$project" "$1" "$2" || exit 1
-    if [ "$names" -eq 1 ]; then
-      [ "${#DERIVED_REQUIRED[@]}" -eq 0 ] || printf "%s\n" "${!DERIVED_REQUIRED[@]}"
-      exit 0
-    fi
-    echo "required checks:"
-    for check in "${!DERIVED_REQUIRED[@]}"; do printf "  %s\n" "$check"; done
-    printf "\ncarry mode: %s\n" "$DERIVED_CARRY"
-  ' bash "$@"
-}
-
 case_start() { git checkout --quiet -B "$1" "$base"; }
 expect() {
   local got
@@ -211,9 +188,8 @@ fi
 [ "$(valley checks --schema "$schema" --names \
   --instance "$policy/instance" --project "$policy/project-slow" "$base" "$base")" = "" ]
 
-# A schema that predates `cost` cannot render the composed policy. The
-# deriver refuses rather than reading the empty render as a policy that
-# requires nothing.
+# A schema that predates `cost` gives no check a cost to read. The deriver
+# refuses rather than reading a policy whose checks cost nothing.
 grep -v '^	cost: \*"quick" | "slow"$' "$schema" > "$TMPDIR/costless.cue"
 if cmp -s "$schema" "$TMPDIR/costless.cue"; then
   echo "policy-deriver: the costless schema still declares cost, so this case proves nothing" >&2
@@ -222,20 +198,14 @@ fi
 if valley checks --schema "$TMPDIR/costless.cue" \
   --instance "$policy/instance" --project "$policy/project" \
   "$base" HEAD > "$TMPDIR/costless.out" 2>&1; then
-  echo "policy-deriver: a schema the render cannot read derived an answer" >&2
+  echo "policy-deriver: a schema with no cost derived an answer" >&2
   cat "$TMPDIR/costless.out" >&2
   exit 1
 fi
 grep -q '^valley: ' "$TMPDIR/costless.out"
-if bash_derive "$cliScript" "$TMPDIR/costless.cue" "$policy/instance" "$policy/project" \
-  "$base" "$(git rev-parse HEAD)" > "$TMPDIR/costless.out" 2>&1; then
-  echo "policy-deriver: bin/valley's deriver derived an answer under the costless schema" >&2
-  exit 1
-fi
-grep -q 'does not render' "$TMPDIR/costless.out"
 
 # The same for a schema that predates the carry modes: with no resolved
-# mode to render, the deriver refuses rather than reading every class as
+# mode to read, the deriver refuses rather than reading every class as
 # same-paths.
 grep -v '^_mode: ' "$schema" > "$TMPDIR/modeless.cue"
 if cmp -s "$schema" "$TMPDIR/modeless.cue"; then
@@ -250,12 +220,6 @@ if valley checks --schema "$TMPDIR/modeless.cue" \
   exit 1
 fi
 grep -q '^valley: ' "$TMPDIR/modeless.out"
-if bash_derive "$cliScript" "$TMPDIR/modeless.cue" "$policy/instance" "$policy/project" \
-  "$base" "$(git rev-parse HEAD)" > "$TMPDIR/modeless.out" 2>&1; then
-  echo "policy-deriver: bin/valley's deriver derived an answer under the modeless schema" >&2
-  exit 1
-fi
-grep -q 'does not render' "$TMPDIR/modeless.out"
 
 # A document may refine `policy` directly, and a mode written there counts.
 # The floor gives the deep class no mode, and a project document that
@@ -270,95 +234,6 @@ report="$(valley checks --schema "$schema" \
   --instance "$policy/instance" --project "$policy/project-refined" "$base" HEAD)"
 expect "c-deep" "refining policy's carry must not change what deep requires"
 expect_carry exact "a mode written by refining policy must count"
-
-# A policy string holding a newline cannot forge a line of the render. Each
-# forged layer adds a pattern that would end its own line and start another:
-# a looser carry mode for the nested class, which the floor makes exact, or
-# a second copy of a requirement. There are three walls, and each is tested
-# with the walls before it taken down. The schema refuses the pattern, so
-# the layers do not compose. Under a schema that admits it, the render
-# refuses the line. Under a copy of the script whose render admits it too,
-# the deriver refuses the second line.
-for forged in carry requires; do
-  mkdir -p "$policy/forged-$forged"
-  cp "$policy/project/policy.cue" "$policy/forged-$forged/policy.cue"
-done
-cat > "$policy/forged-carry/forged.cue" <<'EOF'
-package verification
-project: classes: forged: paths: "unused\ncarry\tnested\tsame-paths": true
-EOF
-cat > "$policy/forged-requires/forged.cue" <<'EOF'
-package verification
-project: classes: forged: paths: "unused\nrequires\tnested\tc-nested": true
-EOF
-
-# The schema with #Pattern admitting anything, and the script with its
-# render's line check removed. Each must differ from what it copies, or the
-# case below it proves nothing.
-[ "$(grep -c '^#Pattern: ' "$schema")" = 1 ] || {
-  echo "policy-deriver: #Pattern is not one line of the schema, so the loose schema proves nothing" >&2
-  exit 1
-}
-{ grep -v '^#Pattern: ' "$schema"; echo '#Pattern: string'; } > "$TMPDIR/loose.cue"
-sed -e 's/" & line}$/"}/' -e '/^let line = /d' "$cliScript" > "$TMPDIR/valley-unguarded"
-if ! grep -q '" & line}$' "$cliScript" || grep -q '& line}\|^let line' "$TMPDIR/valley-unguarded"; then
-  echo "policy-deriver: the unguarded script still checks its render's lines, so it proves nothing" >&2
-  exit 1
-fi
-
-# refused WHAT TEXT COMMAND…: COMMAND must fail, print nothing on stdout,
-# and say TEXT.
-refused() {
-  local what="$1" text="$2"
-  shift 2
-  if "$@" > "$TMPDIR/forged.out" 2> "$TMPDIR/forged.err"; then
-    echo "policy-deriver: $what derived an answer" >&2
-    cat "$TMPDIR/forged.out" >&2
-    exit 1
-  fi
-  [ ! -s "$TMPDIR/forged.out" ] || {
-    echo "policy-deriver: $what printed to stdout" >&2
-    exit 1
-  }
-  grep -qF -- "$text" "$TMPDIR/forged.err" || {
-    echo "policy-deriver: $what was refused without saying $text" >&2
-    cat "$TMPDIR/forged.err" >&2
-    exit 1
-  }
-}
-
-# forged_derive SCHEMA LAYER [SCRIPT]: derive the case at HEAD under SCHEMA
-# and the project layer LAYER, with valley checks or with SCRIPT's own
-# deriver. Only SCRIPT's deriver reads the policy as rendered lines, so
-# only it can be forged.
-forged_derive() {
-  if [ $# -lt 3 ]; then
-    valley checks --schema "$1" --instance "$policy/instance" \
-      --project "$policy/$2" "$base" HEAD
-  else
-    bash_derive "$3" "$1" "$policy/instance" "$policy/$2" "$base" "$(git rev-parse HEAD)"
-  fi
-}
-
-case_start forged
-echo edit > a/b
-git commit --quiet -am forged
-# Without the walls, an honest layer still derives exact here, so each
-# refusal below is the forgery's doing.
-report="$(forged_derive "$TMPDIR/loose.cue" project "$TMPDIR/valley-unguarded")"
-expect "c-nested" "the unguarded script must derive an honest layer as the real one does"
-expect_carry exact "the unguarded script must derive an honest layer's carry mode"
-
-refused "a forged carry line" "do not compose" \
-  forged_derive "$schema" forged-carry
-refused "a forged carry line under a schema that admits it" "does not render" \
-  forged_derive "$TMPDIR/loose.cue" forged-carry "$cliScript"
-refused "a forged carry line under a render that admits it" \
-  "rendered 'carry nested' twice" \
-  forged_derive "$TMPDIR/loose.cue" forged-carry "$TMPDIR/valley-unguarded"
-refused "a forged requirement line under a render that admits it" \
-  "rendered 'requires nested c-nested' twice" \
-  forged_derive "$TMPDIR/loose.cue" forged-requires "$TMPDIR/valley-unguarded"
 
 # A path no class covers takes the unclassified set, and says
 # so by name. It is same-paths.
@@ -387,18 +262,17 @@ expect "c-uncovered" "a replacement ref must not change the derived checks"
 git update-ref -d "refs/replace/$(git rev-parse uncovered)"
 
 # ----------------------------------------------------------------------
-# Every producer fails closed. The deriver's calls of git, sort and cue
-# are failed one at a time, one per run, by fail-nth standing in for the
-# tool first on PATH. A producer read through a process substitution
-# loses its status, and its failure then reads as an empty list — no
-# paths, no catalogue, no classes — which derives a change that
-# requires nothing. So every failure must end the run non-zero, say so, and print
-# nothing on stdout: no report, and no names.
+# Every producer fails closed. The derivation's calls of git and cue are
+# failed one at a time, one per run, by fail-nth standing in for the tool
+# first on PATH. A failure read as an empty list — no paths, no policy —
+# derives a change that requires nothing. So every failure must end the
+# run non-zero, say so, and print nothing on stdout: no report, and no
+# names.
 #
-# This runs bin/valley itself, because the package's wrapper puts its own
-# git ahead of anything on PATH. The case touches a class, a second class
-# through `**`, the template's default, and an uncovered path, so every
-# producer has something to lose.
+# This runs valley-go, which `valley checks` hands the verb to, because the
+# package's wrapper puts its own git ahead of anything on PATH. The case
+# touches a class, a second class through `**`, the template's default,
+# and an uncovered path, so every producer has something to lose.
 case_start mixed
 echo edit > docs/kept.md
 echo edit > src/one.rs
@@ -410,7 +284,7 @@ expect_carry same-class "an unclassified path must not loosen a same-class chang
 
 shims="$TMPDIR/shims"
 mkdir -p "$shims"
-for tool in git sort cue; do ln -s "$failNth" "$shims/$tool"; done
+for tool in git cue; do ln -s "$failNth" "$shims/$tool"; done
 
 # shimmed TOOL N [option…]: derive the mixed case with TOOL's Nth call
 # failing (0 fails none). The count of TOOL's calls is left in
@@ -424,8 +298,8 @@ shimmed() {
   echo 0 > "$TMPDIR/shim-count"
   SHIM_REAL_PATH="$PATH" SHIM_TOOL="$tool" SHIM_FAIL_AT="$at" \
     SHIM_STATUS="$status" SHIM_COUNT="$TMPDIR/shim-count" PATH="$shims:$PATH" \
-    bash_derive "$cliScript" "$schema" "$policy/instance" "$policy/project" \
-    "$@" "$base" "$head"
+    valley-go checks --schema "$schema" --instance "$policy/instance" \
+    --project "$policy/project" "$@" "$base" "$head"
 }
 
 # The check names a run's stdout requires, sorted, on one line.
@@ -447,7 +321,7 @@ shim_fail() {
   exit 1
 }
 
-for tool in git sort cue; do
+for tool in git cue; do
   for mode in report names; do
     opts=()
     [ "$mode" = report ] || opts=(--names)
@@ -465,11 +339,11 @@ for tool in git sort cue; do
     for ((at = 1; at <= calls; at++)); do
       what="$mode run, $tool call $at of $calls"
       if shimmed "$tool" "$at" "${opts[@]}" > "$TMPDIR/shim.out" 2> "$TMPDIR/shim.err"; then
-        # The one failure a run may survive is a cue probe after the
-        # composition and the render: it asks whether a requirement is
-        # mandatory, and a probe that fails reads as mandatory, the strict
-        # answer. What is required must not move.
-        [ "$tool" = cue ] && [ "$at" -gt 2 ] \
+        # The one failure a run may survive is a cue probe (composed/model.go):
+        # it asks whether a requirement is mandatory, and a probe that fails
+        # reads as mandatory, the strict answer. What is required must not
+        # move.
+        [ "$tool" = cue ] \
           || shim_fail "the $what failed and the deriver still answered"
         [ "$(required_in "$mode" "$TMPDIR/shim.out")" = "$want" ] \
           || shim_fail "the $what failed and changed what is required"
@@ -480,25 +354,6 @@ for tool in git sort cue; do
       grep -q '^valley: ' "$TMPDIR/shim.err" \
         || shim_fail "the $what failed and the deriver did not say so"
     done
-  done
-done
-
-# A diff cut short mid-record is a failure too, even though git exited 0:
-# cut inside the first path, after one status, and inside the second
-# status, after one whole record. The last is the one a plain `while
-# read` ends on quietly, dropping the record it cut.
-for cut in 1 2; do
-  for opts in "" --names; do
-    # shellcheck disable=SC2086 # an empty $opts is no option at all
-    if SHIM_TRUNCATE="$cut" SHIM_REAL_PATH="$PATH" PATH="$shims:$PATH" \
-      bash_derive "$cliScript" "$schema" "$policy/instance" "$policy/project" $opts \
-      "$base" "$(git rev-parse HEAD)" > "$TMPDIR/shim.out" 2> "$TMPDIR/shim.err"; then
-      shim_fail "a diff cut after $cut field(s) derived an answer"
-    fi
-    [ ! -s "$TMPDIR/shim.out" ] \
-      || shim_fail "a diff cut after $cut field(s) printed to stdout"
-    grep -q 'truncated diff output' "$TMPDIR/shim.err" \
-      || shim_fail "a diff cut after $cut field(s) was not named as one"
   done
 done
 

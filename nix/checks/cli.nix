@@ -137,39 +137,35 @@ in
     );
   } (builtins.readFile ./review-notes.sh);
 
-  # The verification-policy deriver (dcr-f41f718). Composing the two
-  # layers is CUE's job and is pinned by cue-vet; matching paths is
-  # the script's own, and a path matcher is wrong exactly at the glob
-  # boundaries — `*` inside one segment against `**` across segments,
-  # `**` matching no segment at all — and at the sides of a diff a
-  # naive reader drops: a rename's old path and a deletion. Each is
-  # pinned by driving the real script over a scratch repository and
-  # the scratch policy in examples/policy/deriver/, whose floor is
-  # one glob boundary per class. A check's cost is pinned the same way:
-  # marking a check slow moves it between the summary lines and the
+  # The verification-policy deriver (dcr-f41f718), through `valley checks`.
+  # Composing the two layers is CUE's job and is pinned by cue-vet; a path
+  # matcher is wrong exactly at the glob boundaries — `*` inside one
+  # segment against `**` across segments, `**` matching no segment at all
+  # — and at the sides of a diff a naive reader drops: a rename's old path
+  # and a deletion. Each is pinned by driving the verb over a scratch
+  # repository and the scratch policy in examples/policy/deriver/, whose
+  # floor is one glob boundary per class. A check's cost is pinned the same
+  # way: marking a check slow moves it between the summary lines and the
   # --cost lists, and changes nothing required. So is the carry mode:
   # overlapping classes, and paths in different classes, report the
   # strictest of their modes, and an unclassified path is same-paths. A
-  # mode written by refining `policy` counts. A pattern holding a newline
-  # cannot forge a line of the render: the schema refuses it, the render
-  # refuses it under a schema that admits it, and the deriver refuses the
-  # second line under a render that admits it too.
+  # mode written by refining `policy` counts.
   #
-  # And the deriver fails closed: failNth stands in for git, sort and
-  # cue, and fails each call the deriver makes in turn. Every failure
-  # must end the derivation with nothing on stdout, because a failure
-  # read as an empty list is a change that requires nothing. cliScript is
-  # bin/valley itself, because the package's wrapper puts its own git
-  # ahead of anything on PATH.
+  # And the deriver fails closed: failNth stands in for git and cue, and
+  # fails each call the derivation makes in turn.
+  # Every failure must end the derivation with nothing on stdout, because
+  # a failure read as an empty list is a change that requires nothing. The
+  # check runs valley-go, which `valley checks` hands the verb to, because
+  # the package's wrapper puts its own git ahead of anything on PATH.
   policy-deriver = pkgs.runCommand "valley-policy-deriver" {
     nativeBuildInputs = [
       pkgs.git
       pkgs.cue
       packages.valley-script
+      packages.valley-go
     ];
     fixtures = ../../examples/policy/deriver;
     schema = ../../schema/verification.cue;
-    cliScript = ../../bin/valley;
     inherit failNth;
   } (builtins.readFile ./policy-deriver.sh);
 

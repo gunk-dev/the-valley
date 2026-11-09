@@ -194,10 +194,9 @@ not-a-requirement policy.approval.touch: field not allowed
 not-a-bool policy.approval.hardware: conflicting values "yes" and bool
 EOF
 
-# No control character reaches a string `valley checks` renders as a field
-# of a line: a path pattern, a class name, a check name in the catalogue,
-# in a class's requirements or in the unclassified set, an attribute, or a
-# command line. Each case is written once with a dash where the character
+# No control character reaches a string of the policy: a path pattern, a
+# class name, a check name in the catalogue, in a class's requirements or
+# in the unclassified set, an attribute, or a command line. Each case is written once with a dash where the character
 # goes, and must vet, so that its failure with the character is the
 # character's doing. The last case refines `policy` itself rather than a
 # layer.

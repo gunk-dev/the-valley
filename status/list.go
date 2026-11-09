@@ -382,7 +382,7 @@ func checkURL(u string) error {
 var transportName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9+.-]*$`)
 
 // pointerURL is the first line of policy/valley that is neither blank nor
-// a comment, as bin/valley's pointer_url reads it.
+// a comment.
 func pointerURL(pointer string) string {
 	for _, line := range strings.Split(pointer, "\n") {
 		line, _, _ = strings.Cut(line, "#")

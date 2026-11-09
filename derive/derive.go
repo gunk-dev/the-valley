@@ -10,11 +10,6 @@
 // no class matches requires the checks of the policy's `unclassified` set.
 // A class's paths are globs: `*` matches within one path segment, and a
 // `**` segment matches any number of segments, none included (Match).
-//
-// bin/valley's deriver (derive_required) answers the same question, and
-// the tests beside this file hold the two to the same answers. Where they
-// differ, the difference is a known fault of bin/valley's, and those tests
-// name each one.
 package derive
 
 import (

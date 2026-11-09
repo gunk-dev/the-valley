@@ -420,35 +420,25 @@ func addCosts(out *jsonVersionChecks, required []jsonRequired, project, changeID
 
 // costLine is what checksLine adds about a version's build times: its
 // total and its evaluation, then each check that grew against its
-// baseline, most first, and each new check: " in 9m10s (eval 24s);
-// worker-e2e 431s, +68s against its recent 363s; web-unit 135s, new".
+// baseline, most first: " in 9m10s (eval 24s); worker-e2e 431s, +68s
+// against its recent 363s". A check with no baseline is no news, and is
+// left out.
 func costLine(c *jsonVersionChecks) string {
 	if c.BuildMS == nil {
 		return ""
 	}
 	line := fmt.Sprintf(" in %s (eval %s)", duration(*c.BuildMS), duration(*c.EvalMS))
-	var grown, fresh []jsonCheckState
+	var grown []jsonCheckState
 	for _, q := range c.Required {
-		switch {
-		case q.Grown:
+		if q.Grown {
 			grown = append(grown, q)
-		case q.New && q.BuildMS != nil:
-			fresh = append(fresh, q)
 		}
 	}
 	sort.SliceStable(grown, func(i, j int) bool {
 		return *grown[i].BuildMS-*grown[i].BaselineMS > *grown[j].BuildMS-*grown[j].BaselineMS
 	})
-	sort.SliceStable(fresh, func(i, j int) bool { return *fresh[i].BuildMS > *fresh[j].BuildMS })
 	for _, q := range grown {
 		line += fmt.Sprintf("; %s %s, +%s against its recent %s", q.Name, seconds(*q.BuildMS), seconds(*q.BuildMS-*q.BaselineMS), seconds(*q.BaselineMS))
-	}
-	for _, q := range fresh {
-		note := "new"
-		if q.OtherCapacity {
-			note = "new on this capacity"
-		}
-		line += fmt.Sprintf("; %s %s, %s", q.Name, seconds(*q.BuildMS), note)
 	}
 	return line
 }

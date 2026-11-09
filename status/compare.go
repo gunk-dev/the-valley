@@ -274,6 +274,10 @@ type reference struct {
 // comparison is what comparing a version with its reference found.
 type comparison struct {
 	kind, text string
+	verb       string   // rebased, edited or recommitted, as the text opens
+	edited     int      // the shown version's commits that differ from the earlier version's
+	had, has   int      // the earlier and the shown version's commit counts
+	mainEdited []string // the files whose change differs that a landing in between edited
 	meta       bool     // the commits' messages or authors differ
 	base, head string   // the shown version's base and head
 	landings   []string // main's first-parent history from the shown version's base down to the reference's, both included
@@ -410,7 +414,8 @@ func compareWith(g git, h *history, tip string, ref reference, n int, verbose bo
 		since = "you approved " + since
 	}
 	meta := metadataChanges(c0, c1, since, old, a.version)
-	c := comparison{meta: meta != "", base: b1, head: a.head, landings: firstParent[i1 : i0+1]}
+	c := comparison{verb: verb, edited: edited, had: len(c0), has: len(c1), meta: meta != "",
+		base: b1, head: a.head, landings: firstParent[i1 : i0+1]}
 
 	var b strings.Builder
 	if sameDelta {
@@ -452,12 +457,12 @@ func compareWith(g git, h *history, tip string, ref reference, n int, verbose bo
 		} else {
 			fmt.Fprintf(&b, "Its %d commits are unchanged: same patches, same messages.\n", len(c1))
 		}
-		touched := 0
 		for _, f := range files {
 			if len(edits[f.path]) > 0 {
-				touched++
+				c.mainEdited = append(c.mainEdited, f.path)
 			}
 		}
+		touched := len(c.mainEdited)
 		of := fmt.Sprintf("%d of its files", touched)
 		if touched < len(files) {
 			of = fmt.Sprintf("%d of the %d files whose change differs", touched, len(files))

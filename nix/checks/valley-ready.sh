@@ -717,13 +717,16 @@ raced_again="$(git rev-parse HEAD)"
 new_version() {
   as contributor git push --quiet origin drafts/raced && as contributor valley ready --change "$rid"
 }
-# A version with new content, added while the review is open, is said
-# plainly, and nothing is approved. Only what changed since the version
-# shown is offered, for the second look.
-review_while "$rh" 'a\nv\n' new_version
-moved_line="$prompt$rh moved to v2 while you were reviewing (its changes differ from v1's) · review it again to approve it · [v]iew what changed since v1, [s]kip? "
+# A version with new commits, added while the review is open, is said
+# plainly, and nothing is approved at once. Only what changed since the
+# version shown is offered, and approving the new version only after it
+# is paged; [s] then skips it.
+review_while "$rh" 'a\nv\ns\n' new_version
+moved_line="$prompt$rh moved to v2 while you were reviewing (its commits changed (2 commits, where v1 had 1)) · [v]iew what changed since v1, [s]kip? "
 grep -qF "$moved_line$rh v2 at $(git rev-parse --short "$raced_again"): edited since v1 at " "$w/review.out" \
   || fail "review did not say the change moved to v2, and show what changed since v1: $(cat "$w/review.out")"
+grep -qF '[a]pprove v2, [s]kip? ' "$w/review.out" \
+  || fail "review did not offer to approve v2 once it showed what changed: $(cat "$w/review.out")"
 if git -C "$origin" rev-parse --verify --quiet "$raced_request" > /dev/null; then
   fail 'review filed a request for a change that moved while it was open'
 fi
@@ -750,6 +753,55 @@ if grep -qF 'valley ready --change' "$w/review.out" "$w/review.err"; then fail '
 record "$rid" '.state == "ready"' '.active == 3' '.versions | length == 3' \
   ".versions[2].head == \"git-sha1:$rebased\"" '.versions[2].uploader == "requester"' \
   '.versions[2].branch == "drafts/raced"' '.owner == "contributor"'
+
+# A rebase onto a main that also edited one of the change's files changes
+# the file's delta and not the commit. Review says so, offers to approve
+# the rebased version at once, and [a] files its head.
+git checkout --quiet main
+printf '1\n2\n3\n4\n5\n6\n7\n8\n' > shared.txt
+git add shared.txt
+git commit --quiet -m shared
+env -u VALLEY_PRINCIPAL git push --quiet origin main
+git checkout --quiet -b drafts/shared
+sed -i 's/^1$/one/' shared.txt
+git commit --quiet -am 'shared: one'
+as contributor git push --quiet origin drafts/shared
+ok as contributor valley ready
+sid="$(sed -n 's/^The change ID \([k-z]*\) is new\..*/\1/p' "$w/out")"
+sh="$(sed -n 's/^project \([k-z]*\) v1 ready$/\1/p' "$w/out")"
+if [ "${#sid}" != 32 ] || [ -z "$sh" ]; then fail 'ready did not name the shared change'; fi
+# main moves in a clone of its own, leaving the review's checkout alone.
+git clone --quiet "$origin" "$w/mainline"
+main_edits_shared() {
+  sed -i 's/^8$/eight/' "$w/mainline/shared.txt"
+  git -C "$w/mainline" commit --quiet -am 'shared: eight'
+  env -u VALLEY_PRINCIPAL git -C "$w/mainline" push --quiet origin main
+  as requester valley rebase "$sh"
+}
+review_while "$sh" 'a\na\n' main_edits_shared
+shared_head="$(git -C "$origin" rev-parse refs/heads/drafts/shared)"
+grep -qF "$prompt$sh moved to v2 while you were reviewing (rebased onto main; its commit is unchanged, but main also edited 1 of its files (shared.txt)) · [a]pprove v2, [v]iew what changed since v1, [s]kip? " "$w/review.out" \
+  || fail "review did not say the change was rebased onto a file main edited, and offer v2: $(cat "$w/review.out")"
+grep -q "^[^ ]* $sh v2  approved · " "$w/review.out" || fail "review did not approve v2 in place: $(cat "$w/review.err")"
+[ "$(git -C "$origin" rev-parse "refs/the-valley/integration-requests/main/c-$sid")" = "$shared_head" ] \
+  || fail 'review did not file the rebased head of v2'
+# A commit edited while the review is open is offered for approval only
+# once what changed is paged: [a] at the moved prompt approves nothing.
+git fetch --quiet origin drafts/shared
+git checkout --quiet drafts/shared
+git reset --quiet --hard FETCH_HEAD
+sed -i 's/^2$/two/' shared.txt
+git commit --quiet -am 'shared: two'
+new_shared_version() {
+  as contributor git push --quiet origin drafts/shared && as contributor valley ready --change "$sid"
+}
+review_while "$sh" 'a\na\n' new_shared_version
+grep -qF "$prompt$sh moved to v3 while you were reviewing (its commits changed (2 commits, where v2 had 1)) · [v]iew what changed since v2, [s]kip? " "$w/review.out" \
+  || fail "review did not say the change's commits changed, offering only what changed: $(cat "$w/review.out")"
+[ "$(git -C "$origin" rev-parse "refs/the-valley/integration-requests/main/c-$sid")" = "$shared_head" ] \
+  || fail 'review approved an edited version before showing what changed'
+git checkout --quiet main
+git pull --quiet --ff-only origin main
 
 # A name that read as a plain branch is read again before approve files.
 # A review of a branch no record is on is left open while a second

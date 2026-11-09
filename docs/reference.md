@@ -261,8 +261,8 @@ valley pending [--all] [--repo <name>] [--checks] [--drafts] [--branches] [--jso
     `valley changes --checks` reads it, naming each check that failed:
     `checks: 18 passed, 1 failed (valley-request)` or `checks: 12 passed, 7 pending`. When the
     host's worker telemetry holds the version's builds, the line goes on with their
-    [build times](#build-times): the total, the evaluation, each check that grew against its
-    baseline, and each new check, as in
+    [build times](#build-times): the total, the evaluation, and each check that grew against its
+    baseline, as in
     `checks: 21 passed in 9m10s (eval 24s); worker-e2e 431s, +100s against its recent 331s`. With
     `--json`, the active version of each ready change carries the same [`checks`](#version-checks)
     object.
@@ -408,11 +408,11 @@ valley review [-v] [--build-here] [--repo <name>]
   and `[a]pprove` is still offered.
 - **A change that moves during review:** Before `[a]pprove` or `[r]eject` acts on a change with a
   record, `valley review` reads the change again with `valley-go standing`. When the change differs
-  from what review showed, it prints one line, acts on nothing, and ends the review of that change
-  without asking again:
+  from what review showed, it prints one line and acts on nothing, unless the reviewer approves a
+  new version it offers:
   - `<change> changed while you were reviewing: it was returned to draft (since <time>), so there is nothing to approve now. It comes back when it is ready again.`
   - `<change> changed while you were reviewing: it was withdrawn (since <time>), so there is nothing to approve.`
-  - `<change> moved to v<n> while you were reviewing (<why>) · review it again to approve it · [v]iew what changed since v<m>, [s]kip?`
+  - `<change> moved to v<n> while you were reviewing (<why>) · [a]pprove v<n>, [v]iew what changed since v<m>, [s]kip?`
   - `<change> landed as v<n> while you were reviewing; there is nothing left to approve.`
 
   `<time>` is the record commit's committer time in UTC, as `HH:MMZ` on the current day and
@@ -426,9 +426,22 @@ valley review [-v] [--build-here] [--repo <name>]
   answer carries: review prints
   `<change> moved to v<n> while you were reviewing (a restack of v<m>; same changes) · your answer about v<m> stands`,
   and `[a]pprove` files v<m>'s head, the one shown, whose delta the integrator applies onto `main`
-  as `main` stands. Otherwise `<why>` says what holds it: other changes, other commit messages or
-  authors, the carry mode, or versions that cannot be compared, and `[v]` pages the comparison of
-  v<n> with v<m>.
+  as `main` stands. Otherwise `<why>` says what holds it, and `[v]` pages the comparison of v<n>
+  with v<m>:
+
+  | `<why>`                                                                                    | `[a]pprove v<n>` offered |
+  | ------------------------------------------------------------------------------------------ | ------------------------ |
+  | `rebased onto main; its commit is unchanged, but main also edited 1 of its files (<path>)` | at once                  |
+  | `a restack; carry mode <mode> holds it over what landed since`                             | at once                  |
+  | `its commits changed (1 of 2)`                                                             | after `[v]`              |
+  | `its commit messages or authors differ`                                                    | after `[v]`              |
+  | `it could not be set against v<m>`                                                         | no                       |
+
+  With `[a]pprove v<n>` offered after `[v]`, the page ends with `[a]pprove v<n>, [s]kip?`. `[a]`
+  files v<n>'s head through the same `valley-go approve --reviewing` call, with that version and
+  head. When the change moves again before it files, the approval is refused and review's prompt
+  comes back. `valley-go carry` prints the offer as a third field on its first line: `approve`,
+  `view`, or `none`. A review whose answer is `[r]eject` is offered no approval.
 
 - **Inline review notes:** Pressing `v` inside `less` opens the diff buffer in `$EDITOR`. Any lines
   inserted by the reviewer are anchored to their file and new-side line number, appended to

@@ -15,7 +15,11 @@
 //
 // The output is one line, the verdict, carries or review, and a short
 // reason, separated by a tab, and then the comparison's text, which
-// review pages when it asks the operator to look again.
+// review pages when it asks the operator to look again. A review line has
+// a third field, when review offers to approve the later version in
+// place: approve, at once, since the change's commits are unchanged;
+// view, once the operator has paged the comparison, since a commit
+// changed; or none, when the versions could not be set side by side.
 
 package main
 
@@ -24,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 
 	"the-valley/change"
 	"the-valley/derive"
@@ -67,35 +72,76 @@ func runCarry(g git, args []string, w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	verdict, reason, err := carryVerdict(g, h.tip, c, from)
+	verdict, reason, offer, err := carryVerdict(g, h.tip, c, from)
 	if err != nil {
 		return err
+	}
+	if offer != "" {
+		reason += "\t" + offer
 	}
 	_, err = fmt.Fprintf(w, "%s\t%s\n%s", verdict, reason, c.text)
 	return err
 }
 
 // carryVerdict says whether an answer about version from carries to the
-// version c compared with it, and why.
-func carryVerdict(g git, tip string, c comparison, from int) (verdict, reason string, err error) {
+// version c compared with it, and why, and for review, when the later
+// version is offered for approval in place.
+func carryVerdict(g git, tip string, c comparison, from int) (verdict, reason, offer string, err error) {
 	switch {
 	case c.kind == compareNone:
-		return "review", fmt.Sprintf("it could not be set against v%d", from), nil
+		return "review", fmt.Sprintf("it could not be set against v%d", from), "none", nil
+	case c.kind == compareChanged && c.verb == "rebased":
+		return "review", rebasedReason(c, from), "approve", nil
 	case c.kind == compareChanged:
-		return "review", fmt.Sprintf("its changes differ from v%d's", from), nil
+		return "review", editedReason(c, from), "view", nil
 	case c.meta:
-		return "review", fmt.Sprintf("its commit messages or authors differ from v%d's", from), nil
+		return "review", "its commit messages or authors differ", "view", nil
 	case len(c.landings) == 1:
-		return "carries", fmt.Sprintf("same changes as v%d", from), nil
+		return "carries", fmt.Sprintf("same changes as v%d", from), "", nil
 	}
 	mode, shared, err := carryMode(g, tip, c)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if !carryAllows(mode, shared) {
-		return "review", fmt.Sprintf("a restack of v%d, and carry mode %s holds it over what landed since", from, mode), nil
+		return "review", fmt.Sprintf("a restack; carry mode %s holds it over what landed since", mode), "approve", nil
 	}
-	return "carries", fmt.Sprintf("a restack of v%d; same changes", from), nil
+	return "carries", fmt.Sprintf("a restack of v%d; same changes", from), "", nil
+}
+
+// rebasedReason says that a rebase changed the change's files and not its
+// commits, and names the files main also edited, the first three. A path
+// is quoted when it holds what is not printable, so that it can neither
+// split review's tab-separated line nor drive the terminal.
+func rebasedReason(c comparison, from int) string {
+	commits := "its commit is"
+	if c.has != 1 {
+		commits = fmt.Sprintf("its %d commits are", c.has)
+	}
+	files := c.mainEdited
+	if len(files) == 0 {
+		return fmt.Sprintf("rebased onto main; %s unchanged, but its file changes differ from v%d's", commits, from)
+	}
+	quoted := make([]string, min(len(files), 3))
+	for i := range quoted {
+		quoted[i] = quotedPath(files[i])
+	}
+	named := strings.Join(quoted, ", ")
+	if len(files) > 3 {
+		named += ", …"
+	}
+	return fmt.Sprintf("rebased onto main; %s unchanged, but main also edited %d of its files (%s)", commits, len(files), named)
+}
+
+// editedReason says how many of the change's commits changed.
+func editedReason(c comparison, from int) string {
+	switch {
+	case c.had != c.has:
+		return fmt.Sprintf("its commits changed (%s, where v%d had %d)", counted(c.has, "commit"), from, c.had)
+	case c.has == 1:
+		return "its commit changed"
+	}
+	return fmt.Sprintf("its commits changed (%d of %d)", c.edited, c.has)
 }
 
 // carryMode is the change's carry mode under the policy at main's tip,

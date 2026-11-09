@@ -250,9 +250,10 @@ their own change with `valley rebase`.
 
 A change can move while you read it: its owner may return it to draft, ready a new version, or
 withdraw it, and it may land. Review reads the change again before `[a]pprove` or `[r]eject` acts.
-When the change has moved, review says what changed in one line, does nothing, and moves on, and for
-a new version it offers what changed since the version you read. A restack that brings the same
-changes keeps your answer instead:
+When the change has moved, review says what changed in one line and does nothing. For a new version
+it says why your answer does not carry, offers what changed since the version you read, and offers
+to approve the new version: at once when only main moved under its commits, after you view what
+changed when a commit changed. A restack that brings the same changes keeps your answer instead:
 `kqxm moved to v4 while you were reviewing (a restack of v3; same changes) · your answer about v3 stands`,
 and approving v3 lands those changes.
 

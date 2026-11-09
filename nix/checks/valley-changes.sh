@@ -902,7 +902,8 @@ printf 's\n' | ok env VALLEY_REVIEW_CHECKS_WAIT=120 valley review "$K1"
 [ "$(grep -B1 '^\[a\]pprove' "$w/out" | head -1)" = 'klkl v1 · checks: 1 passed in 1m40s (eval 24s); prose-format 100s, +40s against its recent 60s' ] \
   || fail "review's prompt did not carry the checks line: $(cat "$w/out")"
 
-# A check with no recent build in the project is new.
+# A check with no recent build in the project is new, which is no news:
+# the line leaves it out.
 {
   build 1 guarded "$O1" 1 "" passed 50000 20000 10 false
   build 2 open "$K1" 1 "$t1" passed 100000 24000 20 false
@@ -911,7 +912,7 @@ ok valley changes --json --checks
 holds "$(pf "$K1") | .build_ms == 100000 and .new == true and (has(\"baseline_ms\") | not) and (has(\"grown\") | not)"
 ok valley pending --checks
 after '^  4  klkl v1  ' '^     chk-pass$' '^     requires 1 quick check, 0 slow$' \
-  '^     checks: 1 passed in 1m40s \(eval 24s\); prose-format 100s, new$'
+  '^     checks: 1 passed in 1m40s \(eval 24s\)$'
 
 # Builds on another capacity are no baseline: the check of a resized host
 # has no comparable history, and has not grown.
@@ -923,7 +924,7 @@ ok valley changes --json --checks
 holds "$(pf "$K1") | .new == true and .other_capacity == true and (has(\"baseline_ms\") | not) and (has(\"grown\") | not)"
 ok valley pending --checks
 after '^  4  klkl v1  ' '^     chk-pass$' '^     requires 1 quick check, 0 slow$' \
-  '^     checks: 1 passed in 1m40s \(eval 24s\); prose-format 100s, new on this capac…$'
+  '^     checks: 1 passed in 1m40s \(eval 24s\)$'
 
 # A host that refuses leaves every build time out, says why once, and
 # lists the check states all the same.

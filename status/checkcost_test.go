@@ -101,7 +101,7 @@ func TestAddCosts(t *testing.T) {
 	for i := range out.Required {
 		out.Required[i].State = checkPassed
 	}
-	want := "checks: 4 passed in 3m29s (eval 24s); slow 200s, +91s against its recent 110s; fresh 9s, new"
+	want := "checks: 4 passed in 3m29s (eval 24s); slow 200s, +91s against its recent 110s"
 	if got := checksLine(out); got != want {
 		t.Errorf("checksLine:\n got %s\nwant %s", got, want)
 	}

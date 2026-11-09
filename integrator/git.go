@@ -91,6 +91,7 @@ func gitTry(repo string, args ...string) (string, bool) {
 type worktree struct {
 	repo string
 	dir  string
+	rev  string // the commit checked out
 }
 
 // scratchPrefix names every directory addWorktree creates. It is what tells
@@ -130,7 +131,7 @@ func addWorktree(repo, rev string) (*worktree, error) {
 		_ = os.RemoveAll(dir)
 		return nil, err
 	}
-	return &worktree{repo: repo, dir: dir}, nil
+	return &worktree{repo: repo, dir: dir, rev: rev}, nil
 }
 
 func (w *worktree) remove() {

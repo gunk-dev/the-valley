@@ -7,9 +7,8 @@ package main
 // the decision.
 //
 // Both layers are resolved from the integrator's own side and never from
-// the submitted tree (bd-eaefe82): the project layer from a checkout of the
-// target tip, the instance layer from where the integrator is configured to
-// find it. A change therefore never supplies the policy that gates it.
+// the submitted tree (bd-eaefe82): the project layer from the target tip,
+// the instance layer from where the integrator is configured to find it. A change therefore never supplies the policy that gates it.
 //
 // Each layer is a directory of its own under `policy/`, which is the layout
 // dcr-f41f718's worked example lays out and the layout the defaults name:
@@ -29,7 +28,6 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -93,8 +91,12 @@ func (p policySource) open(tip *worktree) (policySource, func(), error) {
 	return p, func() { endProject(); done() }, nil
 }
 
-// openProject resolves the project's own layer in the checkout of the target
-// tip, and returns what ends it.
+// openProject resolves the project's own layer at the target tip, read
+// from git as composed.Project reads it, and returns what ends it. The
+// layer is read from the tip's commit and not from the checkout's files,
+// so presence is decided as approve decides it: a directory with a *.cue
+// entry is there, one with none is not, and one that cannot be read is
+// refused.
 //
 // A target that carries no layer of its own is judged under the floor
 // alone. The project layer only ever adds (dcr-f41f718), and the identity
@@ -102,22 +104,12 @@ func (p policySource) open(tip *worktree) (policySource, func(), error) {
 // target instead would make a repository unlandable until its first policy
 // commit, which cannot land either: a change never supplies the policy that
 // gates it.
-//
-// Absence is answered with a document that adds nothing rather than with an
-// argument left off, because the deriver and the composer are each handed a
-// directory of *.cue and neither has a spelling for "no layer".
 func (p *policySource) openProject(tip *worktree) (func(), error) {
-	noop := func() {}
-	p.project = filepath.Join(tip.dir, p.projectDir)
-	if docs, err := filepath.Glob(filepath.Join(p.project, "*.cue")); err == nil && len(docs) > 0 {
-		return noop, nil
-	}
-	dir, done, err := composed.AddsNothing("valley-integrator-project")
+	dir, note, done, err := composed.Project(context.Background(), tip.repo, tip.rev, p.projectDir, "valley-integrator-project")
 	if err != nil {
-		return noop, err
+		return done, err
 	}
-	p.project = dir
-	p.note = fmt.Sprintf("no project layer at %s; the floor alone", p.projectDir)
+	p.project, p.note = dir, note
 	return done, nil
 }
 
@@ -137,8 +129,8 @@ type derived struct {
 var carryModes = map[string]bool{"same-paths": true, "same-class": true, "exact": true}
 
 // derive runs the deriver over a diff, in a checkout of the target tip. The
-// checkout supplies the project layer and the commits the diff names; the
-// instance layer comes from outside it.
+// checkout supplies the commits the diff names; both layers come from
+// outside it.
 func (p policySource) derive(tip *worktree, from, to string) (derived, error) {
 	cmd := exec.Command(p.valley, "checks",
 		"--schema", p.schema,

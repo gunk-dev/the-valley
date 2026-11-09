@@ -15,7 +15,8 @@
 // materialized directory for a host that serves no instance repository.
 // The project layer is read from the target tip. A layer that is not there
 // defaults in the safe direction of its job: an absent project layer
-// composes the floor alone, and an absent floor is refused.
+// composes the floor alone, and an absent floor is refused. A layer that
+// cannot be read is refused, whichever it is.
 //
 // Every git and cue it runs runs under the caller's context, in a process
 // group of its own. A context that is done kills the whole group, and the
@@ -59,6 +60,13 @@ type Floor struct {
 // nothing composes like any other.
 const Floorless = "a valley without a written floor is not a valley whose changes land"
 
+// ErrNoFloor is what Open's refusal wraps when the tree-ish it reads
+// carries no floor: no such directory, or one holding no *.cue. A reader
+// with another place to look, as the worker looks to the owning valley
+// when a project's tip carries no floor of its own, looks there. Every
+// other refusal, a floor that could not be read among them, is final.
+var ErrNoFloor = errors.New(Floorless)
+
 // Open resolves the floor to a directory of *.cue on disk, and returns
 // what removes it. A floor read from a repository is copied into a
 // scratch directory whose name starts with prefix.
@@ -88,16 +96,16 @@ func (f Floor) Open(ctx context.Context, prefix string) (string, func(), error) 
 	case err != nil:
 		return "", noop, err
 	case found == absent:
-		return "", noop, fmt.Errorf("no instance policy layer: %s has no %s/ at %s: %s", f.Repo, f.Dir, f.Ref, Floorless)
+		return "", noop, fmt.Errorf("no instance policy layer: %s has no %s/ at %s: %w", f.Repo, f.Dir, f.Ref, ErrNoFloor)
 	case found == empty:
-		return "", noop, fmt.Errorf("no instance policy layer: %s holds no *.cue in %s/ at %s: %s", f.Repo, f.Dir, f.Ref, Floorless)
+		return "", noop, fmt.Errorf("no instance policy layer: %s holds no *.cue in %s/ at %s: %w", f.Repo, f.Dir, f.Ref, ErrNoFloor)
 	}
 	return dir, done, nil
 }
 
 // Project resolves the project's own layer at a tree-ish of a repository
 // to a directory of *.cue on disk, and returns what removes it, and a note
-// when the layer is absent.
+// when the layer is absent. A layer that cannot be read is an error.
 //
 // A target that carries no layer of its own is composed under the floor
 // alone. The project layer only ever adds, and the identity of "adds" is
@@ -137,7 +145,7 @@ func AddsNothing(prefix string) (string, func(), error) {
 // What readLayer found at a directory of a tree.
 const (
 	present = iota // the directory, with *.cue in it
-	absent         // no such directory
+	absent         // no such directory: an empty listing
 	empty          // the directory, with no *.cue in it
 )
 
@@ -146,6 +154,22 @@ const (
 // cue both read a layer as those documents, so they are what is taken.
 // The scratch directory is removed unless the layer is present.
 //
+// It decides as bin/valley's copy_layer, which approve reads the layers
+// with, so the two cannot disagree about which layer is there. The
+// directory is listed with a pathspec, taken literally, so a directory
+// named policy[1] is that directory and not policy1. A directory that is
+// not there is an empty listing, and a listing git could not read, of a
+// tree-ish or a tree object that is missing, is an error: read as absent,
+// a project layer nobody could read would compose as the floor alone,
+// requiring fewer checks from a read that never happened. Each *.cue entry
+// is read as a blob, so one that is a directory or a submodule is an error
+// too.
+//
+// A name beginning with a dot is copied as copy_layer copies it, and
+// counts toward a present layer. The composer leaves it out (layer), so a
+// layer holding dotfiles alone is present, holds no document, and is
+// refused when it is composed, as bin/valley refuses it.
+//
 // The listing is NUL-separated, so every name is read as it is. A
 // newline-separated listing quotes a name with non-ASCII characters in it,
 // such as naïve.cue, and the quoted name does not end in .cue, so that
@@ -153,12 +177,14 @@ const (
 // does this.
 func readLayer(ctx context.Context, repo, treeish, dir, prefix string) (string, int, func(), error) {
 	noop := func() {}
-	tree := treeish + ":" + dir
-	listing, err := git(ctx, repo, "ls-tree", "--name-only", "-z", tree)
+	listing, err := git(ctx, repo, "--literal-pathspecs", "ls-tree", "--full-tree", "--name-only", "-z", "--end-of-options", treeish, dir+"/")
 	if err != nil {
 		if ctx.Err() != nil {
-			return "", absent, noop, fmt.Errorf("reading %s from %s at %s: %w", dir, repo, treeish, ctx.Err())
+			err = ctx.Err()
 		}
+		return "", absent, noop, fmt.Errorf("reading %s/ from %s at %s: %w", dir, repo, treeish, err)
+	}
+	if listing == "" {
 		return "", absent, noop, nil
 	}
 	out, err := scratch(prefix)
@@ -167,14 +193,15 @@ func readLayer(ctx context.Context, repo, treeish, dir, prefix string) (string, 
 	}
 	done := func() { _ = os.RemoveAll(out) }
 	found := 0
-	for _, name := range strings.Split(listing, "\x00") {
-		if !strings.HasSuffix(name, ".cue") {
+	for _, path := range strings.Split(strings.TrimSuffix(listing, "\x00"), "\x00") {
+		if !strings.HasSuffix(path, ".cue") {
 			continue
 		}
-		body, err := git(ctx, repo, "show", tree+"/"+name)
+		name := path[strings.LastIndexByte(path, '/')+1:]
+		body, err := git(ctx, repo, "cat-file", "blob", treeish+":"+path)
 		if err != nil {
 			done()
-			return "", absent, noop, fmt.Errorf("reading %s/%s from %s at %s: %w", dir, name, repo, treeish, err)
+			return "", absent, noop, fmt.Errorf("reading %s from %s at %s: %w", path, repo, treeish, err)
 		}
 		if err := os.WriteFile(filepath.Join(out, name), []byte(body), 0o644); err != nil {
 			done()

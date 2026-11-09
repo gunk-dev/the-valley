@@ -34,6 +34,7 @@ project: {
 		"knot-agree",
 		"delta-unit",
 		"derive-unit",
+		"composed-unit",
 		"review-unit",
 		"attest-unit",
 		"attest-conformance",
@@ -190,11 +191,13 @@ project: {
 
 	// The deriver of required checks, and the composed-policy reader it reads
 	// the whole policy through. derive-unit holds the deriver to bin/valley's,
-	// and valley-go-unit builds the verb that prints its answer with both.
+	// composed-unit holds the reader's layer reads, and valley-go-unit builds
+	// the verb that prints its answer with both.
 	classes: derive: {
 		paths: "derive/**":         true
 		paths: "composed/**":       true
 		requires: "derive-unit":    true
+		requires: "composed-unit":  true
 		requires: "valley-go-unit": true
 	}
 
@@ -620,7 +623,7 @@ project: {
 		"attest.nix": ["attest-unit", "attest-conformance", "attest-e2e"]
 		"telemetry.nix": ["telemetry-unit", "telemetry-e2e"]
 		"delta.nix": ["delta-unit"]
-		"derive.nix": ["derive-unit"]
+		"derive.nix": ["derive-unit", "composed-unit"]
 		"review.nix": ["review-unit"]
 		"identity.nix": ["identity-unit", "identity-e2e"]
 		"approval.nix": ["approval-unit"]

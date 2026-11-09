@@ -913,6 +913,25 @@ rec {
     };
   };
 
+  # The composed-policy reader (composed/): each layer read out of git as
+  # bin/valley's copy_layer reads it, present, absent or refused. Its tests
+  # read layers from real repositories, some with objects removed, and go
+  # vet runs after them.
+  composed = goModule {
+    pname = "valley-composed";
+    dir = ../composed;
+    tests = {
+      nativeCheckInputs = [ pkgs.git ];
+      # A test that cannot find git fails rather than skipping.
+      preCheck = ''
+        export VALLEY_TEST_TOOLS=required
+      '';
+      postCheck = ''
+        go vet ./...
+      '';
+    };
+  };
+
   # The change record (change/). Its tests cover its strict reading, its
   # fuzz target's seed corpus, and its branch-name rule, which they hold to
   # real git's check-ref-format.

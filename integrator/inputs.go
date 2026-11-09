@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
@@ -75,14 +74,22 @@ func (in *integrator) inputState() (inputs, func()) {
 		return inputs{digest: unreadInputs, err: err}, done
 	}
 	// Open refuses a floor with no *.cue in it, so docs is never empty.
-	docs, err := filepath.Glob(filepath.Join(floor, "*.cue"))
-	sort.Strings(docs)
+	// The directory's entries are listed, in name order, rather than
+	// globbed, so a floor whose path holds a glob metacharacter is read
+	// where it is.
+	entries, err := os.ReadDir(floor)
+	var docs []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".cue") {
+			docs = append(docs, e.Name())
+		}
+	}
 	for _, doc := range docs {
 		var data []byte
-		if data, err = os.ReadFile(doc); err != nil {
+		if data, err = os.ReadFile(filepath.Join(floor, doc)); err != nil {
 			break
 		}
-		fmt.Fprintf(h, "floor %s %x\n", filepath.Base(doc), sha256.Sum256(data))
+		fmt.Fprintf(h, "floor %s %x\n", doc, sha256.Sum256(data))
 	}
 	if err != nil {
 		done()

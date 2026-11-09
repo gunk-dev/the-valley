@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -263,5 +264,90 @@ func TestAFailedReadStopsAdmissionAndDrainsTheRunningBatches(t *testing.T) {
 				t.Errorf("the stream holds %d %s records naming attest run %s, want 1", n, typ, b.run)
 			}
 		}
+	}
+}
+
+// The worker reads both layers at main's tip as approve does, and refuses
+// a layer that cannot be read rather than reading it as absent. An
+// unreadable floor is not sent to the owning valley that policy/valley
+// names, though that valley's floor reads, and an unreadable project layer
+// is not derived as the floor alone.
+func TestPolicyLayersRefuseALayerThatCannotBeRead(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	commit := func(repo string, files map[string]string) string {
+		t.Helper()
+		run := func(args ...string) string {
+			t.Helper()
+			cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@localhost"}, args...)...)
+			cmd.Dir = repo
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+			return strings.TrimSpace(string(out))
+		}
+		if err := os.MkdirAll(repo, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		run("init", "--quiet", "--initial-branch=main")
+		for path, body := range files {
+			full := filepath.Join(repo, path)
+			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		run("add", "--all")
+		run("commit", "--quiet", "-m", "layers")
+		return run("rev-parse", "HEAD")
+	}
+	valley := filepath.Join(dir, "valley")
+	commit(valley, map[string]string{"policy/instance/floor.cue": "package verification // the valley's\n"})
+
+	for _, lost := range []string{"", instanceLayer, projectLayer, projectLayer + "/policy.cue"} {
+		t.Run("lost "+lost, func(t *testing.T) {
+			repo := filepath.Join(t.TempDir(), "app")
+			tip := commit(repo, map[string]string{
+				instanceLayer + "/floor.cue": "package verification // its own\n",
+				projectLayer + "/policy.cue": "package verification // the project's\n",
+				valleyPointer:                valley + "\n",
+			})
+			if lost != "" {
+				out, err := exec.Command("git", "-C", repo, "rev-parse", tip+":"+lost).Output()
+				if err != nil {
+					t.Fatal(err)
+				}
+				oid := strings.TrimSpace(string(out))
+				if err := os.Remove(filepath.Join(repo, ".git", "objects", oid[:2], oid[2:])); err != nil {
+					t.Fatal(err)
+				}
+			}
+			instance, project, done, err := policyLayers(git{env: os.Environ(), stderr: io.Discard, dir: repo}, tip)
+			defer done()
+			if lost == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				for path, want := range map[string]string{
+					filepath.Join(instance, "floor.cue"): "package verification // its own\n",
+					filepath.Join(project, "policy.cue"): "package verification // the project's\n",
+				} {
+					if body, err := os.ReadFile(path); err != nil || string(body) != want {
+						t.Errorf("%s reads %q (%v), not %q", path, body, err, want)
+					}
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("an unreadable %s resolved the layers to %s and %s", lost, instance, project)
+			}
+			if !strings.Contains(err.Error(), "reading "+lost) {
+				t.Errorf("the refusal %q does not say that %s could not be read", err, lost)
+			}
+		})
 	}
 }

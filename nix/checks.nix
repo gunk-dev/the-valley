@@ -18,8 +18,9 @@
 #                    its validator held to the schema and the lint
 #   delta.nix        delta-unit — valley-delta-v1, its conformance vectors,
 #                    and the trees it reads and refuses
-#   derive.nix       derive-unit — the Go deriver of required checks, held
-#                    to bin/valley's
+#   derive.nix       derive-unit, composed-unit — the Go deriver of
+#                    required checks, held to bin/valley's, and the
+#                    composed-policy reader's layer reads
 #   review.nix       review-unit — review records, their binding to the
 #                    version judged, and their append-only history
 #   attest.nix       attest-unit, attest-conformance, attest-e2e — the

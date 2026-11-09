@@ -1490,7 +1490,8 @@ func (w *worker) save() {
 // tip's own policy/instance when it carries one, and otherwise
 // policy/instance at the tip of main in the owning valley that
 // policy/valley names. A tip with no policy/project is derived under the
-// floor alone.
+// floor alone. A layer that cannot be read is refused, and never read as
+// one that is not there.
 func policyLayers(g git, tip string) (instance, project string, done func(), err error) {
 	ctx := context.Background()
 	var ends []func()
@@ -1503,51 +1504,65 @@ func policyLayers(g git, tip string) (instance, project string, done func(), err
 	if repo == "" {
 		repo = "."
 	}
-	floor := composed.Floor{Repo: repo, Ref: tip, Dir: instanceLayer}
-	if !g.succeeds(true, "cat-file", "-e", tip+":"+instanceLayer) {
-		pointer, err := g.output(true, "cat-file", "blob", tip+":"+valleyPointer)
-		if err != nil {
-			return "", "", done, fmt.Errorf("main names no owning valley at %s", valleyPointer)
-		}
-		url := pointerURL(pointer)
-		if url == "" {
-			return "", "", done, fmt.Errorf("%s on main names no repository", valleyPointer)
-		}
-		if err := checkURL(url); err != nil {
-			return "", "", done, err
-		}
-		scratch, err := os.MkdirTemp("", "valley-work-valley-")
-		if err != nil {
-			return "", "", done, err
-		}
-		ends = append(ends, func() { _ = os.RemoveAll(scratch) })
-		v := git{env: cacheEnvironment(g.env), stderr: g.stderr, dir: scratch}
-		if _, err := v.output(true, "init", "--quiet", "--bare"); err != nil {
-			return "", "", done, errors.New("no scratch repository to fetch the floor into")
-		}
-		// The valley's main is read by its exact name, and fetched by the
-		// object it names: given a ref name the valley lacks, fetch takes
-		// another ref whose name ends in it, such as
-		// refs/heads/refs/heads/main.
-		at, err := remoteRef(v, url, "refs/heads/main")
-		if err != nil {
-			return "", "", done, fmt.Errorf("could not fetch the owning valley %s", url)
-		} else if at == "" {
-			return "", "", done, fmt.Errorf("the owning valley %s has no refs/heads/main", url)
-		}
-		if _, err := v.output(true, "fetch", "--quiet", "--depth", "1", "--no-tags", "--end-of-options", url, at); err != nil {
-			return "", "", done, fmt.Errorf("could not fetch the owning valley %s", url)
-		}
-		floor = composed.Floor{Repo: scratch, Ref: at, Dir: instanceLayer}
-	}
-	instance, end, err := floor.Open(ctx, "valley-work-floor")
+	instance, end, err := composed.Floor{Repo: repo, Ref: tip, Dir: instanceLayer}.Open(ctx, "valley-work-floor")
 	ends = append(ends, end)
+	if errors.Is(err, composed.ErrNoFloor) {
+		var floor composed.Floor
+		floor, end, err = owningFloor(g, tip)
+		ends = append(ends, end)
+		if err != nil {
+			return "", "", done, err
+		}
+		instance, end, err = floor.Open(ctx, "valley-work-floor")
+		ends = append(ends, end)
+	}
 	if err != nil {
 		return "", "", done, err
 	}
 	project, _, end, err = composed.Project(ctx, repo, tip, projectLayer, "valley-work-project")
 	ends = append(ends, end)
 	return instance, project, done, err
+}
+
+// owningFloor is where the floor of a tip that carries none of its own is
+// read: policy/instance at the tip of main in the owning valley that
+// policy/valley names, fetched into a scratch repository that end removes.
+func owningFloor(g git, tip string) (floor composed.Floor, end func(), err error) {
+	end = func() {}
+	pointer, err := g.output(true, "cat-file", "blob", tip+":"+valleyPointer)
+	if err != nil {
+		return floor, end, fmt.Errorf("main names no owning valley at %s", valleyPointer)
+	}
+	url := pointerURL(pointer)
+	if url == "" {
+		return floor, end, fmt.Errorf("%s on main names no repository", valleyPointer)
+	}
+	if err := checkURL(url); err != nil {
+		return floor, end, err
+	}
+	scratch, err := os.MkdirTemp("", "valley-work-valley-")
+	if err != nil {
+		return floor, end, err
+	}
+	end = func() { _ = os.RemoveAll(scratch) }
+	v := git{env: cacheEnvironment(g.env), stderr: g.stderr, dir: scratch}
+	if _, err := v.output(true, "init", "--quiet", "--bare"); err != nil {
+		return floor, end, errors.New("no scratch repository to fetch the floor into")
+	}
+	// The valley's main is read by its exact name, and fetched by the
+	// object it names: given a ref name the valley lacks, fetch takes
+	// another ref whose name ends in it, such as
+	// refs/heads/refs/heads/main.
+	at, err := remoteRef(v, url, "refs/heads/main")
+	if err != nil {
+		return floor, end, fmt.Errorf("could not fetch the owning valley %s", url)
+	} else if at == "" {
+		return floor, end, fmt.Errorf("the owning valley %s has no refs/heads/main", url)
+	}
+	if _, err := v.output(true, "fetch", "--quiet", "--depth", "1", "--no-tags", "--end-of-options", url, at); err != nil {
+		return floor, end, fmt.Errorf("could not fetch the owning valley %s", url)
+	}
+	return composed.Floor{Repo: scratch, Ref: at, Dir: instanceLayer}, end, nil
 }
 
 // failureRecord is the worker's record of what failed, project by

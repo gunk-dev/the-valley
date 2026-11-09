@@ -377,8 +377,8 @@ func (in *integrator) materialize(r request, tip, floor string, watch *stopwatch
 	}
 
 	// The policy is read from the integrator's own side and never from the
-	// tree being gated: the project layer from this checkout of the target
-	// tip, the floor from the instance repository's integrated tip. Both
+	// tree being gated: the project layer from the target tip, the floor
+	// from the instance repository's integrated tip. Both
 	// are resolved once and held for the whole pass: the floor as the
 	// copy the pass's inputs were read from.
 	done = watch.stage(stagePolicy)

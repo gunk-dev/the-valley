@@ -1,5 +1,5 @@
-# The deriver of required checks (derive/), and the model of the composed
-# policy it derives from (composed/), held by the deriver's own tests.
+# The deriver of required checks (derive/), and the composed-policy reader
+# it derives from (composed/), each held by its own tests.
 {
   packages,
   ...
@@ -21,6 +21,12 @@
   # document that bash's glob names. Where bin/valley is wrong
   # (bd-11e0e4d), the test records what each answers: a path holding a
   # newline, a class added by refining policy that requires an undefined
-  # check, and a class named unclassified.
+  # check, and a class named unclassified. A layer read out of git is held
+  # to copy_layer: present, absent or refused alike.
   derive-unit = packages.derive.unit;
+
+  # Run with go vet: a layer read out of real repositories as present,
+  # absent or refused, with directories named like patterns, and with the
+  # objects of a tip, a layer's tree or a document removed.
+  composed-unit = packages.composed.unit;
 }

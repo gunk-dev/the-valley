@@ -3,6 +3,7 @@ package derive
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"os"
 	"os/exec"
@@ -239,6 +240,134 @@ func TestLayerDiscovery(t *testing.T) {
 		}
 		refuse(t, l)
 	})
+}
+
+// TestLayerReadersAgree holds composed.Project to bin/valley's copy_layer,
+// which approve reads a layer out of git with, over one tree: what each
+// copies, and whether the layer is present, absent, or refused. copy_layer
+// returns 0 for present, 1 for a directory holding no *.cue, which is the
+// floor alone, and 2 for a read that failed. A present layer is then
+// composed by both derivers, which agree on what it requires or both
+// refuse it: a layer of dotfiles alone is present, and holds no document
+// either composes.
+func TestLayerReadersAgree(t *testing.T) {
+	r := newRig(t)
+	floor := newLayers(t, r.glob(t, "examples/policy/deriver/[ft]*.cue"), nil, nil).instance
+	project, err := os.ReadFile(r.path("examples/policy/deriver/project.cue"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rp := newRepo(t, r)
+	// The layers are the same in both commits, so the diff between them
+	// never reads policy/lost, whose tree is removed. Its document is its
+	// own, so no other layer shares that tree.
+	commit := func(parent string, files tree) string {
+		maps.Copy(files, tree{
+			"policy/project/project.cue":   file(string(project)),
+			"policy/project/.shadow.cue":   file(notCUE),
+			"policy/proj*/project.cue":     file(string(project)),
+			"policy/projX/decoy.cue":       file(notCUE),
+			"policy/dotted/.only.cue":      file("package verification\n"),
+			"policy/odd/x.cue/project.cue": file(string(project)),
+			"policy/prose/notes.md":        file("not a document\n"),
+			"policy/lost/project.cue":      file("package verification\n// lost\n"),
+		})
+		return rp.commit(parent, files)
+	}
+	base := commit("", tree{"docs/a.md": file("seed\n")})
+	head := commit(base, tree{"docs/a.md": file("edit\n"), "src/b.rs": file("new\n")})
+	lost := rp.git(nil, "rev-parse", head+":policy/lost")
+	if err := os.Remove(filepath.Join(rp.dir, ".git", "objects", lost[:2], lost[2:])); err != nil {
+		t.Fatal(err)
+	}
+	copyLayer := r.functions(t, "copy_layer") + `copy_layer "$@" && rc=0 || rc=$?
+printf %d "$rc"`
+
+	for _, c := range []struct {
+		dir  string
+		rc   string
+		docs []string // what a present layer holds
+	}{
+		{"policy/project", "0", []string{".shadow.cue", "project.cue"}},
+		{"policy/proj*", "0", []string{"project.cue"}},
+		{"policy/dotted", "0", []string{".only.cue"}},
+		{"policy/odd", "2", nil},
+		{"policy/lost", "2", nil},
+		{"policy/prose", "1", nil},
+		{"policy/missing", "1", nil},
+	} {
+		t.Run(c.dir, func(t *testing.T) {
+			dest := t.TempDir()
+			if rc := r.bash(t, copyLayer, nil, rp.dir, head, c.dir, dest); rc != c.rc {
+				t.Fatalf("copy_layer returned %s, not %s", rc, c.rc)
+			}
+			dir, note, done, err := composed.Project(t.Context(), rp.dir, head, c.dir, "derive-test-")
+			defer done()
+			switch c.rc {
+			case "2":
+				if err == nil {
+					t.Fatalf("copy_layer refused the layer, and composed.Project resolved it to %s", dir)
+				}
+				return
+			case "1":
+				if err != nil || note == "" {
+					t.Fatalf("copy_layer found no layer, and composed.Project answered %q, %v", note, err)
+				}
+				return
+			}
+			if err != nil || note != "" {
+				t.Fatalf("copy_layer copied the layer, and composed.Project answered %q, %v", note, err)
+			}
+			for _, d := range []string{dest, dir} {
+				if got := entries(t, d); !slices.Equal(got, c.docs) {
+					t.Errorf("%s holds %q, not %q", d, got, c.docs)
+				}
+			}
+			for _, doc := range c.docs {
+				bash, _ := os.ReadFile(filepath.Join(dest, doc))
+				goes, _ := os.ReadFile(filepath.Join(dir, doc))
+				if !bytes.Equal(bash, goes) {
+					t.Errorf("%s reads %q from copy_layer and %q from composed.Project", doc, bash, goes)
+				}
+			}
+
+			// The two copies are the same documents, so both derivers
+			// compose one of them, and name the same paths.
+			l := layers{instance: floor, project: dir}
+			rep, bashErr := r.valley(t, rp.dir, r.schema, l, base, head)
+			m, goErr := r.read(l)
+			if (bashErr == nil) != (goErr == nil) {
+				t.Fatalf("bin/valley answered %v and the Go deriver %v", bashErr, goErr)
+			}
+			if c.dir == "policy/dotted" && goErr == nil {
+				t.Fatal("a layer of dotfiles alone was composed; both derivers leave dotfiles out, and refuse a layer with no document")
+			}
+			if goErr != nil {
+				return
+			}
+			res, err := r.derive(m, rp.dir, base, head)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if diffs := agree(rep, m, res); len(diffs) > 0 {
+				t.Errorf("the derivers disagree:\n  %s", strings.Join(diffs, "\n  "))
+			}
+		})
+	}
+}
+
+// entries are the names in dir, sorted.
+func entries(t *testing.T, dir string) []string {
+	t.Helper()
+	list, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range list {
+		names = append(names, e.Name())
+	}
+	return names
 }
 
 // TestEveryDerivationGlobal holds the globals agree compares to the ones

@@ -345,8 +345,27 @@ func TestValidityWindowsAreReadAsThePolicyWritesThem(t *testing.T) {
 // and the two directions are opposite (dcr-f41f718). Both are pinned here,
 // because the value of the rule is that neither is the other.
 
+// targetTip commits files onto a scratch repository's main and returns
+// the tip as a pass checks it out.
+func targetTip(t *testing.T, files map[string]string) (*scratchRepo, *worktree) {
+	t.Helper()
+	s := newScratchRepo(t)
+	for path, body := range files {
+		full := filepath.Join(s.repo, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.git("add", "--all")
+	s.git("commit", "--quiet", "--allow-empty", "-m", "the target")
+	return s, &worktree{repo: s.repo, dir: s.repo, rev: s.git("rev-parse", "HEAD")}
+}
+
 func TestATargetWithNoProjectLayerIsJudgedUnderTheFloorAlone(t *testing.T) {
-	tip := &worktree{dir: t.TempDir()}
+	_, tip := targetTip(t, map[string]string{"policy/project/notes.md": "not a document\n"})
 	p := policySource{projectDir: "policy/project"}
 	done, err := p.openProject(tip)
 	if err != nil {
@@ -371,26 +390,57 @@ func TestATargetWithNoProjectLayerIsJudgedUnderTheFloorAlone(t *testing.T) {
 	}
 }
 
-func TestATargetsOwnProjectLayerIsUsedWhereItIs(t *testing.T) {
-	tip := &worktree{dir: t.TempDir()}
-	own := filepath.Join(tip.dir, "policy/project")
-	if err := os.MkdirAll(own, 0o755); err != nil {
-		t.Fatal(err)
+// The project layer is read from the tip's commit, and its directory is a
+// name, never a pattern: --project-policy policy/proj* reads that
+// directory, and not policy/projX beside it.
+func TestATargetsOwnProjectLayerIsReadAtTheTip(t *testing.T) {
+	for _, dir := range []string{"policy/project", "policy/proj*"} {
+		t.Run(dir, func(t *testing.T) {
+			_, tip := targetTip(t, map[string]string{
+				dir + "/policy.cue":      "package verification // own\n",
+				"policy/projX/decoy.cue": "package verification // decoy\n",
+			})
+			p := policySource{projectDir: dir}
+			done, err := p.openProject(tip)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer done()
+			if p.note != "" {
+				t.Fatalf("an ordinary composition said %q", p.note)
+			}
+			entries, err := os.ReadDir(p.project)
+			if err != nil || len(entries) != 1 || entries[0].Name() != "policy.cue" {
+				t.Fatalf("the project layer resolved to %s, holding %v (%v)", p.project, entries, err)
+			}
+			if body, _ := os.ReadFile(filepath.Join(p.project, "policy.cue")); string(body) != "package verification // own\n" {
+				t.Fatalf("the project layer reads %q", body)
+			}
+		})
 	}
-	if err := os.WriteFile(filepath.Join(own, "policy.cue"), []byte("package verification\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	p := policySource{projectDir: "policy/project"}
-	done, err := p.openProject(tip)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer done()
-	if p.project != own {
-		t.Fatalf("the project layer resolved to %s, not to %s", p.project, own)
-	}
-	if p.note != "" {
-		t.Fatalf("an ordinary composition said %q", p.note)
+}
+
+// A project layer that cannot be read refuses the pass. Read as absent, it
+// would judge the change under the floor alone, requiring fewer checks
+// from a read that never happened.
+func TestAProjectLayerThatCannotBeReadIsRefused(t *testing.T) {
+	for _, lost := range []string{"policy/project", "policy/project/policy.cue"} {
+		t.Run(lost, func(t *testing.T) {
+			s, tip := targetTip(t, map[string]string{"policy/project/policy.cue": "package verification\n"})
+			oid := s.git("rev-parse", tip.rev+":"+lost)
+			if err := os.Remove(filepath.Join(s.repo, ".git", "objects", oid[:2], oid[2:])); err != nil {
+				t.Fatal(err)
+			}
+			p := policySource{projectDir: "policy/project"}
+			done, err := p.openProject(tip)
+			defer done()
+			if err == nil {
+				t.Fatalf("an unreadable project layer resolved to %s, noting %q", p.project, p.note)
+			}
+			if !strings.Contains(err.Error(), "policy/project") {
+				t.Fatalf("the refusal reads %q", err)
+			}
+		})
 	}
 }
 
@@ -453,7 +503,7 @@ floor: checks: "c-lint": {runner: "nix", attribute: "c-lint"}
 		layer:      composed.Floor{Repo: s.repo, Ref: "refs/heads/main", Dir: "policy/instance"},
 		projectDir: "policy/project",
 	}
-	p, done, err := p.open(&worktree{dir: t.TempDir()})
+	p, done, err := p.open(&worktree{repo: s.repo, dir: s.repo, rev: s.git("rev-parse", "HEAD")})
 	defer done()
 	if err != nil {
 		t.Fatal(err)

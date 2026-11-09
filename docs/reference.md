@@ -363,8 +363,8 @@ valley review [-v] [--build-here] [--repo <name>]
     - `changed`: The deltas differ. `valley review` pages `changed since approved v<m>`, the paths
       whose delta entries differ, `git range-diff`, and the shown version's diff restricted to those
       changed paths.
-    - `none`: No approved version can be compared; `valley review` pages the full log and diff
-      against `origin/main` (or the layer below in a stack).
+    - `none`: No approved version can be compared; `valley review` pages the log, each commit with
+      its whole message, and the diff against `origin/main` (or the layer below in a stack).
 - **Interactive prompt actions:**
   - `[a]pprove` (or `[a]pprove all <n>` at the top of a stack, or `[a]pprove <lands>` on a lower
     layer): Approves the shown head as [`valley approve`](#valley-approve) does. It reuses the

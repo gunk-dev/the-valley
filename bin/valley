@@ -343,8 +343,9 @@ usage: valley review [-v] [--build-here] <change>
                    ctrl-c ends the walk with what it walked, exit 130.
 
   review [-v] [--build-here] <change>
-                   page through the change's branch: its log and diff vs
-                   origin/main, or a stack layer by layer (below). above
+                   page through the change's branch: its log, with each
+                   commit's whole message, and diff vs origin/main, or a
+                   stack layer by layer (below). above
                    each change's diff, review shows every knot in the plan
                    graph that links the change, as `does oc-6335749 (open):
                    <title>` (valley-go does). a missing or unreadable graph
@@ -1692,9 +1693,17 @@ full_diff() {
   else
     printf 'branch %s, log against origin/main:\n\n' "$1"
   fi
-  git --no-pager log --oneline "$tip..$2"
-  printf '\n'
+  commit_log "$tip..$2"
   git --no-pager diff "$tip...$2"
+}
+
+# commit_log <range>: each commit in <range>, newest first: its short hash
+# and subject, its body indented four spaces, and a blank line. The whole
+# message is shown because a change lands with its head commit's. The
+# indent keeps a body line from reading as a diff header, to the notes'
+# anchors and to the diff pager alike.
+commit_log() {
+  git --no-pager log --format='%h %s%n%w(0,4,4)%b' "$1"
 }
 
 # show_review <branch>: show a change alone. A change that is not ready
@@ -3398,8 +3407,7 @@ layer_diff() {
   else
     printf 'change %s v%s at %s, log against %s:\n\n' "${L_NAME[k]}" "${L_VERSION[k]}" "$sha" "$on"
   fi
-  git --no-pager log --oneline "$base..$head"
-  printf '\n'
+  commit_log "$base..$head"
   git --no-pager diff "$base...$head"
 }
 

@@ -2409,8 +2409,9 @@ too.
   - `[s]kip` ends the review, and nothing is done.
   - When the rebase is refused or left unfinished, `review` says what happened and offers only
     `[v]iew diff` and `[s]kip`.
-- Each layer's page is headed `change <k> of <n>: <name> on <below>`. The page shows the layer's log
-  and its diff from the layer below. Notes taken on it are kept under its own branch.
+- Each layer's page is headed `change <k> of <n>: <name> on <below>`. The page shows the layer's
+  log, each commit with its whole message, and its diff from the layer below. Notes taken on it are
+  kept under its own branch.
 - After each lower layer, `review` asks a prompt that names the layer and its place, such as
   `two, 2 of 3: [n]ext layer, [a]pprove one and two, [v]iew full diff, [s]top?`.
   - `[n]ext layer` goes on to the layer above. It is the usual answer.
@@ -2777,7 +2778,10 @@ Either way, the commits from each base to its head are compared for their messag
 fields (name, email and date), apart from the files. A difference is shown under its own heading,
 `Commit messages changed since approved v<M>.` or `Commit authors changed since approved v<M>:`,
 whatever the files say. Every prompt after a change is shown offers `[v]iew diff`, which pages the
-whole diff and asks again. Checked by `valley-go-unit`, `valley-ready` and `review-notes`.
+change's log and whole diff and asks again. The log shows each commit's short hash and subject, then
+its body indented four spaces: a change lands with its head commit's message, and the indent keeps a
+body line from reading as a diff header. Checked by `valley-go-unit`, `valley-ready` and
+`review-notes`.
 
 ### The status object
 

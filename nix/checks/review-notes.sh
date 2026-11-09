@@ -11,6 +11,8 @@ git config --global init.defaultBranch main
 # A project with an origin and one branch to review: two
 # files, changed twice and once, far enough apart that the
 # diff has two hunks in the first file and one in the second.
+# The commit's message has a body, and one line of it reads
+# like a diff header.
 git init --quiet --bare "$TMPDIR/origin.git"
 git init --quiet "$TMPDIR/work"
 cd "$TMPDIR/work" || exit 1
@@ -23,7 +25,10 @@ git push --quiet -u origin main
 git checkout --quiet -b scratch
 sed -i -e '3s/.*/alpha 3 changed/' -e '15s/.*/alpha 15 changed/' alpha.md
 sed -i -e '5s/.*/beta 5 changed/' beta.md
-git commit --quiet -am "touch both files"
+git commit --quiet -am "touch both files" -m "Both files change, far enough apart
+for three hunks.
+
+diff --git a/body.md b/body.md"
 git push --quiet origin scratch
 git checkout --quiet main
 git fetch --quiet origin
@@ -77,17 +82,19 @@ answer_after() {
   fi
   printf q
   answer_after session.log '\]kip: ' : 's\n'
-  wait_for session.log '5 note(s) on scratch'
+  wait_for session.log '6 note(s) on scratch'
 } | script -qec "valley review scratch" /dev/null > session.log 2>&1
 sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r//g' session.log > plain.log
 
-# The anchors, exactly: above every file, on a file header
-# above the first hunk, mid-hunk, in a second hunk whose
-# numbering starts elsewhere, and in a second file.
+# The anchors, exactly: above every file, beside the body
+# line that reads like a diff header, on a file header above
+# the first hunk, mid-hunk, in a second hunk whose numbering
+# starts elsewhere, and in a second file.
 diff -u - "$XDG_STATE_HOME/valley/notes/scratch.md" <<EOF
 ## scratch at $(git rev-parse --short origin/scratch)
 
 (unanchored): a note above every file
+(unanchored): a note beside the message
 alpha.md: alpha reads like two files
 alpha.md:3: why is 3 changed at all?
 alpha.md:13: and this hunk is fine
@@ -103,6 +110,13 @@ grep -qE 'editor got: \+[0-9]+ .*/review\.diff$' \
 # less showed no warning before editing the file it paged.
 grep -q '^| @@ ' plain.log
 if grep -q 'WARNING' plain.log; then exit 1; fi
+# The page, as first drawn, shows the commit's whole message:
+# its subject, then its body indented four spaces.
+grep -m1 -A2 '^| [0-9a-f]\{7,\} touch both files$' plain.log | sed 1d > message.log
+diff -u - message.log << 'EOF'
+|     Both files change, far enough apart
+|     for three hunks.
+EOF
 
 # q alone leaves the pager, and the editor never runs.
 rm "$XDG_STATE_HOME/editor.log"
@@ -122,7 +136,7 @@ if grep -q 'alpha SEVENTEEN' "$XDG_STATE_HOME/valley/notes/scratch.md"; then exi
 # The verdict is unchanged, and the notes come after it.
 grep -q 'skipped scratch; nothing done' plain.log
 verdict="$(grep -n 'skipped scratch' plain.log | cut -d: -f1)"
-notes="$(grep -n '5 note(s) on scratch' plain.log | cut -d: -f1)"
+notes="$(grep -n '6 note(s) on scratch' plain.log | cut -d: -f1)"
 [ "$verdict" -lt "$notes" ]
 
 # Piped, review is what it always was: the diff on stdout,
@@ -193,7 +207,7 @@ for layer in one two three; do
   git checkout --quiet -b "$layer" "$from"
   echo "layer $layer" > "$layer.md"
   git add -A
-  git commit --quiet -m "layer $layer"
+  git commit --quiet -m "layer $layer" -m "Why layer $layer is its own change."
   git push --quiet origin "$layer"
   from="$layer"
 done
@@ -255,6 +269,8 @@ done
 [ "$(grep '^diff --git' page1)" = 'diff --git a/one.md b/one.md' ]
 [ "$(grep '^diff --git' page2)" = 'diff --git a/two.md b/two.md' ]
 [ "$(grep '^diff --git' page3)" = 'diff --git a/three.md b/three.md' ]
+# A layer's page shows its commit's whole message.
+grep -A1 '^[0-9a-f]\{7,\} layer two$' page2 | grep -qx '    Why layer two is its own change.'
 [ "$(git -C "$stack" rev-parse "$requests/c-$p")" = "$three" ]
 if git -C "$stack" rev-parse --verify --quiet "$requests/c-$q" > /dev/null; then exit 1; fi
 git -C "$stack" update-ref -d "$requests/c-$p"

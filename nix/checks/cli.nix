@@ -125,7 +125,7 @@ in
       pkgs.util-linux # script(1), for the pty less insists on
       packages.valley-script
     ];
-    # The reviewer, as a script: four insertions and one edit of a
+    # The reviewer, as a script: five insertions and one edit of a
     # line that was already there. The edit is deliberately far
     # from every insertion, since -U0 would otherwise merge them
     # into one hunk and the note would be dropped with it.

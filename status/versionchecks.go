@@ -122,18 +122,15 @@ func (l listed) addChecks(view *jsonRepo, c *costs, stderr io.Writer) {
 		return
 	}
 	reading := c.start(l.g)
-	instance, layer, done, err := policyLayers(l.g, l.snap.tip)
-	defer done()
-	if err != nil {
+	if _, err := l.snap.layers(); err != nil {
 		warn("the policy at main did not read, so no ready change lists its checks: %v", err)
 		return
 	}
-	schema, err := schemaFile(l.g, "")
-	if err != nil {
+	if _, err := schemaFile(l.g, ""); err != nil {
 		warn("%v, so no ready change lists its checks", err)
 		return
 	}
-	model, err := policyModel(schema, instance, layer, true)
+	model, err := l.snap.model(true)
 	if err != nil {
 		warn("the policy at main did not read, so no ready change lists its checks: %v", err)
 		return
@@ -317,6 +314,7 @@ func runCheckLine(g git, args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	repos := readSources(list, newVerifier())
+	defer closeSources(repos)
 	r := repos[0]
 	if r.err != nil {
 		return r.err

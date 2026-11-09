@@ -981,7 +981,7 @@ func (w *worker) gating() bool {
 // read is noted, and builds nothing. h names the landings a run covers.
 func (w *worker) follows(r listed, instance, project string, h handleMap, met map[string]bool) (j *job, read bool, err error) {
 	j = &job{r: r, v: jsonVersion{Head: r.snap.tip}, seen: w.scans, main: true}
-	walk, err := mainFollows(r.g, r.snap.tip, instance, project, w.stderr)
+	walk, err := followsUnder(r.g, r.snap.tip, instance, project, w.stderr)
 	if err != nil {
 		if w.note(j, "its follow checks did not read, so none is built: %v", err) {
 			w.troubles++
@@ -1486,13 +1486,30 @@ func (w *worker) save() {
 // policyLayers resolves the two policy layers a project's changes are
 // derived under, as approve resolves them (bin/valley's
 // resolve_instance_layer and resolve_project_layer), and returns what
-// removes them. Both are read at main's tip on origin. The floor is that
-// tip's own policy/instance when it carries one, and otherwise
-// policy/instance at the tip of main in the owning valley that
-// policy/valley names. A tip with no policy/project is derived under the
-// floor alone. A layer that cannot be read is refused, and never read as
-// one that is not there.
+// removes them. Both are read at main's tip on origin.
 func policyLayers(g git, tip string) (instance, project string, done func(), err error) {
+	src, done, err := resolveLayers(g, tip, "", "")
+	return src.instance, src.project, done, err
+}
+
+// layerSource is where the two policy layers were read from: the
+// directories, and what a reader needs to say where each came from.
+type layerSource struct {
+	instance, project string // directories of *.cue
+
+	ownValley bool   // the tip carries its own floor
+	valley    string // the owning valley's URL, when the tip carries no floor
+	noProject bool   // the tip carries no project layer, so the floor alone applies
+}
+
+// resolveLayers resolves the two policy layers at tip, and returns what
+// removes them. A layer named, instance or project, is read as given, and
+// nothing is fetched or read at the tip for it. The floor is the tip's own
+// policy/instance when it carries one, and otherwise policy/instance at
+// the tip of main in the owning valley that policy/valley names. A tip
+// with no policy/project is derived under the floor alone. A layer that
+// cannot be read is refused, and never read as one that is not there.
+func resolveLayers(g git, tip, instance, project string) (src layerSource, done func(), err error) {
 	ctx := context.Background()
 	var ends []func()
 	done = func() {
@@ -1504,50 +1521,61 @@ func policyLayers(g git, tip string) (instance, project string, done func(), err
 	if repo == "" {
 		repo = "."
 	}
-	instance, end, err := composed.Floor{Repo: repo, Ref: tip, Dir: instanceLayer}.Open(ctx, "valley-work-floor")
-	ends = append(ends, end)
-	if errors.Is(err, composed.ErrNoFloor) {
-		var floor composed.Floor
-		floor, end, err = owningFloor(g, tip)
+	src.instance, src.project = instance, project
+	if instance == "" {
+		var end func()
+		src.instance, end, err = composed.Floor{Repo: repo, Ref: tip, Dir: instanceLayer}.Open(ctx, "valley-work-floor")
 		ends = append(ends, end)
-		if err != nil {
-			return "", "", done, err
+		src.ownValley = err == nil
+		if errors.Is(err, composed.ErrNoFloor) {
+			var floor composed.Floor
+			floor, src.valley, end, err = owningFloor(g, tip)
+			ends = append(ends, end)
+			if err != nil {
+				return src, done, err
+			}
+			src.instance, end, err = floor.Open(ctx, "valley-work-floor")
+			ends = append(ends, end)
 		}
-		instance, end, err = floor.Open(ctx, "valley-work-floor")
+		if err != nil {
+			return src, done, err
+		}
+	}
+	if project == "" {
+		var end func()
+		var absent string
+		src.project, absent, end, err = composed.Project(ctx, repo, tip, projectLayer, "valley-work-project")
 		ends = append(ends, end)
+		src.noProject = absent != ""
 	}
-	if err != nil {
-		return "", "", done, err
-	}
-	project, _, end, err = composed.Project(ctx, repo, tip, projectLayer, "valley-work-project")
-	ends = append(ends, end)
-	return instance, project, done, err
+	return src, done, err
 }
 
 // owningFloor is where the floor of a tip that carries none of its own is
 // read: policy/instance at the tip of main in the owning valley that
-// policy/valley names, fetched into a scratch repository that end removes.
-func owningFloor(g git, tip string) (floor composed.Floor, end func(), err error) {
+// policy/valley names, fetched into a scratch repository that end removes,
+// and the URL the pointer names.
+func owningFloor(g git, tip string) (floor composed.Floor, url string, end func(), err error) {
 	end = func() {}
 	pointer, err := g.output(true, "cat-file", "blob", tip+":"+valleyPointer)
 	if err != nil {
-		return floor, end, fmt.Errorf("main names no owning valley at %s", valleyPointer)
+		return floor, url, end, fmt.Errorf("main names no owning valley at %s", valleyPointer)
 	}
-	url := pointerURL(pointer)
+	url = pointerURL(pointer)
 	if url == "" {
-		return floor, end, fmt.Errorf("%s on main names no repository", valleyPointer)
+		return floor, url, end, fmt.Errorf("%s on main names no repository", valleyPointer)
 	}
 	if err := checkURL(url); err != nil {
-		return floor, end, err
+		return floor, url, end, err
 	}
 	scratch, err := os.MkdirTemp("", "valley-work-valley-")
 	if err != nil {
-		return floor, end, err
+		return floor, url, end, err
 	}
 	end = func() { _ = os.RemoveAll(scratch) }
 	v := git{env: cacheEnvironment(g.env), stderr: g.stderr, dir: scratch}
 	if _, err := v.output(true, "init", "--quiet", "--bare"); err != nil {
-		return floor, end, errors.New("no scratch repository to fetch the floor into")
+		return floor, url, end, errors.New("no scratch repository to fetch the floor into")
 	}
 	// The valley's main is read by its exact name, and fetched by the
 	// object it names: given a ref name the valley lacks, fetch takes
@@ -1555,14 +1583,27 @@ func owningFloor(g git, tip string) (floor composed.Floor, end func(), err error
 	// refs/heads/refs/heads/main.
 	at, err := remoteRef(v, url, "refs/heads/main")
 	if err != nil {
-		return floor, end, fmt.Errorf("could not fetch the owning valley %s", url)
+		return floor, url, end, fmt.Errorf("could not fetch the owning valley %s", url)
 	} else if at == "" {
-		return floor, end, fmt.Errorf("the owning valley %s has no refs/heads/main", url)
+		return floor, url, end, fmt.Errorf("the owning valley %s has no refs/heads/main", url)
 	}
 	if _, err := v.output(true, "fetch", "--quiet", "--depth", "1", "--no-tags", "--end-of-options", url, at); err != nil {
-		return floor, end, fmt.Errorf("could not fetch the owning valley %s", url)
+		return floor, url, end, fmt.Errorf("could not fetch the owning valley %s", url)
 	}
-	return composed.Floor{Repo: scratch, Ref: at, Dir: instanceLayer}, end, nil
+	return composed.Floor{Repo: scratch, Ref: at, Dir: instanceLayer}, url, end, nil
+}
+
+// followsUnder is mainFollows under the two policy layers named.
+func followsUnder(g git, tip, instance, project string, stderr io.Writer) (mainWalk, error) {
+	schema, err := schemaFile(g, "")
+	if err != nil {
+		return mainWalk{}, err
+	}
+	model, err := policyModel(schema, instance, project, false)
+	if err != nil {
+		return mainWalk{}, err
+	}
+	return mainFollows(g, tip, model, stderr)
 }
 
 // failureRecord is the worker's record of what failed, project by

@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -237,11 +236,11 @@ func (r *rig) read(l layers) (*composed.Model, error) {
 	return composed.Read(context.Background(), r.cue, r.schema, l.instance, l.project)
 }
 
-// valley runs bin/valley's `checks` over two commits of the repository at
-// dir, in the C locale, and reads what it derived. A run that fails returns
+// valley runs bin/valley's deriver, derive_required, over two commits of
+// the repository at dir, in the C locale, and reads what it derived. A run that fails returns
 // what it said, and must print nothing on stdout. env is added to the
 // rig's environment.
-func (r *rig) valley(t *testing.T, dir, schema string, l layers, base, head string, env ...string) (*report, error) {
+func (r *rig) valley(t *testing.T, dir, schema string, l layers, base, head string, env ...string) (*vars, error) {
 	t.Helper()
 	return r.valleyIn(t, locales[0], dir, schema, l, base, head, env...)
 }
@@ -261,11 +260,10 @@ var derivation = []struct {
 	{"CHECK_ATTRIBUTE", 'M'}, {"CHECK_COMMAND", 'M'}, {"CHECK_COST", 'M'},
 }
 
-// valleyIn is valley in a locale. bin/valley is run as `valley checks`
-// runs: its verb, cmd_checks, called as main calls it, whose report is
-// what it prints. Then every global of the derivation is written out,
+// valleyIn is valley in a locale. bin/valley's derive_required is called
+// as approve calls it. Then every global of the derivation is written out,
 // NUL-separated, so each is read whatever bytes it holds.
-func (r *rig) valleyIn(t *testing.T, loc locale, dir, schema string, l layers, base, head string, env ...string) (*report, error) {
+func (r *rig) valleyIn(t *testing.T, loc locale, dir, schema string, l layers, base, head string, env ...string) (*vars, error) {
 	t.Helper()
 	var dump strings.Builder
 	for _, g := range derivation {
@@ -274,7 +272,8 @@ func (r *rig) valleyIn(t *testing.T, loc locale, dir, schema string, l layers, b
 	program := `source "$1"
 out="$2"
 shift 2
-cmd_checks "$@"
+trap cleanup_policy_tmp EXIT
+derive_required "$@" || exit 1
 rig_L() { local -n rig_l="$1"; printf 'L\0%s\0%d\0' "$1" "${#rig_l[@]}"; [ "${#rig_l[@]}" -eq 0 ] || printf '%s\0' "${rig_l[@]}"; }
 rig_S() { printf 'S\0%s\0%s\0' "$1" "${!1}"; }
 rig_M() { local -n rig_m="$1"; local k; printf 'M\0%s\0%d\0' "$1" "${#rig_m[@]}"; for k in "${!rig_m[@]}"; do printf '%s\0%s\0' "$k" "${rig_m[$k]}"; done; }
@@ -282,8 +281,7 @@ rig_M() { local -n rig_m="$1"; local k; printf 'M\0%s\0%d\0' "$1" "${#rig_m[@]}"
 ` + dump.String() + `} > "$out"
 `
 	vars := filepath.Join(t.TempDir(), "derivation")
-	cmd := exec.Command("bash", "-c", program, "bash", r.lib, vars, "--schema", schema,
-		"--instance", l.instance, "--project", l.project, base, head)
+	cmd := exec.Command("bash", "-c", program, "bash", r.lib, vars, schema, l.instance, l.project, base, head)
 	cmd.Dir = dir
 	cmd.Env = append(append(append([]string{}, r.base...), loc.env...), env...)
 	var stdout, stderr bytes.Buffer
@@ -294,18 +292,15 @@ rig_M() { local -n rig_m="$1"; local k; printf 'M\0%s\0%d\0' "$1" "${#rig_m[@]}"
 		}
 		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
-	rep, err := parseReport(stdout.String())
-	if err != nil {
-		t.Fatalf("bin/valley's report does not read: %v\n%s", err, stdout.String())
-	}
 	out, err := os.ReadFile(vars)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.vars, err = parseVars(out); err != nil {
+	v, err := parseVars(out)
+	if err != nil {
 		t.Fatalf("bin/valley's derivation does not read: %v\n%q", err, out)
 	}
-	return rep, nil
+	return v, nil
 }
 
 // derive is the Go deriver over the same two commits: Diff, then Derive.
@@ -315,17 +310,6 @@ func (r *rig) derive(m *composed.Model, dir, base, head string, env ...string) (
 		return nil, err
 	}
 	return Derive(m, paths)
-}
-
-// report is what bin/valley's `checks` printed, as far as it says what a
-// change requires, and the derivation it printed it from.
-type report struct {
-	paths        int                  // the count on the header line
-	classes      []string             // classes matched, unclassified included
-	carry        string               // the carry mode
-	required     map[string]reportRow // check -> its row
-	unclassified []string             // the paths listed as matching no class
-	vars         *vars                // the derivation's globals
 }
 
 // vars are the globals of bin/valley's derivation, by name.
@@ -416,126 +400,19 @@ func parseVars(out []byte) (*vars, error) {
 	return v, nil
 }
 
-type reportRow struct {
-	pin     string
-	classes []string // the classes requiring it, unclassified included
-	cost    string   // from the quick: and slow: lines
-}
-
-var reportHeader = regexp.MustCompile(`^[0-9a-f]+\.\.[0-9a-f]+: ([0-9]+) changed path\(s\)$`)
-
-func parseReport(out string) (*report, error) {
-	rep := &report{required: map[string]reportRow{}}
-	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-	m := reportHeader.FindStringSubmatch(lines[0])
-	if m == nil {
-		return nil, fmt.Errorf("no header line")
-	}
-	rep.paths, _ = strconv.Atoi(m[1])
-	splitList := func(s string) []string {
-		if s == "none" {
-			return nil
-		}
-		return strings.Split(s, ", ")
-	}
-	for i := 1; i < len(lines); i++ {
-		line := lines[i]
-		switch {
-		case strings.HasPrefix(line, "classes matched: "):
-			rep.classes = splitList(strings.TrimPrefix(line, "classes matched: "))
-		case strings.HasPrefix(line, "carry mode: "):
-			rep.carry = strings.TrimPrefix(line, "carry mode: ")
-		case line == "required checks:":
-			for i++; i < len(lines) && lines[i] != ""; i++ {
-				f := strings.Fields(lines[i])
-				if len(f) < 3 {
-					return nil, fmt.Errorf("a required-check row %q", lines[i])
-				}
-				rep.required[f[0]] = reportRow{pin: f[1], classes: splitList(strings.Join(f[2:], " "))}
-			}
-		case strings.HasPrefix(line, "unclassified: "):
-			for i++; i < len(lines) && lines[i] != ""; i++ {
-				if lines[i] == "  the policy requires nothing of them — it is behind the tree" {
-					continue
-				}
-				rep.unclassified = append(rep.unclassified, strings.TrimPrefix(lines[i], "  "))
-			}
-		case strings.HasPrefix(line, "quick: "), strings.HasPrefix(line, "slow: "):
-			cost, list, _ := strings.Cut(line, ": ")
-			for _, name := range splitList(list) {
-				row, ok := rep.required[name]
-				if !ok {
-					return nil, fmt.Errorf("%s lists %s, which no row requires", cost, name)
-				}
-				row.cost = cost
-				rep.required[name] = row
-			}
-		}
-	}
-	if rep.carry == "" {
-		return nil, fmt.Errorf("no carry mode")
-	}
-	return rep, nil
-}
-
 // agree reports every way the Go deriver's answer differs from what
-// bin/valley derived: its report, and every global of its derivation, each
-// compared whole and in order. bin/valley names the unclassified set as a
-// class called unclassified, so that is how the Go answer is read here.
+// bin/valley derived: every global of its derivation, each compared whole
+// and in order. bin/valley names the unclassified set as a class called
+// unclassified, so that is how the Go answer is read here.
 //
 // A check's validity is the one field of the Go answer bin/valley does not
 // read, so it is not compared.
-func agree(rep *report, m *composed.Model, res *Result) []string {
+func agree(v *vars, m *composed.Model, res *Result) []string {
 	var diffs []string
 	differ := func(what string, bash, gos any) {
 		diffs = append(diffs, fmt.Sprintf("%s: bin/valley %q, Go %q", what, bash, gos))
 	}
-	agreeVars(rep.vars, m, res, differ)
-	if rep.paths != len(res.Paths) {
-		differ("changed paths", strconv.Itoa(rep.paths), strconv.Itoa(len(res.Paths)))
-	}
-	classes := append([]string{}, res.Classes...)
-	if len(res.Unclassified) > 0 {
-		classes = append(classes, "unclassified")
-	}
-	if !sameSet(rep.classes, classes) {
-		differ("classes matched", rep.classes, classes)
-	}
-	if rep.carry != res.Carry {
-		differ("carry mode", rep.carry, res.Carry)
-	}
-	if !sameSet(rep.unclassified, res.Unclassified) {
-		differ("unclassified paths", rep.unclassified, res.Unclassified)
-	}
-	got := map[string]Required{}
-	for _, q := range res.Required {
-		got[q.Name] = q
-	}
-	for name, row := range rep.required {
-		q, ok := got[name]
-		if !ok {
-			differ("required "+name, "required", "not required")
-			continue
-		}
-		by := append([]string{}, q.Classes...)
-		if q.Unclassified {
-			by = append(by, "unclassified")
-		}
-		if !sameSet(row.classes, by) {
-			differ(name+"'s classes", row.classes, by)
-		}
-		if row.pin != string(q.Pin) {
-			differ(name+"'s pin", row.pin, string(q.Pin))
-		}
-		if row.cost != q.Cost {
-			differ(name+"'s cost", row.cost, q.Cost)
-		}
-	}
-	for name := range got {
-		if _, ok := rep.required[name]; !ok {
-			differ("required "+name, "not required", "required")
-		}
-	}
+	agreeVars(v, m, res, differ)
 	sort.Strings(diffs)
 	return diffs
 }

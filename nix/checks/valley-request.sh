@@ -560,6 +560,73 @@ cd "$repo" || exit 1
 git checkout --quiet main
 
 # ----------------------------------------------------------------------
+# 9b. What the labels and refusals of valley checks say, at each edge of
+#     reading the layers.
+#
+#     A layer named beside one left unnamed: the named one is labelled as
+#     given, relative to the top level when under it, and the unnamed
+#     floor is still the owning valley's.
+toplevel="$(git rev-parse --show-toplevel)"
+valley checks --project "$toplevel/examples/policy/project" "$first" topic/one > "$w/named.out"
+grep -qx "policy: $valley policy/instance@refs/heads/main + examples/policy/project" "$w/named.out"
+grep -qE '^  tree-ok +mandatory +prose$' "$w/named.out"
+cp -r examples/policy/project "$TMPDIR/outside-project"
+valley checks --project "$TMPDIR/outside-project" "$first" topic/one > "$w/outside.out"
+grep -qx "policy: $valley policy/instance@refs/heads/main + $TMPDIR/outside-project" "$w/outside.out"
+
+# --json prints the valley-checks/v1 document of the same derivation, and
+# is no list of names, so --json --names is refused with the usage line.
+valley checks --json "$first" topic/one > "$w/checks.json"
+jq -e --arg base "$first" --arg head "$(git rev-parse topic/one)" '
+  .schema == "valley-checks/v1" and .base == $base and .head == $head
+  and ([.required[].name] == ["tree-ok"])' "$w/checks.json" > /dev/null
+if valley checks --json --names "$first" topic/one > "$w/jsonnames.out" 2> "$w/jsonnames.err" \
+  || [ -s "$w/jsonnames.out" ] || ! grep -q 'usage: valley checks ' "$w/jsonnames.err"; then
+  echo "valley-request: valley checks took --json with --names" >&2
+  cat "$w/jsonnames.out" "$w/jsonnames.err" >&2
+  exit 1
+fi
+
+# With no origin/main, the target is the local main, and the label names it.
+git clone --quiet "$origin" "$TMPDIR/local-main"
+cd "$TMPDIR/local-main" || exit 1
+git remote remove origin
+valley checks > "$w/local-main.out"
+grep -qx "policy: $valley policy/instance@refs/heads/main + policy/project@main $(git rev-parse --short main)" "$w/local-main.out"
+
+# A pointer naming a transport that runs a command is refused before
+# anything is fetched: no git fetch or ls-remote runs.
+echo "ext::sh -c touch% $TMPDIR/ext-ran" > policy/valley
+git commit --quiet -am "point at a command"
+if GIT_TRACE="$w/ext.trace" valley checks > "$w/ext.out" 2> "$w/ext.err" \
+  || [ -s "$w/ext.out" ] || ! grep -qF 'names the transport ext::' "$w/ext.err"; then
+  echo "valley-request: valley checks took a pointer naming ext::" >&2
+  cat "$w/ext.out" "$w/ext.err" >&2
+  exit 1
+fi
+grep -q 'git rev-parse' "$w/ext.trace"
+if grep -qE 'git (fetch|ls-remote)|git-remote-' "$w/ext.trace"; then
+  echo "valley-request: valley checks fetched from a pointer it refuses" >&2
+  exit 1
+fi
+
+# A project layer whose tree cannot be read is refused, and never read as
+# absent, which would derive under the floor alone. The clone's objects
+# are loose, so the layer's tree is one file to remove.
+git init --quiet "$TMPDIR/torn"
+cd "$TMPDIR/torn" || exit 1
+git -c fetch.unpackLimit=100000 fetch --quiet "$origin" main:refs/remotes/origin/main
+torn="$(git rev-parse origin/main:policy/project)"
+rm ".git/objects/${torn:0:2}/${torn:2}"
+if valley checks origin/main origin/main > "$w/torn.out" 2> "$w/torn.err" \
+  || [ -s "$w/torn.out" ] || ! grep -qF 'policy/project/' "$w/torn.err"; then
+  echo "valley-request: valley checks derived over a project layer it could not read" >&2
+  cat "$w/torn.out" "$w/torn.err" >&2
+  exit 1
+fi
+cd "$repo" || exit 1
+
+# ----------------------------------------------------------------------
 # 10. Approving again after main moved. This is the case that wedged in live
 #     use. A request goes stale with reason=evidence when main lands
 #     inside a required check's input closure: no attestation over the

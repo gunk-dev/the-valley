@@ -1676,20 +1676,21 @@ A project's required checks come from three CUE layers, unified as
 Both layers are read from integrated tips, never from the change being judged
 (`integrator/policy.go`, `composed/composed.go`). A path class maps path globs to checks. A change
 requires the union of the checks of every class one of its paths matches. A path no class matches
-requires the `unclassified` checks. The integrator gets this answer from the Go deriver in-process,
-and approval from `valley checks`. Both diff with renames counted on both sides. Checked by
-`policy-deriver`, `cue-vet` and `integrator-unit`.
+requires the `unclassified` checks. `valley checks` and the integrator get this answer from the Go
+deriver, and approval from the Bash deriver in `bin/valley`. Both diff with renames counted on both
+sides. Checked by `policy-deriver`, `cue-vet` and `integrator-unit`.
 
 A layer's documents are the entries bash's glob `"$dir"/*.cue` names. The directory is a name and
 never a pattern, so a directory named `policy[1]` is read, and `policy1` is not. A name beginning
 with a dot is not a document. Checked by `derive-unit`.
 
-A glob matches bytes. `valley checks` derives in the C locale, whatever locale it is run in. So `?`
-matches one byte, and `?.md` does not match `é.md`, whose `é` is two bytes. A path holding a byte
-that is not UTF-8 matches a glob like any other path. Under a UTF-8 locale, bash's regular
-expressions would match characters, and such a path would match no glob, not even `**`. The checks a
-change requires would then depend on the locale of the operator's shell or the integrator's unit.
-Checked by `derive-unit`.
+A glob matches bytes. The Go deriver compares bytes, and the Bash deriver approval runs
+(`derive_required`) derives in the C locale, whatever locale it is run in. So `?` matches one byte,
+and `?.md` does not match `é.md`, whose `é` is two bytes. A path holding a byte that is not UTF-8
+matches a glob like any other path. Under a UTF-8 locale, bash's regular expressions would match
+characters, and such a path would match no glob, not even `**`. The checks a change requires would
+then depend on the locale of the operator's shell or the integrator's unit. Checked by
+`derive-unit`.
 
 The derivation fails closed. A failed read of the diff, the target, a policy layer or the composed
 policy makes `valley checks` exit non-zero and print no report, and refuses the integrator's
@@ -1698,23 +1699,22 @@ derives a change that requires nothing. The integrator believes a derivation of 
 only when git agrees that the two trees are the same. Checked by `policy-deriver`, `valley-request`
 and `integrator-unit`.
 
-A policy cannot forge a line of what it renders. `valley checks` reads the composed policy as lines
+A policy cannot forge a line of what it renders. The Bash deriver reads the composed policy as lines
 of tab-separated fields, and the policy's own strings are fields of those lines. A newline in one
 would end its line and start a forged one, such as a looser carry mode for a class the floor pinned.
 So the schema refuses control characters in path globs, and its name shape already keeps them out of
-class and check names. `valley checks` also refuses a rendered line holding one. It refuses a second
-line for anything the policy states once, such as a class's carry mode or a class's requirement of a
-check. Checked by `cue-vet` and `policy-deriver`.
+class and check names. The Bash deriver also refuses a rendered line holding one. It refuses a
+second line for anything the policy states once, such as a class's carry mode or a class's
+requirement of a check. Checked by `cue-vet` and `policy-deriver`.
 
-A second deriver is written in Go (`derive/`). The check worker and the integrator run it, while
-`valley checks` and approval use the one in `bin/valley`. It reads the whole composed policy through
-`composed.Read` (`composed/model.go`): every class's paths, requirements and carry mode, the
-`unclassified` set, and each check's runner, cost and validity. It asks cue whether each requirement
-is mandatory the way `valley checks` asks: it vets the layers with a document setting that
-requirement to `false`. It reads a diff as `valley checks` does, with renames counted on both sides,
-and keeps every path whole, whatever bytes it holds. It matches globs byte by byte, as
-`valley checks` does. It reads a layer's documents as `valley checks` does. Checked by
-`derive-unit`.
+A second deriver is written in Go (`derive/`). `valley checks`, `valley pending`, the check worker
+and the integrator run it, and approval runs the one in `bin/valley`. It reads the whole composed
+policy through `composed.Read` (`composed/model.go`): every class's paths, requirements and carry
+mode, the `unclassified` set, and each check's runner, cost and validity. It asks cue whether each
+requirement is mandatory the way the Bash deriver asks: it vets the layers with a document setting
+that requirement to `false`. It reads a diff as the Bash deriver does, with renames counted on both
+sides, and keeps every path whole, whatever bytes it holds. It matches globs byte by byte, as the
+Bash deriver does. It reads a layer's documents as the Bash deriver does. Checked by `derive-unit`.
 
 The integrator reads the composed policy through `composed.ReadUnpinned`, which asks cue nothing
 about whether a requirement is mandatory, because the integrator never reads that. It reads it once
@@ -1727,25 +1727,26 @@ stop an effectful observation transferring and never let one through. Checked by
 
 `derive-unit` holds the two derivers to the same answer. It runs both over this repository's own
 policy, the example policies under `examples/policy/`, and paths drawn from a fixed seed. It runs
-`valley checks` under the C, `C.UTF-8` and `en_US.UTF-8` locales, with the layers in directories
+the Bash deriver under the C, `C.UTF-8` and `en_US.UTF-8` locales, with the layers in directories
 named like glob patterns. Every global of the Bash derivation must equal the Go answer: the
 documents composed, the changed paths, the classes matched, the carry mode, the unclassified paths,
 and each required check's classes, pin, runner, attribute, command and cost. The two derivers differ
-in three places, where `valley checks` is wrong:
+in three places, where the Bash deriver is wrong and `valley checks` gives the Go deriver's answer:
 
-- `valley checks` splits a path holding a newline into two paths.
+- The Bash deriver splits a path holding a newline into two paths.
 - A class added by refining `policy` may require a check no layer defines, because the schema's
-  cross-check reads only the layers. `valley checks` derives under it, and fails on an unbound
-  variable when a change touches that class. The Go deriver refuses the policy.
-- `valley checks` merges a class named `unclassified` with the `unclassified` set, so each requires
+  cross-check reads only the layers. The Bash deriver derives under it, and names the undefined
+  check with no runner when a change touches that class. The Go deriver refuses the policy.
+- The Bash deriver merges a class named `unclassified` with the `unclassified` set, so each requires
   the other's checks. When both require one check, it refuses every derivation. The Go deriver keeps
   them apart.
 
-`valley-go checks` prints the Go deriver's answer as the `valley-checks/v1` JSON document. It takes
-the schema, the floor's directory and the project layer's directory, and two commits:
+`valley checks --json` prints the Go deriver's answer as the `valley-checks/v1` JSON document. It
+takes the options and commits the report takes, and reads each layer left unnamed at the target's
+tip:
 
 ```sh
-valley-go checks --schema schema/verification.cue \
+valley checks --json --schema schema/verification.cue \
   --instance policy/instance --project policy/project <base> <head>
 ```
 

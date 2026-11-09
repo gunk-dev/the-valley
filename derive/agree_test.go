@@ -409,7 +409,7 @@ func TestKnownDivergences(t *testing.T) {
 		}
 		return rp.commit(base, files)
 	}
-	bash := func(t *testing.T, l layers, head string) (*report, error) {
+	bash := func(t *testing.T, l layers, head string) (*vars, error) {
 		t.Helper()
 		return r.valley(t, rp.dir, r.schema, l, base, head)
 	}
@@ -431,9 +431,9 @@ func TestKnownDivergences(t *testing.T) {
 			t.Errorf("%s requires %q, and this test records %q", who, got, want)
 		}
 	}
-	reportNames := func(rep *report) []string {
+	bashNames := func(v *vars) []string {
 		var out []string
-		for name := range rep.required {
+		for name := range v.maps["DERIVED_REQUIRED"] {
 			out = append(out, name)
 		}
 		return out
@@ -449,10 +449,10 @@ func TestKnownDivergences(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if rep.paths != 2 || !sameSet(rep.unclassified, []string{"src/a", "b.rs"}) {
-			t.Errorf("bin/valley read %d paths, %q unclassified; this test records 2, src/a and b.rs", rep.paths, rep.unclassified)
+		if paths, uncovered := rep.lists["DERIVED_PATHS"], rep.lists["DERIVED_UNCOVERED"]; len(paths) != 2 || !sameSet(uncovered, []string{"src/a", "b.rs"}) {
+			t.Errorf("bin/valley read %q, %q unclassified; this test records src/a and b.rs, both unclassified", paths, uncovered)
 		}
-		requires(t, "bin/valley", reportNames(rep), []string{"c-uncovered"})
+		requires(t, "bin/valley", bashNames(rep), []string{"c-uncovered"})
 		res := gos(t, l, head)
 		if !sameSet(res.Paths, []string{"src/a\nb.rs"}) || len(res.Unclassified) != 0 {
 			t.Errorf("the Go deriver read %q, %q unclassified", res.Paths, res.Unclassified)
@@ -462,24 +462,28 @@ func TestKnownDivergences(t *testing.T) {
 
 	// The schema's cross-check reads the layers' composition, not `policy`,
 	// so a class added by refining `policy` may require a check nobody
-	// defines, and cue vet passes. bin/valley derives as usual until a change
-	// touches that class, and then fails on an unbound variable while it
-	// groups the checks by cost. The Go deriver refuses the policy.
+	// defines, and cue vet passes. bin/valley derives a change touching that
+	// class as requiring the check, which it has no definition of, so no
+	// runner, attribute or cost. The Go deriver refuses the policy.
 	t.Run("a class added at policy requires an undefined check", func(t *testing.T) {
 		l := newLayers(t, floor, project, map[string]string{"ghost.cue": "package verification\n" +
 			`policy: classes: sneaky: {paths: "sneak/**": true, requires: ghost: true}` + "\n"})
 		if _, err := r.read(l); err == nil || !strings.Contains(err.Error(), "class sneaky requires check ghost, which the composed policy does not define") {
 			t.Errorf("the Go deriver read the policy: %v", err)
 		}
-		_, err := bash(t, l, with("sneak/x"))
-		if err == nil || !strings.Contains(err.Error(), "unbound variable") {
-			t.Errorf("bin/valley did not fail on an unbound variable for a change touching the class: %v", err)
+		rep, err := bash(t, l, with("sneak/x"))
+		if err != nil {
+			t.Fatalf("bin/valley refused a change touching the class: %v", err)
 		}
-		rep, err := bash(t, l, with("docs/new.md"))
+		requires(t, "bin/valley, for a change touching the class,", bashNames(rep), []string{"ghost"})
+		if runner, ok := rep.maps["CHECK_RUNNER"]["ghost"]; ok {
+			t.Errorf("bin/valley defines ghost to run under %q; this test records no definition", runner)
+		}
+		rep, err = bash(t, l, with("docs/new.md"))
 		if err != nil {
 			t.Fatalf("bin/valley refused a change outside the class: %v", err)
 		}
-		requires(t, "bin/valley", reportNames(rep), []string{"c-docs", "c-tmpl"})
+		requires(t, "bin/valley", bashNames(rep), []string{"c-docs", "c-tmpl"})
 	})
 
 	// bin/valley renders the unclassified set's requirements as a class
@@ -496,8 +500,8 @@ func TestKnownDivergences(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		requires(t, "bin/valley, for a path in the class,", reportNames(rep), []string{"c-notes", "c-uncovered"})
-		if pin := rep.required["c-notes"].pin; pin != "default" {
+		requires(t, "bin/valley, for a path in the class,", bashNames(rep), []string{"c-notes", "c-uncovered"})
+		if pin := rep.maps["DERIVED_PINNED"]["c-notes"]; pin != "default" {
 			t.Errorf("bin/valley pins the class's c-notes %s; this test records default", pin)
 		}
 		res := gos(t, l, odd)
@@ -510,7 +514,7 @@ func TestKnownDivergences(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		requires(t, "bin/valley, for an uncovered path,", reportNames(rep), []string{"c-notes", "c-uncovered"})
+		requires(t, "bin/valley, for an uncovered path,", bashNames(rep), []string{"c-notes", "c-uncovered"})
 		res = gos(t, l, uncovered)
 		requires(t, "the Go deriver, for an uncovered path,", names(res), []string{"c-uncovered"})
 		if len(res.Classes) != 0 || !res.Required[0].Unclassified {

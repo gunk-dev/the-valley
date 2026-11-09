@@ -54,6 +54,8 @@ type snapshot struct {
 
 	// unread is each record that does not read, which no listing shows.
 	unread []unreadRecord
+
+	policy tipPolicy // the policy at tip, read when first asked for
 }
 
 // readSnapshot lists origin once and fetches every object the snapshot

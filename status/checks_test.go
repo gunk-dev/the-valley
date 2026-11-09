@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -96,7 +98,7 @@ func (r *checksRepo) checks(args ...string) (stdout, stderr string, code int) {
 // is run.
 func TestChecksPrintsTheDerivation(t *testing.T) {
 	r := newChecksRepo(t)
-	out, stderr, code := r.checks("--schema", r.schema, "--instance", r.instance, "--project="+r.project, r.base, "HEAD")
+	out, stderr, code := r.checks("--json", "--schema", r.schema, "--instance", r.instance, "--project="+r.project, r.base, "HEAD")
 	if code != 0 {
 		t.Fatalf("checks exited %d: %s", code, stderr)
 	}
@@ -164,7 +166,7 @@ func TestChecksPrintsTheDerivation(t *testing.T) {
 
 	// The same two commits with nothing between them require nothing, and
 	// every list is still a list.
-	out, _, code = r.checks("--schema", r.schema, "--instance", r.instance, "--project", r.project, r.head, r.head)
+	out, _, code = r.checks("--json", "--schema", r.schema, "--instance", r.instance, "--project", r.project, r.head, r.head)
 	for _, field := range []string{`"paths": []`, `"classes": []`, `"unclassified_paths": []`, `"required": []`, `"follows": []`, `"carry": "same-paths"`} {
 		if code != 0 || !strings.Contains(out, field) {
 			t.Errorf("an empty change's document has no %s:\n%s", field, out)
@@ -185,12 +187,12 @@ func TestChecksPrintsNothingWhenItFails(t *testing.T) {
 		args []string
 		says string
 	}{
-		{"no project layer named", []string{"--instance", r.instance, r.base, r.head}, "usage: valley-go checks"},
-		{"one commit", []string{"--instance", r.instance, "--project", r.project, r.head}, "usage: valley-go checks"},
-		{"an unknown option", []string{"--names", "--instance", r.instance, "--project", r.project, r.base, r.head}, "usage: valley-go checks"},
-		{"no such base", []string{"--instance", r.instance, "--project", r.project, "nowhere", r.head}, "no such commit: nowhere"},
-		{"a layer that does not compose", []string{"--instance", r.instance, "--project", broken, r.base, r.head}, "do not compose"},
-		{"no schema there", []string{"--schema", filepath.Join(broken, "none.cue"), "--instance", r.instance, "--project", r.project, r.base, r.head}, "no policy schema at"},
+		{"three commits", []string{"--json", "--instance", r.instance, "--project", r.project, r.base, r.head, r.head}, "usage: valley checks"},
+		{"the document and the names", []string{"--json", "--names", "--instance", r.instance, "--project", r.project, r.base, r.head}, "usage: valley checks"},
+		{"an unknown option", []string{"--json", "--bogus", "--instance", r.instance, "--project", r.project, r.base, r.head}, "unknown option: --bogus"},
+		{"no such base", []string{"--json", "--instance", r.instance, "--project", r.project, "nowhere", r.head}, "no such commit: nowhere"},
+		{"a layer that does not compose", []string{"--json", "--instance", r.instance, "--project", broken, r.base, r.head}, "do not compose"},
+		{"no schema there", []string{"--json", "--schema", filepath.Join(broken, "none.cue"), "--instance", r.instance, "--project", r.project, r.base, r.head}, "no policy schema at"},
 	} {
 		args := c.args
 		if !strings.HasPrefix(c.name, "no schema") {
@@ -200,5 +202,54 @@ func TestChecksPrintsNothingWhenItFails(t *testing.T) {
 		if code == 0 || out != "" || !strings.Contains(stderr, c.says) {
 			t.Errorf("%s: exit %d, stdout %q, stderr %q", c.name, code, out, stderr)
 		}
+	}
+}
+
+// TestPendingCountsChecksInProcess holds pending's count of a head's
+// checks to the derivation under the policy at main's tip: counted by
+// cost, refused as "requires ?" when the head shares no history with main
+// or the policy does not compose.
+func TestPendingCountsChecksInProcess(t *testing.T) {
+	r := newChecksRepo(t)
+	t.Setenv("VALLEY_VERIFICATION_SCHEMA", r.schema)
+	snap := func(project string) *snapshot {
+		s := &snapshot{g: git{env: os.Environ(), stderr: io.Discard}, tip: r.base}
+		s.policy.read, s.policy.src = true, layerSource{instance: r.instance, project: project}
+		return s
+	}
+	out, _, code := r.checks("--names", "--schema", r.schema, "--instance", r.instance, "--project", r.project, r.base, r.head)
+	slow, _, _ := r.checks("--names", "--cost", "slow", "--schema", r.schema, "--instance", r.instance, "--project", r.project, r.base, r.head)
+	quick, nslow := len(strings.Fields(out))-len(strings.Fields(slow)), len(strings.Fields(slow))
+	if code != 0 || quick == 0 {
+		t.Fatalf("the head requires no quick check: %q", out)
+	}
+	noun := "checks"
+	if quick == 1 {
+		noun = "check"
+	}
+	if got, want := snap(r.project).checks(r.head), fmt.Sprintf("requires %d quick %s, %d slow", quick, noun, nslow); got != want {
+		t.Errorf("checks = %q, want %q", got, want)
+	}
+	if got := snap(r.project).checks(r.base); got != "requires no checks" {
+		t.Errorf("an empty change: checks = %q", got)
+	}
+
+	git := func(args ...string) string {
+		out, err := exec.Command("git", args...).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	orphan := git("commit-tree", "-m", "orphan", git("rev-parse", r.head+"^{tree}"))
+	if got := snap(r.project).checks(orphan); got != "requires ? (no merge base with main)" {
+		t.Errorf("a head with no merge base: checks = %q", got)
+	}
+	broken := t.TempDir()
+	if err := os.WriteFile(filepath.Join(broken, "policy.cue"), []byte("package verification\nproject: classes: x: requires: nothing: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := snap(broken).checks(r.head); got != "requires ? (the policy did not derive)" {
+		t.Errorf("a policy that does not compose: checks = %q", got)
 	}
 }

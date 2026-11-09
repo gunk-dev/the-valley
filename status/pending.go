@@ -115,10 +115,9 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -126,6 +125,8 @@ import (
 	"unicode"
 
 	"the-valley/change"
+	"the-valley/composed"
+	"the-valley/derive"
 	"the-valley/rebase"
 )
 
@@ -183,6 +184,7 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	repos := readSources(list, newVerifier())
+	defer closeSources(repos)
 	readKnots(repos, l.verbose, stderr)
 	h := handles(repos)
 	writeHandleCache(g, repos, h)
@@ -448,15 +450,18 @@ func (r listed) mainState(h handleMap, c *costs, stderr io.Writer, t terminal, n
 		return nil
 	}
 	end := phase("policy")
-	instance, project, done, err := policyLayers(r.g, r.snap.tip)
+	_, err := r.snap.layers()
 	end()
-	defer done()
 	defer phase("main")()
 	if err != nil {
 		fmt.Fprintf(stderr, "valley: %s: the policy at main did not read, so main's state is not shown: %v\n", r.name, err)
 		return nil
 	}
-	walk, err := mainFollows(r.g, r.snap.tip, instance, project, io.Discard)
+	model, err := r.snap.model(false)
+	walk := mainWalk{}
+	if err == nil {
+		walk, err = mainFollows(r.g, r.snap.tip, model, io.Discard)
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "valley: %s: main's state did not read: %v\n", r.name, err)
 		return nil
@@ -760,36 +765,34 @@ func readable(s string) string {
 	}, strings.ToValidUTF8(s, "�"))
 }
 
-// checks says how many checks the policy requires of a head, by cost, as
-// valley checks derives them against the merge base with main. It runs
-// the valley command bin/valley names in VALLEY_COMMAND, inside the
-// repository the change is in.
+// checks says how many checks the policy at main's tip requires of a
+// head, by cost, derived against the merge base with main.
 func (s *snapshot) checks(head string) string {
-	valley := os.Getenv("VALLEY_COMMAND")
-	if valley == "" {
-		valley = "valley"
-	}
 	base, err := s.g.output(true, "merge-base", s.tip, head)
 	if err != nil {
 		return "requires ? (no merge base with main)"
 	}
-	processStarted()
-	cmd := exec.Command(valley, "checks", base, head)
-	cmd.Dir = s.g.dir
-	cmd.Env = s.g.env
-	out, err := cmd.Output()
+	model, err := s.model(false)
 	if err != nil {
 		return "requires ? (the policy did not derive)"
 	}
-	count := func(prefix string) int {
-		for _, line := range strings.Split(string(out), "\n") {
-			if rest, ok := strings.CutPrefix(line, prefix); ok && rest != "none" {
-				return len(strings.Split(rest, ", "))
-			}
-		}
-		return 0
+	processStarted()
+	paths, err := derive.Diff(context.Background(), s.g.dir, s.g.env, base, head)
+	if err != nil {
+		return "requires ? (the policy did not derive)"
 	}
-	quick, slow := count("quick: "), count("slow: ")
+	res, err := derive.Derive(model, paths)
+	if err != nil {
+		return "requires ? (the policy did not derive)"
+	}
+	quick, slow := 0, 0
+	for _, q := range res.Required {
+		if costOf(q) == "slow" {
+			slow++
+		} else {
+			quick++
+		}
+	}
 	if quick+slow == 0 {
 		return "requires no checks"
 	}
@@ -798,4 +801,74 @@ func (s *snapshot) checks(head string) string {
 		noun = "check"
 	}
 	return fmt.Sprintf("requires %d quick %s, %d slow", quick, noun, slow)
+}
+
+// tipPolicy is the policy at main's tip on origin, read once for every
+// reader of a snapshot: mainState, the version checks and the check
+// counts. Nothing is read until a reader asks, and a failure is kept, so
+// each reader says it its own way.
+type tipPolicy struct {
+	read     bool
+	src      layerSource
+	done     func()
+	err      error
+	pinned   *composed.Model
+	unpinned *composed.Model
+	failed   map[bool]error
+}
+
+// layers are the two policy layers at main's tip.
+func (s *snapshot) layers() (layerSource, error) {
+	p := &s.policy
+	if !p.read {
+		p.read = true
+		p.src, p.done, p.err = resolveLayers(s.g, s.tip, "", "")
+	}
+	return p.src, p.err
+}
+
+// model is the policy the layers at main's tip compose. pinned asks for
+// each requirement's pin (policyModel); a model read pinned serves a
+// reader that does not ask for pins too.
+func (s *snapshot) model(pinned bool) (*composed.Model, error) {
+	p := &s.policy
+	switch {
+	case p.pinned != nil:
+		return p.pinned, nil
+	case !pinned && p.unpinned != nil:
+		return p.unpinned, nil
+	case p.failed[pinned] != nil:
+		return nil, p.failed[pinned]
+	}
+	m, err := func() (*composed.Model, error) {
+		src, err := s.layers()
+		if err != nil {
+			return nil, err
+		}
+		schema, err := schemaFile(s.g, "")
+		if err != nil {
+			return nil, err
+		}
+		return policyModel(schema, src.instance, src.project, pinned)
+	}()
+	switch {
+	case err != nil:
+		if p.failed == nil {
+			p.failed = map[bool]error{}
+		}
+		p.failed[pinned] = err
+	case pinned:
+		p.pinned = m
+	default:
+		p.unpinned = m
+	}
+	return m, err
+}
+
+// close removes the layers the snapshot read.
+func (s *snapshot) close() {
+	if s.policy.done != nil {
+		s.policy.done()
+		s.policy.done = nil
+	}
 }

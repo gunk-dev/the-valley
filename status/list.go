@@ -550,6 +550,15 @@ func readSources(list []source, v verifier) []listed {
 	return out
 }
 
+// closeSources removes the policy layers each snapshot read.
+func closeSources(repos []listed) {
+	for _, r := range repos {
+		if r.snap != nil {
+			r.snap.close()
+		}
+	}
+}
+
 // readKnots reads the plan graph once for each readable repository in repos.
 func readKnots(repos []listed, verbose bool, stderr io.Writer) {
 	for i := range repos {
@@ -761,6 +770,7 @@ func runChanges(g git, args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	repos := readSources(list, newVerifier())
+	defer closeSources(repos)
 	readKnots(repos, l.verbose, stderr)
 	h := handles(repos)
 	writeHandleCache(g, repos, h)

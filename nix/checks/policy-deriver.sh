@@ -40,6 +40,29 @@ named() {
 }
 
 # Start a case from the base tree; assert its check table.
+# bash_derive SCRIPT SCHEMA INSTANCE PROJECT [--names] BASE HEAD: SCRIPT's
+# own deriver, derive_required, which approve runs, over two object IDs. It
+# prints the required checks as rows under `required checks:` and then the
+# carry mode, or with --names the names alone, so the cases below read it
+# as they read the report.
+bash_derive() {
+  bash -c '
+    source <(sed "/^main \"\\\$@\"\$/d" "$1")
+    trap cleanup_policy_tmp EXIT
+    schema="$2" instance="$3" project="$4" names=0
+    shift 4
+    [ "$1" != --names ] || { names=1; shift; }
+    derive_required "$schema" "$instance" "$project" "$1" "$2" || exit 1
+    if [ "$names" -eq 1 ]; then
+      [ "${#DERIVED_REQUIRED[@]}" -eq 0 ] || printf "%s\n" "${!DERIVED_REQUIRED[@]}"
+      exit 0
+    fi
+    echo "required checks:"
+    for check in "${!DERIVED_REQUIRED[@]}"; do printf "  %s\n" "$check"; done
+    printf "\ncarry mode: %s\n" "$DERIVED_CARRY"
+  ' bash "$@"
+}
+
 case_start() { git checkout --quiet -B "$1" "$base"; }
 expect() {
   local got
@@ -203,6 +226,12 @@ if valley checks --schema "$TMPDIR/costless.cue" \
   cat "$TMPDIR/costless.out" >&2
   exit 1
 fi
+grep -q '^valley: ' "$TMPDIR/costless.out"
+if bash_derive "$cliScript" "$TMPDIR/costless.cue" "$policy/instance" "$policy/project" \
+  "$base" "$(git rev-parse HEAD)" > "$TMPDIR/costless.out" 2>&1; then
+  echo "policy-deriver: bin/valley's deriver derived an answer under the costless schema" >&2
+  exit 1
+fi
 grep -q 'does not render' "$TMPDIR/costless.out"
 
 # The same for a schema that predates the carry modes: with no resolved
@@ -218,6 +247,12 @@ if valley checks --schema "$TMPDIR/modeless.cue" \
   "$base" HEAD > "$TMPDIR/modeless.out" 2>&1; then
   echo "policy-deriver: a schema with no carry modes derived an answer" >&2
   cat "$TMPDIR/modeless.out" >&2
+  exit 1
+fi
+grep -q '^valley: ' "$TMPDIR/modeless.out"
+if bash_derive "$cliScript" "$TMPDIR/modeless.cue" "$policy/instance" "$policy/project" \
+  "$base" "$(git rev-parse HEAD)" > "$TMPDIR/modeless.out" 2>&1; then
+  echo "policy-deriver: bin/valley's deriver derived an answer under the modeless schema" >&2
   exit 1
 fi
 grep -q 'does not render' "$TMPDIR/modeless.out"
@@ -293,12 +328,16 @@ refused() {
 }
 
 # forged_derive SCHEMA LAYER [SCRIPT]: derive the case at HEAD under SCHEMA
-# and the project layer LAYER, with the real deriver or with SCRIPT.
+# and the project layer LAYER, with valley checks or with SCRIPT's own
+# deriver. Only SCRIPT's deriver reads the policy as rendered lines, so
+# only it can be forged.
 forged_derive() {
-  local -a deriver=(valley)
-  [ $# -lt 3 ] || deriver=(bash "$3")
-  "${deriver[@]}" checks --schema "$1" --instance "$policy/instance" \
-    --project "$policy/$2" "$base" HEAD
+  if [ $# -lt 3 ]; then
+    valley checks --schema "$1" --instance "$policy/instance" \
+      --project "$policy/$2" "$base" HEAD
+  else
+    bash_derive "$3" "$1" "$policy/instance" "$policy/$2" "$base" "$(git rev-parse HEAD)"
+  fi
 }
 
 case_start forged
@@ -313,7 +352,7 @@ expect_carry exact "the unguarded script must derive an honest layer's carry mod
 refused "a forged carry line" "do not compose" \
   forged_derive "$schema" forged-carry
 refused "a forged carry line under a schema that admits it" "does not render" \
-  forged_derive "$TMPDIR/loose.cue" forged-carry
+  forged_derive "$TMPDIR/loose.cue" forged-carry "$cliScript"
 refused "a forged carry line under a render that admits it" \
   "rendered 'carry nested' twice" \
   forged_derive "$TMPDIR/loose.cue" forged-carry "$TMPDIR/valley-unguarded"
@@ -380,12 +419,13 @@ shimmed() {
   local tool="$1" at="$2" status=2
   shift 2
   [ "$tool" != git ] || status=128 # git's own status for a fatal error
+  local head
+  head="$(git rev-parse HEAD)"
   echo 0 > "$TMPDIR/shim-count"
   SHIM_REAL_PATH="$PATH" SHIM_TOOL="$tool" SHIM_FAIL_AT="$at" \
     SHIM_STATUS="$status" SHIM_COUNT="$TMPDIR/shim-count" PATH="$shims:$PATH" \
-    bash "$cliScript" checks --schema "$schema" \
-    --instance "$policy/instance" --project "$policy/project" \
-    "$@" "$base" HEAD
+    bash_derive "$cliScript" "$schema" "$policy/instance" "$policy/project" \
+    "$@" "$base" "$head"
 }
 
 # The check names a run's stdout requires, sorted, on one line.
@@ -451,9 +491,8 @@ for cut in 1 2; do
   for opts in "" --names; do
     # shellcheck disable=SC2086 # an empty $opts is no option at all
     if SHIM_TRUNCATE="$cut" SHIM_REAL_PATH="$PATH" PATH="$shims:$PATH" \
-      bash "$cliScript" checks --schema "$schema" \
-      --instance "$policy/instance" --project "$policy/project" $opts \
-      "$base" HEAD > "$TMPDIR/shim.out" 2> "$TMPDIR/shim.err"; then
+      bash_derive "$cliScript" "$schema" "$policy/instance" "$policy/project" $opts \
+      "$base" "$(git rev-parse HEAD)" > "$TMPDIR/shim.out" 2> "$TMPDIR/shim.err"; then
       shim_fail "a diff cut after $cut field(s) derived an answer"
     fi
     [ ! -s "$TMPDIR/shim.out" ] \

@@ -1031,7 +1031,7 @@ EOF
 
 help_checks() {
   cat <<'EOF'
-usage: valley checks [--schema FILE] [--instance DIR] [--project DIR] [--names [--cost COST]] [<base> [<head>]]
+usage: valley checks [--schema FILE] [--instance DIR] [--project DIR] [--names [--cost COST] | --json] [<base> [<head>]]
 
   checks [<base> [<head>]]
                    print the check names the composed verification policy
@@ -1080,6 +1080,8 @@ usage: valley checks [--schema FILE] [--instance DIR] [--project DIR] [--names [
                      --cost COST      with --names, only the quick or
                                       the slow ones, e.g.
                                       `valley checks --names --cost slow`
+                     --json           print the valley-checks/v1 document
+                                      instead of the report
 EOF
   help_runtime
 }
@@ -1270,14 +1272,12 @@ page_file() {
 }
 
 # pending is valley-go's (status/pending.go). The fetch first keeps this
-# checkout's remote-tracking branches current, as pending always has. The
-# helper runs valley checks for --checks, so it is told how this script was
-# run.
+# checkout's remote-tracking branches current, as pending always has.
 cmd_pending() {
   command -v valley-go > /dev/null 2>&1 \
     || die "pending needs the valley-go helper; nix run .#valley bundles it"
   fetch_origin
-  VALLEY_COMMAND="$0" VALLEY_TELEMETRY_SINCE="$TEL_T0" VALLEY_TELEMETRY_VERSION="$VALLEY_STAMP" \
+  VALLEY_TELEMETRY_SINCE="$TEL_T0" VALLEY_TELEMETRY_VERSION="$VALLEY_STAMP" \
     exec valley-go pending "$@"
 }
 
@@ -4229,40 +4229,12 @@ sort_into() {
   mapfile -t sort_into_dest <<<"$sorted"
 }
 
-# The target: the ref a change is derived against, and the tip both policy
-# layers are read out of. origin's answer is preferred, because the target
-# is the branch as the integrator holds it and not as this checkout last
-# built it.
-#
-# It sets TARGET_REF to the ref, and TARGET_TIP to the object ID it held
-# when it was read (ref_oid). The merge base and both layers are read at
-# TARGET_TIP, so they are read at one commit, and never through a name git
-# would take another ref for.
-#
-# Only a ref that is not there falls through to the next. A read of
-# origin's ref that failed ends here: falling through would read the
-# policy out of the local main, which may be older. 1 no main at all, 2 a
-# read failed.
-TARGET_REF=""
-TARGET_TIP=""
-target_ref() {
-  local ref rc
-  for ref in refs/remotes/origin/main refs/heads/main; do
-    TARGET_TIP="$(ref_oid "$ref")" && rc=0 || rc=$?
-    case "$rc" in
-      0) TARGET_REF="$ref"; return 0 ;;
-      1) ;;
-      *) return 2 ;;
-    esac
-  done
-  return 1
-}
-
 # ----------------------------------------------------------------------
 # The derivation itself, and the globals it answers with. Everything a
 # caller could want from the policy comes out of one pass, because every
-# part of it is a function of the same composition: `checks` prints the
-# answer, approve runs what it names.
+# part of it is a function of the same composition: approve prints the
+# answer and runs what it names. valley-go checks (status/checks.go)
+# derives the same answer in Go.
 #
 # It reports and returns rather than dying, so that a caller inside the
 # review loop is refused rather than ended. Its callers are all in a
@@ -4287,8 +4259,10 @@ target_ref() {
 # of those derives a change that requires nothing, which is the one answer a
 # failure must never give.
 DERIVED_PATHS=()        # every side of the diff, sorted
+# shellcheck disable=SC2034 # read by the differential tests (derive/rig_test.go)
 DERIVED_MATCHED=()      # the class names at least one path matched, sorted
 DERIVED_UNCOVERED=()    # the paths no class covered
+# shellcheck disable=SC2034 # read by the differential tests (derive/rig_test.go)
 DERIVED_UNCLASSIFIED=0  # whether `unclassified` requires something
 DERIVED_CARRY=""        # the strictest carry mode among the matched classes
 declare -A DERIVED_REQUIRED=() # check -> the classes that required it
@@ -4471,6 +4445,7 @@ derive_required() {
     key="${req_class[i]}"
     check="${req_check[i]}"
     [ -n "${matched[$key]:-}" ] || continue
+    # shellcheck disable=SC2034 # read by the differential tests
     [ "$key" != unclassified ] || DERIVED_UNCLASSIFIED=1
     DERIVED_REQUIRED["$check"]="${DERIVED_REQUIRED[$check]:+${DERIVED_REQUIRED[$check]}, }$key"
     if check_is_mandatory "$key" "$check"; then
@@ -4486,148 +4461,14 @@ derive_required() {
   }
 }
 
+# The verb is valley-go's (status/checks.go): it resolves the layers as
+# resolve_instance_layer and resolve_project_layer do, derives as
+# derive_required does, and prints the report.
 cmd_checks() {
-  local root schema instance="" label project="" plabel base head target=""
-  local names=0 cost="" costed=0 short_base short_head
-  root="$(git rev-parse --show-toplevel 2> /dev/null)" \
-    || die "not a git repository"
-  policy_defaults "$root"
-  schema="$POLICY_SCHEMA"
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --schema) [ $# -ge 2 ] || die "--schema needs a file"; schema="$2"; shift 2 ;;
-      --instance) [ $# -ge 2 ] || die "--instance needs a directory"; instance="$2"; shift 2 ;;
-      --project) [ $# -ge 2 ] || die "--project needs a directory"; project="$2"; shift 2 ;;
-      --names) names=1; shift ;;
-      --cost) [ $# -ge 2 ] || die "--cost needs quick or slow"; cost="$2"; costed=1; shift 2 ;;
-      --) shift; break ;;
-      -*) die "unknown option: $1" ;;
-      *) break ;;
-    esac
-  done
-  [ $# -le 2 ] || die "usage: valley checks [options] [<base> [<head>]]"
-  if [ "$costed" -eq 1 ]; then
-    case "$cost" in
-      quick | slow) ;;
-      *) die "--cost takes quick or slow, not '$cost'" ;;
-    esac
-    [ "$names" -eq 1 ] || die "--cost filters the --names list; pass --names too"
-  fi
-
-  head="$(git rev-parse --verify --quiet "${2:-HEAD}^{commit}")" \
-    || die "no such commit: ${2:-HEAD}"
-  # The target is what the layers are read out of, so it is needed whenever
-  # either layer is left to its default — and it is what an unnamed base
-  # is the merge base with.
-  if [ -z "$instance" ] || [ -z "$project" ] || [ $# -lt 1 ]; then
-    target_ref || {
-      [ $? -eq 1 ] || die "could not read the main branch; nothing derived"
-      die "no main branch: the target's tip is where the policy layers are read from, and there is none here"
-    }
-    target="$TARGET_REF"
-  fi
-  if [ $# -ge 1 ]; then
-    base="$(git rev-parse --verify --quiet "$1^{commit}")" \
-      || die "no such commit: $1"
-  else
-    base="$(git merge-base "$TARGET_TIP" "$head")" \
-      || die "$head and ${target#refs/} do not share history — name a base"
-  fi
-
-  trap 'tel_command $?; cleanup_policy_tmp; cleanup_instance_tmp; cleanup_project_tmp' EXIT
-  # Each layer is resolved only when nobody named one. --instance and
-  # --project are a reader pointing this at a layer on purpose, and
-  # honouring that means not fetching the repository, and not reading the
-  # tip, that the named layer replaced.
-  if [ -n "$instance" ]; then
-    label="${instance#"$root"/}"
-  else
-    resolve_instance_layer "$root" "$target" "$TARGET_TIP" || exit 1
-    instance="$POLICY_INSTANCE"
-    label="$POLICY_INSTANCE_LABEL"
-  fi
-  if [ -n "$project" ]; then
-    plabel="${project#"$root"/}"
-  else
-    resolve_project_layer "$root" "$target" "$TARGET_TIP" || exit 1
-    project="$POLICY_PROJECT"
-    plabel="$POLICY_PROJECT_LABEL"
-  fi
-  derive_required "$schema" "$instance" "$project" "$base" "$head" || exit 1
-
-  # The required checks, sorted, and grouped by the cost the policy
-  # declares. The grouping changes nothing required: approve runs every
-  # required check, and the integrator requires evidence for every one,
-  # whatever it costs.
-  local check width=0
-  local -a required=() quick=() slow=() listed=()
-  sort_into required "${!DERIVED_REQUIRED[@]}" \
-    || die "could not sort the required checks; nothing derived"
-  for check in "${required[@]}"; do
-    [ "${#check}" -le "$width" ] || width="${#check}"
-    if [ "${CHECK_COST[$check]}" = slow ]; then
-      slow+=("$check")
-    else
-      quick+=("$check")
-    fi
-  done
-
-  # The form for agents and scripts: the names alone, one per line.
-  if [ "$names" -eq 1 ]; then
-    case "$cost" in
-      quick) listed=("${quick[@]}") ;;
-      slow) listed=("${slow[@]}") ;;
-      *) listed=("${required[@]}") ;;
-    esac
-    [ "${#listed[@]}" -eq 0 ] || printf '%s\n' "${listed[@]}"
-    return
-  fi
-
-  # Read before the first line is printed, so a read that fails leaves no
-  # partial report behind.
-  short_base="$(git rev-parse --short "$base")" \
-    || die "could not read $base; nothing derived"
-  short_head="$(git rev-parse --short "$head")" \
-    || die "could not read $head; nothing derived"
-
-  printf '%s..%s: %d changed path(s)\n' "$short_base" "$short_head" \
-    "${#DERIVED_PATHS[@]}"
-  printf 'policy: %s + %s\n' "$label" "$plabel"
-  if [ "${#DERIVED_MATCHED[@]}" -eq 0 ]; then
-    printf 'classes matched: none\n'
-  else
-    printf 'classes matched: %s\n' \
-      "$(printf '%s\n' "${DERIVED_MATCHED[@]}" | join_lines)"
-  fi
-  # How far an approval of this change carries across a rebase. Nothing
-  # here acts on it.
-  printf 'carry mode: %s\n\n' "$DERIVED_CARRY"
-
-  if [ "${#DERIVED_REQUIRED[@]}" -eq 0 ]; then
-    echo "required checks: none"
-  else
-    echo "required checks:"
-    for check in "${required[@]}"; do
-      printf '  %-*s  %-9s  %s\n' \
-        "$width" "$check" "${DERIVED_PINNED[$check]}" "${DERIVED_REQUIRED[$check]}"
-    done
-  fi
-
-  if [ "${#DERIVED_UNCOVERED[@]}" -gt 0 ]; then
-    printf '\nunclassified: %d path(s) matched no class\n' "${#DERIVED_UNCOVERED[@]}"
-    printf '  %s\n' "${DERIVED_UNCOVERED[@]}"
-    # The failure the `unclassified` field exists to prevent: paths outside
-    # every class that the policy then asks nothing of.
-    [ "$DERIVED_UNCLASSIFIED" -eq 1 ] \
-      || echo "  the policy requires nothing of them — it is behind the tree"
-  fi
-
-  # Below every line the integrator reads (integrator/policy.go), and
-  # unindented, so neither line can read as a required check.
-  if [ "${#required[@]}" -gt 0 ]; then
-    printf '\nquick: %s\n' "$(join_or_none "${quick[@]}")"
-    printf 'slow: %s\n' "$(join_or_none "${slow[@]}")"
-  fi
+  command -v valley-go > /dev/null 2>&1 \
+    || die "checks needs the valley-go helper; nix run .#valley bundles it"
+  VALLEY_TELEMETRY_SINCE="$TEL_T0" VALLEY_TELEMETRY_VERSION="$VALLEY_STAMP" \
+    exec valley-go checks "$@"
 }
 
 # self-update installs the tip of a branch of the-valley into the user's

@@ -40,6 +40,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"the-valley/composed"
 )
 
 // followWalk is how many of main's commits a walk reads at most.
@@ -63,17 +65,9 @@ type mainWalk struct {
 	tip    string            // the tip's tree digest
 }
 
-// mainFollows walks main from tip under the two policy layers named. It
-// returns no checks when the policy declares no nix follow check.
-func mainFollows(g git, tip, instance, project string, stderr io.Writer) (mainWalk, error) {
-	schema, err := schemaFile(g, "")
-	if err != nil {
-		return mainWalk{}, err
-	}
-	model, err := policyModel(schema, instance, project, false)
-	if err != nil {
-		return mainWalk{}, err
-	}
+// mainFollows walks main from tip under the policy model. It returns no
+// checks when the policy declares no nix follow check.
+func mainFollows(g git, tip string, model *composed.Model, stderr io.Writer) (mainWalk, error) {
 	declared := map[string]bool{}
 	for _, c := range model.Classes {
 		for _, name := range c.Follows {

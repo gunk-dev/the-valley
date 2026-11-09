@@ -649,7 +649,7 @@ required for the diff between two commits, along with the matched path classes a
 ```sh
 valley checks
 valley checks --names --cost quick
-valley checks [--schema <file>] [--instance <dir>] [--project <dir>] [--names] [--cost quick|slow] [<base> [<head>]]
+valley checks [--schema <file>] [--instance <dir>] [--project <dir>] [--names [--cost quick|slow] | --json] [<base> [<head>]]
 ```
 
 - **Arguments and flags:**
@@ -667,6 +667,8 @@ valley checks [--schema <file>] [--instance <dir>] [--project <dir>] [--names] [
   - `--names`: Prints only the required check names, sorted, one per line.
   - `--cost quick|slow`: Requires `--names`; filters the `--names` output to checks with
     `cost: "quick"` or `cost: "slow"`.
+  - `--json`: Prints the `valley-checks/v1` document ([architecture](architecture.md#policy)) in
+    place of the report; it cannot be combined with `--names` or `--cost`.
 - **Behavior:** Reads all added, modified, deleted, renamed (both old and new paths), and copied
   paths from `git diff --no-relative --name-status -M -z <base> <head>`, matches them against
   `policy.classes` (and `policy.unclassified` when any path matches no class), probes whether each
@@ -943,16 +945,15 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     key line.
 - **`valley-go`** ([`status/main.go`](../status/main.go)): Internal helper binary invoked by
   `bin/valley` for `status`, `ready`, `unready`, `withdraw`, `changes`, `pending`, `rebase`, `knot`,
-  `plan`, `telemetry`, and `self-update`, for `review` with no change
+  `plan`, `checks`, `telemetry`, and `self-update`, for `review` with no change
   (`walk [--repo <name>] [-v] [--build-here]`, see [the walk](#the-walk)), plus internal plumbing
   verbs (`resolve <change>`, `stack <change>`, `does [-v] <change-id>...`,
   `brings [--change <id>] <head>`, `versions <change-id>`,
   `compare --tip <commit> <change-id> <version> <head>`,
-  `coverage --head <sha> [--check <name>=<attribute>]...`), and
-  `checks [--schema <file>] --instance <dir> --project <dir> <base> <head>`, which prints the Go
-  deriver's `valley-checks/v1` document and which `bin/valley` does not run. `work` is the check
-  worker, which `valley-worker` runs. `status`, `stack`, `rebase`, `brings`, `changes`, `pending`,
-  `walk` and `plan` also take `--known-signers <file>` and `--integrator-name <name>`.
+  `coverage --head <sha> [--check <name>=<attribute>]...`, and `checks --json`, which prints the Go
+  deriver's `valley-checks/v1` document in place of the report). `work` is the check worker, which
+  `valley-worker` runs. `status`, `stack`, `rebase`, `brings`, `changes`, `pending`, `walk` and
+  `plan` also take `--known-signers <file>` and `--integrator-name <name>`.
 - **`valley-worker`** ([`status/worker.go`](../status/worker.go)): One pass of the check worker (see
   [The check worker](architecture.md#the-check-worker)). It is `valley-go work`, wrapped with this
   flake's git, cue and `attest` and with `VALLEY_VERIFICATION_SCHEMA` set. It runs the machine's own
@@ -1353,7 +1354,7 @@ export VALLEY_ATTEST_NAME=operator
 | `VALLEY_ATTEST_SCHEMA`       | `attest`, `integrator`                                          | Path to `schema/attestation.cue`, set by the Nix wrapper.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `VALLEY_EVENT_SCHEMA`        | `integrator`                                                    | Path to `schema/events.cue`, set by the Nix wrapper.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `VALLEY_IDENTITY_SCHEMA`     | `identity`                                                      | Path to `schema/identity.cue`, set by the Nix wrapper.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `VALLEY_COMMAND`             | `pending --checks`, `review`                                    | Executable invoked by `valley-go pending --checks` to run `<valley> checks <base> <head>`, and by `valley-go walk` to run `<valley> review <change ID>` for each step (`bin/valley` sets `VALLEY_COMMAND` to its own path; defaults to `"valley"`).                                                                                                                                                                                                                                                                                                                                                            |
+| `VALLEY_COMMAND`             | `review`                                                        | Executable invoked by `valley-go walk` to run `<valley> review <change ID>` for each step (`bin/valley` sets `VALLEY_COMMAND` to its own path; defaults to `"valley"`).                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `VALLEY_NOW`                 | `knot`, `plan`, `valley-worker`                                 | Optional UTC timestamp in `RFC 3339` format (`YYYY-MM-DDTHH:MM:SSZ`) overriding the system clock for knot `created` dates, comment stamps, comment edit times, claim timestamps, claim age calculations, and the check worker's waits after a failed batch. Invalid values exit `2`.                                                                                                                                                                                                                                                                                                                           |
 | `VALLEY_TELEMETRY_DIR`       | `valley-worker`, `integrator`                                   | Host-side: the directory a producer exports its telemetry to, set by the NixOS module ([Telemetry](architecture.md#telemetry)). Unset, the producer records nothing.                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `VALLEY_REVIEW_CHECKS_WAIT`  | `review`                                                        | Whole seconds `valley review` waits, at most, for a change's checks line before the prompt (default `0`: it does not wait). The line takes about as long to read as `valley pending --checks` takes for one project, so a prompt that follows a short diff right away shows it only with a wait of a few seconds.                                                                                                                                                                                                                                                                                              |

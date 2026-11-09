@@ -2462,11 +2462,11 @@ showed. Just before it publishes, it reads the branch on origin, and refuses whe
 that head, naming both heads. The operator reviewed the branch, and the commits it has moved to have
 not been read.
 
-`valley rebase <change>`, and `[b]ase all` before a stale stack's review, rebase the change's whole
-stack. The verb is `status/rebase.go`, and the rebase engine (`rebase/`) does the work. The stack is
-the change and the layers `valley-go stack` lists under it. A change with nothing under it is a
-stack of one. In a throwaway worktree, bottom first, each layer's own commits are rebased onto the
-rebased layer below it, and the bottom's onto `main`. So each layer keeps its own delta. Commits
+`valley rebase <change>`, and `[b]ase onto main` before a stale stack's review, rebase the change's
+whole stack. The verb is `status/rebase.go`, and the rebase engine (`rebase/`) does the work. The
+stack is the change and the layers `valley-go stack` lists under it. A change with nothing under it
+is a stack of one. In a throwaway worktree, bottom first, each layer's own commits are rebased onto
+the rebased layer below it, and the bottom's onto `main`. So each layer keeps its own delta. Commits
 under the bottom that a lower change landed drop out, since the integrator landed them as one new
 commit and their content is on `main`. So does a branch below such a change: it is no layer. The
 rebase reads that landing as `valley changes` does, and verifies the transfer statement with the
@@ -2505,9 +2505,9 @@ the rebase says so, prints the manifest, and says how to check: `git ls-remote o
 
 After a rebase, any ready change or plain branch outside the stack whose head contains a layer's old
 head is still on that old head. A second stack on a lower layer is one. The rebase names each, with
-the `valley rebase` that moves it, and does not move it. After `[b]ase all`, the review goes on at
-the new heads. An interrupt or a SIGTERM while the stack is being prepared kills git and any hook it
-started, removes the worktree, pushes nothing, and exits 130.
+the `valley rebase` that moves it, and does not move it. After `[b]ase onto main`, the review goes
+on at the new heads. An interrupt or a SIGTERM while the stack is being prepared kills git and any
+hook it started, removes the worktree, pushes nothing, and exits 130.
 
 The rebase engine is a Go package that a program imports, such as a service that keeps ready changes
 based on `main`. It never exits the process: every step that runs git takes a `context.Context`.

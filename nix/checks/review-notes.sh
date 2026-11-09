@@ -62,13 +62,20 @@ answer_after() {
   printf '%b' "$4"
 }
 
-# v opens the editor, RETURN dismisses less's LESSOPEN
-# warning, q leaves the pager, s is the verdict. The verdict
-# waits for its prompt, and the keys stay open until the
-# notes are printed.
+# v alone opens the editor, and the pager shows the notes,
+# rendered, once it returns; q then leaves the pager, and s is
+# the verdict. The verdict waits for its prompt, and the keys
+# stay open until the notes are printed. A wait that fails
+# still sends q, so the check fails rather than hang in less.
 # shellcheck disable=SC2094 # the answers wait on the review's own output
 {
-  printf 'v\nq'
+  printf v
+  if ! wait_for "$XDG_STATE_HOME/editor.log" 'editor got: ' \
+    || ! wait_for session.log '| a note above every file'; then
+    printf q
+    exit 1
+  fi
+  printf q
   answer_after session.log '\]kip: ' : 's\n'
   wait_for session.log '5 note(s) on scratch'
 } | script -qec "valley review scratch" /dev/null > session.log 2>&1
@@ -93,7 +100,20 @@ EOF
 grep -qE 'editor got: \+[0-9]+ .*/review\.diff$' \
   "$XDG_STATE_HOME/editor.log"
 # The filter did run: what the pager showed was its output.
+# less showed no warning before editing the file it paged.
 grep -q '^| @@ ' plain.log
+if grep -q 'WARNING' plain.log; then exit 1; fi
+
+# q alone leaves the pager, and the editor never runs.
+rm "$XDG_STATE_HOME/editor.log"
+# shellcheck disable=SC2094 # the answers wait on the review's own output
+{
+  printf q
+  answer_after quit.log '\]kip: ' : 's\n'
+  wait_for quit.log 'skipped scratch; nothing done'
+} | script -qec "valley review scratch" /dev/null > quit.log 2>&1
+[ ! -e "$XDG_STATE_HOME/editor.log" ]
+if grep -q 'note(s) on scratch' quit.log; then exit 1; fi
 # The line the reviewer edited instead of inserting is gone,
 # and said so.
 grep -q 'changed or deleted diff line(s) ignored' plain.log
@@ -197,7 +217,7 @@ chmod +x "$TMPDIR/stack-editor"
 : > "$pushlog"
 # shellcheck disable=SC2094 # the answers wait on the review's own output
 {
-  printf 'v\nq'
+  printf vq
   answer_after stack-tty.log 'one, 1 of 3: \[n\]ext layer, .*\[s\]top? ' : 's\n'
   wait_for stack-tty.log '1 note(s) on one'
 } | EDITOR="$TMPDIR/stack-editor" script -qec "valley review pppp" /dev/null > stack-tty.log 2>&1
@@ -426,7 +446,7 @@ EOF
 chmod +x "$TMPDIR/changed-editor"
 # shellcheck disable=SC2094 # the answers wait on the review's own output
 {
-  printf 'v\nq'
+  printf vq
   answer_after changed-tty.log '\]kip: ' : 's\n'
   wait_for changed-tty.log '1 note(s) on edited'
 } | EDITOR="$TMPDIR/changed-editor" script -qec "valley review mmmm" /dev/null > changed-tty.log 2>&1

@@ -3033,6 +3033,8 @@ configuration.
           ],
           "includes": ["<change id>"],
           "restack": null,
+          "landed_version": null,
+          "landed_commit": null,
           "knots": [
             {
               "id": "oc-6335749",
@@ -3061,8 +3063,11 @@ configuration.
   `<repo>:<prefix>`, such as `app:nxvp`. git refuses a colon in a ref name, so a qualified handle is
   never also a branch, and never reads as `origin/<branch>`. Every verb that takes a handle accepts
   the qualified form, in the repository it names, and refuses one that names another repository.
-- `landed_commit` is the commit on `main` the version landed as: its own head when `landed`, the
-  transfer statement's commit when `landed-recorded`, and otherwise `null`.
+- A version's `landed_commit` is the commit on `main` the version landed as: its own head when
+  `landed`, the transfer statement's commit when `landed-recorded`, and otherwise `null`. A change's
+  `landed_version` and `landed_commit` name the version it landed as and that version's
+  `landed_commit`, by the verdict `valley status` and `valley pending` use, or are `null` while it
+  has not landed.
 - `request` is the request filed at the version's head under either of its request names, or `null`.
   `outcome` is the outcome record about the version's head, or `null`; its `tip` is `null` unless it
   is an object ID. Its `decision` takes the values `valley-status/v1` gives it, the refusals

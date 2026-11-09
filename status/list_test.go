@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -257,4 +260,123 @@ func FuzzWriteDocument(f *testing.F) {
 			t.Fatalf("the fields around the strings moved: %q", out)
 		}
 	})
+}
+
+// Each change in valley changes and valley pending says which version it
+// landed as, and the commit on main it landed as, by the verdict valley
+// status gives and valley pending leaves landed changes out by: a change
+// landed at its active version; one whose first version landed while a
+// later version beside it was active, which landed as the first; and one
+// whose next round was made on the main that holds its landing, which has
+// not. Each lands by fast-forward, its head on main.
+func TestListingsSayWhichVersionAChangeLandedAs(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("VALLEY_KNOWN_SIGNERS", "")
+	origin, work := filepath.Join(dir, "origin.git"), filepath.Join(dir, "work")
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = work
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	if out, err := exec.Command("git", "init", "--quiet", "--bare", "--initial-branch=main", origin).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	if out, err := exec.Command("git", "clone", "--quiet", origin, work).CombinedOutput(); err != nil {
+		t.Fatalf("git clone: %v\n%s", err, out)
+	}
+	git("config", "user.name", "landed-test")
+	git("config", "user.email", "landed-test@localhost")
+	git("config", "valley.principal", "alice")
+	git("checkout", "--quiet", "-b", "main")
+	git("commit", "--quiet", "--allow-empty", "-m", "base")
+	git("push", "--quiet", "origin", "main")
+	commits := 0
+	branch := func(name, from string) string {
+		t.Helper()
+		commits++
+		git("checkout", "--quiet", "-B", name, from)
+		git("commit", "--quiet", "--allow-empty", "-m", fmt.Sprintf("%s, commit %d", name, commits))
+		git("push", "--quiet", "--force", "origin", name)
+		return git("rev-parse", "HEAD")
+	}
+
+	t.Chdir(work)
+	valley := func(args ...string) []byte {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		if code := run(args, &stdout, &stderr); code != 0 {
+			t.Fatalf("valley-go %s: %s", strings.Join(args, " "), stderr.String())
+		}
+		return stdout.Bytes()
+	}
+	active, below, next := strings.Repeat("k", 32), strings.Repeat("m", 32), strings.Repeat("n", 32)
+	activeHead := branch("active", "main")
+	valley("ready", "--change", active, "active")
+	belowV1 := branch("below", "active")
+	valley("ready", "--change", below, "below")
+	nextV1 := branch("next", "below")
+	valley("ready", "--change", next, "next")
+	branch("below", "active")
+	valley("ready", "--change", below, "below")
+	git("push", "--quiet", "origin", nextV1+":refs/heads/main")
+	branch("next", nextV1)
+	valley("ready", "--change", next, "next")
+
+	verdict := func(v *int, commit *string) string {
+		if v == nil || commit == nil {
+			return fmt.Sprintf("%v %v", v, commit)
+		}
+		return fmt.Sprintf("v%d %s", *v, *commit)
+	}
+	listing := func(args ...string) map[string]string {
+		t.Helper()
+		var doc struct {
+			Repos []struct {
+				Changes []struct {
+					ID      string  `json:"change_id"`
+					Version *int    `json:"landed_version"`
+					Commit  *string `json:"landed_commit"`
+				} `json:"changes"`
+			} `json:"repos"`
+		}
+		if err := json.Unmarshal(valley(args...), &doc); err != nil || len(doc.Repos) != 1 {
+			t.Fatalf("valley-go %s: %v, %d repos", strings.Join(args, " "), err, len(doc.Repos))
+		}
+		got := map[string]string{}
+		for _, c := range doc.Repos[0].Changes {
+			got[c.ID] = verdict(c.Version, c.Commit)
+		}
+		return got
+	}
+	want := map[string]string{active: "v1 " + activeHead, below: "v1 " + belowV1, next: "<nil> <nil>"}
+	changes := listing("changes", "--json")
+	for id, w := range want {
+		if changes[id] != w {
+			t.Errorf("valley changes --json: %.4s landed as %q, want %q", id, changes[id], w)
+		}
+		var status struct {
+			Version *int `json:"landed_version"`
+		}
+		if err := json.Unmarshal(valley("status", "--json", id), &status); err != nil {
+			t.Fatalf("valley-go status --json %s: %v", id, err)
+		}
+		said := "<nil>"
+		if status.Version != nil {
+			said = fmt.Sprintf("v%d", *status.Version)
+		}
+		if said != strings.Fields(w)[0] {
+			t.Errorf("%.4s: valley status --json says landed_version %s, the listing %q", id, said, w)
+		}
+	}
+	if pending := listing("pending", "--json"); len(pending) != 1 || pending[next] != want[next] {
+		t.Errorf("valley pending --json lists %v, want only %.4s, unlanded", pending, next)
+	}
 }

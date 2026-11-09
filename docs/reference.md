@@ -2631,8 +2631,8 @@ Five `--json` commands emit versioned JSON documents for scripts and front ends.
     - `repo` (`string`), `url` (`string`), `error` (`string` or `null`). When `error` is non-null,
       `changes` and `branches` are `[]` (and `drafts` is `[]` in `valley-pending/v1`).
     - `changes` (`array` of `jsonChange`): In `valley-changes/v1`, all recorded changes in every
-      state (ordered by Change ID). In `valley-pending/v1`, only `ready` changes whose active
-      version is not landed (`not-landed` or `uncertain`).
+      state (ordered by Change ID). In `valley-pending/v1`, only `ready` changes that have not
+      landed as any version (`landed_version` is `null`).
     - `drafts` (`array` of `jsonChange`, **present only in `valley-pending/v1`**): Changes whose
       recorded `state` is `"draft"`. Omitted (`omitempty`) in `valley-changes/v1`.
     - `branches` (`array` of `{ "branch": <string>, "head": <oid> }`): Remote branches on `origin`
@@ -2645,6 +2645,13 @@ Five `--json` commands emit versioned JSON documents for scripts and front ends.
     `{ "n", "head" (40-hex OID without git-sha1: prefix), "title", "branch", "uploader", "landing" ("landed"|"landed-recorded"|"uncertain"|"not-landed"), "landed_commit" (<oid or null>), "request" ({"ref","commit"} or null), "outcome" ({"decision","head","tip"} or null) }`).
     With `--checks`, the active version of a ready change that has not landed also carries
     [`checks`](#version-checks).
+  - `landed_version` (`int` or `null`) and `landed_commit` (`<oid>` or `null`): The version the
+    change landed as, and that version's `landed_commit`, with the meaning of `valley-status/v1`'s
+    `landed_version`. The change has landed as the newest version whose `landing` is `landed` or
+    `landed-recorded`, even while a later version is active: that later version is no work left to
+    land. Both are `null` while no version has landed, and while the active version's head reaches
+    an earlier version's landing: that version was made on a `main` that holds the landing, and is
+    the change's next round.
   - `approved` (`boolean`, **present only on `changes` in `valley-pending/v1`**): Whether the active
     version has an integration request at its head.
   - `includes` (`array` of `string`): Change IDs of other changes that have not landed as any

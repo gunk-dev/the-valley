@@ -363,6 +363,13 @@ holds "$(c "$F") | .versions[0] | .landing == \"landed\" and .landed_commit == \
   "$(c "$I") | .versions[0] | .landing == \"landed-recorded\" and .landed_commit == \"$landed2\"" \
   "$(c "$I") | .versions[1] | .head == \"$hprime\" and .landing == \"not-landed\" and .landed_commit == null" \
   "$(c "$I") | .state == \"draft\" and .active == 2"
+# Each change says which version it landed as, and as which commit: J and
+# I's next rounds, made on the main that holds their landings, have not.
+holds "$(c "$F") | .landed_version == 1 and .landed_commit == \"$fhead\"" \
+  "$(c "$G") | .landed_version == 1 and .landed_commit == \"$landed\"" \
+  "$(c "$U") | .landed_version == null and .landed_commit == null" \
+  "$(c "$J") | .landed_version == null and .landed_commit == null" \
+  "$(c "$I") | .landed_version == null and .landed_commit == null"
 # includes is ancestry, nearest only.
 holds "$(c "$A") | .includes == []" "$(c "$B") | .includes == [\"$A\"]" \
   "$(c "$C") | .includes == [\"$B\"]" "$(c "$W") | .includes == [\"$E\"]" \
@@ -569,6 +576,7 @@ holds '.schema == "valley-pending/v1"' \
   '[.repos[0].changes[] | select(.approved | not) | .handle] == ["mmmm", "pppp", "ssss", "vvvv", "wwww"]' \
   '[.repos[0].changes[].approved | type] | unique == ["boolean"]' \
   '[.repos[0].changes[].state] | unique == ["ready"]' \
+  '[.repos[0].changes[] | .landed_version, .landed_commit] | unique == [null]' \
   '[.repos[0].drafts[] | [.handle, .state]] == [["lmlm", "draft"], ["qqqq", "draft"], ["zzzz", "draft"]]' \
   '[.repos[0].branches[].branch] == ["a-parked", "atop-lost", "deep-1", "deep-2", "deep-3", "deep-4", "fork-base", "fork-left", "fork-right", "loose"]'
 # Across the host, one listing: each row names its project, and the rows

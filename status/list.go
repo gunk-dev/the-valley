@@ -71,6 +71,11 @@ type jsonChange struct {
 	Versions []jsonVersion `json:"versions"`
 	Includes []string      `json:"includes"`
 	Restack  *jsonRestack  `json:"restack"`
+	// LandedVersion is the version the change landed as, and LandedCommit
+	// the commit on main it landed as, or both null while it has not
+	// landed (rebase.Snapshot.LandedAs): valley-status/v1's landed_version.
+	LandedVersion *int    `json:"landed_version"`
+	LandedCommit  *string `json:"landed_commit"`
 	// Knots lists the knots in the project's plan graph that link the
 	// change, active knots first (does.go).
 	Knots []knotRef `json:"knots"`
@@ -624,6 +629,10 @@ func (s *snapshot) changeView(n recorded, handle string, candidates []recorded) 
 		ChangeID: n.id, Handle: handle, Target: r.Target, Owner: r.Owner, State: r.State,
 		Record: n.commit, Seq: r.Seq, Active: r.Active, Includes: s.includes(n, candidates),
 		Restack: restackView(s.report(n.id)), Knots: []knotRef{},
+	}
+	if as, landed := s.landedAs(n); landed {
+		_, commit := s.landing(n.id, as)
+		c.LandedVersion, c.LandedCommit = &as.N, &commit
 	}
 	for _, v := range r.Versions {
 		kind, commit := s.landing(n.id, v)

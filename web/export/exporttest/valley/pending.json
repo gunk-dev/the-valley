@@ -51,6 +51,8 @@
             "zyxwvutsrqponmlkzyxwvutsrqponmlk"
           ],
           "restack": null,
+          "landed_version": null,
+          "landed_commit": null,
           "knots": [
             {
               "id": "oc-a000002",
@@ -86,6 +88,8 @@
           ],
           "includes": [],
           "restack": null,
+          "landed_version": null,
+          "landed_commit": null,
           "knots": []
         }
       ],
@@ -125,6 +129,8 @@
           ],
           "includes": [],
           "restack": null,
+          "landed_version": null,
+          "landed_commit": null,
           "knots": []
         }
       ],

@@ -1908,6 +1908,8 @@ valley status --json "$id30b" | jq -e --arg v1 "$v1" '.version == 2 and .landing
   || die "the change does not read landed as v1: $(valley status --json "$id30b")"
 valley pending --json | jq -e --arg id "$id30b" '[.. | objects | select(.change_id? == $id)] == []' > /dev/null \
   || die "valley pending lists c-$id30b, which landed as v1"
+valley changes --json | jq -e --arg id "$id30b" --arg l "$land30b" '[.repos[].changes[] | select(.change_id == $id) | [.active, .landed_version, .landed_commit]] == [[2, 1, $l]]' > /dev/null \
+  || die "valley changes does not list c-$id30b as landed as v1: $(valley changes --json)"
 valley rebase "$id30b" > "$work/rebase30b-again.out" 2>&1 || true # a landed change is no layer to restack
 git fetch --quiet origin
 valley status --json "$id30b" | jq -e '.version == 2' > /dev/null \

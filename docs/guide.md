@@ -256,8 +256,9 @@ When the change has moved, review says what changed in one line and does nothing
 it says why your answer does not carry, offers what changed since the version you read, and offers
 to approve the new version: at once when only main moved under its commits, after you view what
 changed when a commit changed. A restack that brings the same changes keeps your answer instead:
-`kqxm moved to v4 while you were reviewing (a restack of v3; same changes) · your answer about v3 stands`,
-and approving v3 lands those changes.
+`kqxm moved to v4 while you were reviewing. v4 is v3 rebased onto the new main with no other changes, so your approval covers it.`
+Approving then lands v4, and the verdict names it with its checks, such as
+`◐ kqxm v4  approved · 19 checks running · lands when they pass`.
 
 For a revised change, review automatically compares it with an earlier approved version when one can
 be identified. Its first line says whether the change's own commits changed: rebased, with the same

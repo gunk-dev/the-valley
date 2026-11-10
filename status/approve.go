@@ -75,8 +75,13 @@ type approval struct {
 	stdout, stderr io.Writer
 
 	verbose, buildHere bool
-	reviewing, carried bool
+	reviewing          bool
 	result             []string // how the attempt ended, for review
+
+	// carriedVersion is the later version review's answer carried to, and
+	// carriedHead its head: the version that lands, which the verdict
+	// names (carriedVerdict).
+	carriedVersion, carriedHead string
 
 	// name is the change as it was named, read again before filing in case
 	// a plain branch has come to name a change. For a change, id, handle,
@@ -183,10 +188,11 @@ func (a *approval) verbFlags(args []string) (want string, err error) {
 // to head and, for a change with a record, to version. name is the change
 // as review was given it, read again before filing. A plain branch's
 // attempt is told the branch, and the head review showed when it showed
-// one. carried is set when review's line that the answer carries ended the
-// line its prompt left open.
-func reviewApproval(g git, stdout, stderr io.Writer, c shownChange, head, version string, verbose, buildHere, carried bool) *approval {
-	a := &approval{g: g, stdout: stdout, stderr: stderr, reviewing: true, carried: carried,
+// one. carriedVersion and carriedHead are given when review's answer
+// carried to that later version, whose line ended the one review's prompt
+// left open.
+func reviewApproval(g git, stdout, stderr io.Writer, c shownChange, head, version string, verbose, buildHere bool, carriedVersion, carriedHead string) *approval {
+	a := &approval{g: g, stdout: stdout, stderr: stderr, reviewing: true, carriedVersion: carriedVersion, carriedHead: carriedHead,
 		verbose: verbose, buildHere: buildHere, name: c.name, bound: head}
 	if c.id == "" {
 		a.branch = c.branch
@@ -203,7 +209,7 @@ func reviewApproval(g git, stdout, stderr io.Writer, c shownChange, head, versio
 func (a *approval) run() int {
 	// Off a terminal, the answer to review's prompt ends no line, so the
 	// verdict starts its own, unless the carry line has ended it.
-	if a.reviewing && !a.carried {
+	if a.reviewing && a.carriedHead == "" {
 		if _, tty := windowColumns(os.Stdin); !tty {
 			fmt.Fprintln(a.stdout)
 		}
@@ -1048,6 +1054,9 @@ func (a *approval) attempt() error {
 			v.see = "valley status " + a.quoted()
 		}
 	}
+	if a.carriedHead != "" && !a.stopped() {
+		v = a.carriedVerdict()
+	}
 	if !a.stopped() {
 		fmt.Fprint(a.stdout, v.lines(terminalOf(a.stdout)))
 	}
@@ -1056,6 +1065,60 @@ func (a *approval) attempt() error {
 		a.filedVersion = ""
 	}
 	return nil
+}
+
+// carriedVerdict is the verdict on an approval whose answer carried to a
+// later version. The request names the head shown, and the integrator
+// lands its delta once there is evidence for the tree it lands: the later
+// version's, the change's active one. So the verdict names that version,
+// and tells its checks as review's checks line reads them for the active
+// version (activeChecks, versionchecks.go). What that read says goes to
+// stderr with -v alone.
+func (a *approval) carriedVerdict() verdict {
+	said := io.Discard
+	if a.verbose {
+		said = a.stderr
+	}
+	var checks *jsonVersionChecks
+	changes, err := activeChecks(a.g, []string{a.id}, nil, said)
+	if err != nil {
+		fmt.Fprintf(said, "valley: %s\n", err)
+	}
+	for _, c := range changes {
+		if v := c.Versions[c.Active-1]; c.ChangeID == a.id && v.Head == a.carriedHead {
+			checks = v.Checks
+		}
+	}
+	return carriedVerdictOf(a.label(), a.carriedVersion, checks)
+}
+
+// carriedVerdictOf is the verdict that names version, the one that lands,
+// from its check state, or nil when that was not read. The host's worker
+// builds the version's nix checks, as the change's active version. It runs
+// no check of another runner, which the checks line does not judge, so
+// such a check waits with no worker building it, and approving the change
+// runs it here.
+func carriedVerdictOf(name, version string, checks *jsonVersionChecks) verdict {
+	v := verdict{outcome: "approved", name: name, version: version, target: "main", carried: true, worker: true}
+	if checks == nil {
+		v.outcome, v.why, v.required, v.passed = "unknown", "checks unknown", -1, -1
+		return v
+	}
+	for _, q := range checks.Required {
+		switch q.State {
+		case checkPassed:
+			v.passed++
+		case checkFailed:
+			v.failed = append(v.failed, q.Name)
+		case checkPending:
+			v.waiting = append(v.waiting, q.Name)
+		default:
+			v.waiting, v.worker = append(v.waiting, q.Name), false
+			v.run = "valley approve " + shellQuote(name)
+		}
+		v.required++
+	}
+	return v
 }
 
 // derive is what the policy at main's tip requires of the change from

@@ -23,7 +23,9 @@
 // moving holds the ready changes that need no approval now, one line each,
 // in the same order: an approved change, which waits on its checks and the
 // integrator, with its checks; a change whose checks failed, naming them;
-// and a change a restack holds, saying what its report says:
+// and a change a restack holds, saying what its report says. A change is
+// approved by a request at its active version's head, or at an earlier
+// version's head whose approval carries to the active version (addCarried):
 //
 //	moving (3)
 //	  ◐ mytm v5  approved · 6 checks pending
@@ -136,11 +138,10 @@ func pendingChange(s *snapshot, n recorded) bool {
 }
 
 // approvedVersion reports whether a ready change's active version has an
-// integration request at its head. That is the simple rule: the integrator
-// also accepts a request that names an earlier head whose approval carries
-// to this version, which needs the delta between the two and the policy's
-// carry mode. A version approved only by carry is not counted here, so
-// valley pending lists it with the changes awaiting approval.
+// integration request at its head. The integrator also accepts a request
+// that names an earlier head whose approval carries to this version, which
+// needs the delta between the two and the policy's carry mode: valley
+// pending reads that too (addCarried), and this rule does not.
 func (s *snapshot) approvedVersion(id string, r *change.Record) bool {
 	return r.State == change.Ready && s.request(id, r.ActiveVersion()) != nil
 }
@@ -156,8 +157,10 @@ func isDraft(_ *snapshot, n recorded) bool {
 }
 
 // pendingView is a repository as valley-pending/v1 writes it: the pending
-// changes in changes and the drafts in drafts, each with includes among
-// the changes that have not landed.
+// changes in changes, each marked approved when its active version has an
+// integration request at its head, and the drafts in drafts, each with
+// includes among the changes that have not landed. addCarried marks the
+// approvals that carry.
 func (l listed) pendingView(h handleMap) jsonRepo {
 	r := l.repoView(h, pendingChange, unlanded)
 	if l.err == nil {
@@ -172,6 +175,48 @@ func (l listed) pendingView(h handleMap) jsonRepo {
 	}
 	r.Drafts = &drafts
 	return r
+}
+
+// addCarried marks approved each pending change in view whose active
+// version has no request at its head, when the greatest earlier version
+// with one carries its approval to the active version. Carry's own rules
+// decide (carryBetween, carry.go), as review decides whether an answer
+// about the version it showed carries to the one the change moved to, so
+// the change is listed as the integrator will take it. A carry that does
+// not read leaves the change unapproved, and says so on stderr.
+func (l listed) addCarried(view *jsonRepo, stderr io.Writer) {
+	if l.err != nil {
+		return
+	}
+	s := l.snap
+	for i, c := range view.Changes {
+		if c.Approved == nil || *c.Approved {
+			continue
+		}
+		from := 0
+		for _, v := range c.Versions[:c.Active-1] {
+			if v.Request != nil {
+				from = v.N
+			}
+		}
+		if from == 0 {
+			continue
+		}
+		h, err := historyOf(s.g, s.o, s.all, len(s.unread) > 0, c.ChangeID)
+		verdict := ""
+		if err == nil {
+			_, verdict, _, _, err = carryBetween(s.g, h, from, c.Active, func() (*composed.Model, error) { return s.model(true) })
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "valley: %s: whether the approval of %s v%d carries to v%d did not read, so it waits on an approval: %v\n",
+				l.name, c.Handle, from, c.Active, err)
+			continue
+		}
+		if verdict == "carries" {
+			approved := true
+			view.Changes[i].Approved = &approved
+		}
+	}
 }
 
 func runPending(g git, args []string, stdout, stderr io.Writer) error {
@@ -194,6 +239,7 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 		c := newCosts()
 		for _, r := range repos {
 			view := r.pendingView(h)
+			r.addCarried(&view, stderr)
 			if l.checks {
 				r.addChecks(&view, c, stderr)
 			}

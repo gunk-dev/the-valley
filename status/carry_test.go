@@ -45,9 +45,9 @@ func TestCarryVerdictReasons(t *testing.T) {
 		{comparison{kind: compareChanged, verb: "edited", edited: 1, has: 2, had: 1},
 			"review", "its commits changed (2 commits, where v1 had 1)", "view"},
 		{comparison{kind: compareClean, meta: true, landings: []string{"b"}}, "review", "its commit messages or authors differ", "view"},
-		{comparison{kind: compareClean, landings: []string{"b"}}, "carries", "same changes as v1", ""},
+		{comparison{kind: compareClean, landings: []string{"b"}}, "carries", "v2 makes the same changes as v1 on the same main", ""},
 	} {
-		verdict, reason, offer, err := carryVerdict(git{}, "", c.c, 1)
+		verdict, reason, offer, err := carryVerdict(git{}, c.c, 1, 2, nil)
 		if err != nil || verdict != c.verdict || reason != c.reason || offer != c.offer {
 			t.Errorf("carryVerdict(%+v) = %q, %q, %q, %v; want %q, %q, %q", c.c, verdict, reason, offer, err, c.verdict, c.reason, c.offer)
 		}

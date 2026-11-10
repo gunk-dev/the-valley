@@ -168,6 +168,12 @@ func readHistory(g git, id string) (*history, error) {
 	if err != nil {
 		return nil, err
 	}
+	return historyOf(g, o, all, len(unread) > 0, id)
+}
+
+// historyOf is the change's history in what one read of origin listed, o,
+// and the records it read, all; unread says a record did not read.
+func historyOf(g git, o origin, all []recorded, unread bool, id string) (*history, error) {
 	var want []string
 	for ref, oid := range o.refs {
 		if strings.HasPrefix(ref, outcomePrefix) {
@@ -178,7 +184,7 @@ func readHistory(g git, id string) (*history, error) {
 		return nil, err
 	}
 	h := &history{
-		id: id, handle: o.handle(id), unread: len(unread) > 0,
+		id: id, handle: o.handle(id), unread: unread,
 		requests: map[string]string{}, outcomes: map[string]outcome{}, others: map[string]bool{},
 	}
 	ours := map[string]bool{}

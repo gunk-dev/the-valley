@@ -2351,11 +2351,14 @@ delta, the commit messages and the authors are the same, and the change's carry 
 the policy at that tip, allows the landings between the two bases. Then the answer stands, and
 `[a]pprove` files the head shown, so a restack during review needs no second review. An approval
 names exactly what the reviewer read, and a restack never puts another head in its place: the
-integrator applies the delta of the head approved onto `main` as `main` stands. When the answer does
-not carry, `review` offers the comparison, which shows only what changed since the version shown
-(`implemented`, checked by `valley-ready`). It never tells the operator to ready a change: readying
-is for the change's owner, and `approve` suggests it only to the owner. A branch no record is on has
-no state, and is offered the usual prompt.
+integrator applies the delta of the head approved onto `main` as `main` stands. The new version is
+what lands, so the verdict names it and gives its checks as the checks line reads them for the
+active version. `valley pending` and the walk read a request at an earlier version's head by the
+same rules, so a change whose approval carries is listed as approved and moving. When the answer
+does not carry, `review` offers the comparison, which shows only what changed since the version
+shown (`implemented`, checked by `valley-ready`). It never tells the operator to ready a change:
+readying is for the change's owner, and `approve` suggests it only to the owner. A branch no record
+is on has no state, and is offered the usual prompt.
 
 `review` also shows the knots a change does. These are the knots in the project's plan graph whose
 `changes` lists `valley:<project>/<change ID>` (see [The plan graph](#the-plan-graph)). The project
@@ -3108,9 +3111,9 @@ repository has a `drafts` array as well, holding the drafts, with the same entry
 have not landed.
 
 Each change in `changes` has `approved`: `true` when its active version has an integration request
-at its head. The human view lists those changes under `approved`, one line each, apart from the
-`ready` changes that wait on an approval. A request that names an earlier head whose approval
-carries to the active version is not counted.
+at its head, or when an earlier version's request carries its approval to the active version, as
+review's carry decides. The human view lists those changes under `approved`, one line each, apart
+from the `ready` changes that wait on an approval.
 
 ```text
 ready

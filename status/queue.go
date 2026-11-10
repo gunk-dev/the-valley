@@ -7,9 +7,10 @@ package main
 //
 // A ready change whose active version has not landed is moving when a
 // current restack report says its restack stopped short of complete, when
-// one of its required checks failed, or when its active version has an
-// integration request at its head (approvedVersion). Every other one waits
-// on an approval. Waiting changes are stacked by ancestry among themselves
+// one of its required checks failed, or when it is approved: its active
+// version has an integration request at its head, or an earlier version's
+// request carries to it (addCarried, pending.go). Every other one waits on
+// an approval. Waiting changes are stacked by ancestry among themselves
 // (stack): a waiting change that another's head contains folds into that
 // change's row, since approving the top lands every layer. A moving change
 // is a row of its own whatever it is stacked on, since it moves on its own.
@@ -92,6 +93,7 @@ func operatorQueue(repos []listed, h handleMap, l listing, c *costs, stderr io.W
 		}
 		end := phase("changes")
 		view := r.pendingView(h)
+		r.addCarried(&view, stderr)
 		end()
 		end = phase("checks")
 		r.addChecks(&view, c, stderr)

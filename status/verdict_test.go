@@ -63,6 +63,43 @@ func TestVerdictLines(t *testing.T) {
 	}
 }
 
+// An approval whose answer carried to a later version names that version
+// and tells its checks as the checks line reads them for the active
+// version. A check of another runner waits, since no worker runs it.
+func TestCarriedVerdict(t *testing.T) {
+	states := func(s ...string) *jsonVersionChecks {
+		c := &jsonVersionChecks{}
+		for i, state := range s {
+			c.Required = append(c.Required, jsonCheckState{Name: string(rune('a' + i)), State: state})
+		}
+		return c
+	}
+	for _, c := range []struct {
+		name   string
+		checks *jsonVersionChecks
+		want   string
+	}{
+		{"running", states(checkPending, checkPending),
+			"◐ zplr v3  approved · 2 checks running · lands when they pass\n"},
+		{"one running", states(checkPassed, checkPending),
+			"◐ zplr v3  approved · 1 check running · lands when it passes\n"},
+		{"passed", states(checkPassed, checkPassed),
+			"✓ zplr v3  approved · checks passed · landing on main\n"},
+		{"failed", states(checkPassed, checkFailed, checkPending),
+			"✗ zplr v3  approved · 1 of 3 checks failed\n  ✗ b — see: valley status zplr\n"},
+		{"none required", &jsonVersionChecks{},
+			"✓ zplr v3  approved · no checks required · landing on main\n"},
+		{"a command check", states(checkPassed, checkPending, checkOther),
+			"◇ zplr v3  approved · waiting for 2 checks (no worker building)\n  run: valley approve zplr\n"},
+		{"not read", nil,
+			"? zplr v3  approved · checks unknown · see: valley status zplr\n"},
+	} {
+		if got := carriedVerdictOf("zplr", "3", c.checks).lines(terminal{width: 80}); got != c.want {
+			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
+		}
+	}
+}
+
 func TestVerdictPrompt(t *testing.T) {
 	header := func() []string { return []string{"nqyw v3", "checks: 4 passed", "behind main (integrator merges)"} }
 	keys := []string{"[a]pprove", "[v]iew diff", "[r]eject", "[s]kip"}

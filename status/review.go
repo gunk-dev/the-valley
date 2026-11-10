@@ -63,7 +63,7 @@ type review struct {
 
 	c                           shownChange
 	approveHead, approveVersion string // what [a]pprove files (bind)
-	carried                     bool   // the answer carried to the version the change moved to
+	carriedVersion, carriedHead string // the version the answer carried to, which lands, and its head
 	checksFailedAt              string // the head [a]pprove's checks failed at
 	checksClause                string // the checks line for the prompt's header
 	topName                     string // the name review was given
@@ -653,7 +653,7 @@ func (r *review) behindMain(branch string) string {
 // approve and reject check themselves.
 func (r *review) moved(approving bool) bool {
 	h := r.c.handle
-	r.carried = false
+	r.carriedVersion, r.carriedHead = "", ""
 	if r.c.id == "" {
 		return false
 	}
@@ -682,9 +682,11 @@ func (r *review) moved(approving bool) bool {
 
 // carriedTo reports whether the answer about the version review showed
 // carries to the version s the change moved to, as carry decides
-// (carry.go). When it does, it says so in one line, and the answer stays
-// bound to the head shown: an approval names what the reviewer read, and
-// the integrator applies its delta onto main as main stands. When it does
+// (carry.go). When it does, it says so in one line, with carry's reason,
+// and the answer stays bound to the head shown: an approval names what the
+// reviewer read, and the integrator applies its delta onto main as main
+// stands. The version moved to is what lands, so the approval's verdict
+// names it (carriedVerdict, approve.go). When it does
 // not, it says why in one line and offers to page only what changed since
 // the version shown. Answering an approval, it also offers to approve the
 // version the change moved to, when carry says: at once, or after the
@@ -719,8 +721,12 @@ func (r *review) carriedTo(s standing, approving bool) bool {
 	}
 	switch verdict {
 	case "carries":
-		fmt.Fprintf(r.stdout, "%s moved to v%s while you were reviewing (%s) · your answer about v%s stands\n", h, s.version, reason, r.c.version)
-		r.carried = true
+		answer := "rejection"
+		if approving {
+			answer = "approval"
+		}
+		fmt.Fprintf(r.stdout, "%s moved to v%s while you were reviewing. %s, so your %s covers it.\n", h, s.version, reason, answer)
+		r.carriedVersion, r.carriedHead = s.version, s.head
 		return true
 	case "review":
 		keys := "[v]iew what changed since v" + r.c.version + ", [s]kip?"
@@ -766,7 +772,7 @@ func (r *review) approve(branch string) bool {
 	if c.id == "" {
 		c.branch = branch
 	}
-	a := reviewApproval(r.g, r.stdout, r.stderr, c, r.approveHead, r.approveVersion, r.verbose, r.buildHere, r.carried)
+	a := reviewApproval(r.g, r.stdout, r.stderr, c, r.approveHead, r.approveVersion, r.verbose, r.buildHere, r.carriedVersion, r.carriedHead)
 	r.inForeground(func() {
 		a.watch(os.Interrupt)
 		a.run()

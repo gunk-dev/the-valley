@@ -37,8 +37,8 @@ import (
 // for the bottom layer its merge base with main. The head of a change is
 // the head its active version records. The state is ready, draft or
 // withdrawn, or - for a branch. The approved field is approved for a ready
-// change whose active version has an integration request, as pending reads
-// it (approvedVersion), and - for any other layer. The title is last: a change's is its
+// change whose active version has an integration request at its head
+// (approvedVersion), and - for any other layer. The title is last: a change's is its
 // record's, and a branch's is the subject of its first own commit, as
 // pending reads it. No field holds a tab: git refuses control characters
 // in a ref name, and a title's are made spaces. A change with nothing

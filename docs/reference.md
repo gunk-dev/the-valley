@@ -225,9 +225,10 @@ moving (3)
 - **moving:** The `ready` changes that need no approval now, one line each, in the same order: `◐`
   approved, with its checks, waiting on them and the integrator; `✗` a required check failed, named;
   `✗` a current restack report says a conflict, or `◇` that the restack held, with what the report
-  says. A change is approved when its active version has an integration request at its head.
-  `valley pending` does not count a request that names an earlier head whose approval carries to the
-  active version, so such a version waits under `needs you` until a request names its own head.
+  says. A change is approved when its active version has an integration request at its head, or when
+  the request names an earlier version's head whose approval carries to the active version, under
+  the rules review applies when a change moves while it is shown (`valley-go carry`). A request
+  whose approval does not carry leaves the change under `needs you`.
 - **Counts:** The drafts and the unrecorded branches ahead of `main` that no landed version's head
   reaches, with the flags that list them. Older versions of a change are never listed.
 - **Blocks:** `--drafts`, `--branches` and `-v` print blocks. A block's first line is the name, with
@@ -431,10 +432,18 @@ valley review [-v] [--build-here] [--repo <name>]
   against its approved one, at `main`'s tip on origin. When the two have the same file delta, commit
   messages and authors, and the change's carry mode allows the landings between their bases, the
   answer carries: review prints
-  `<change> moved to v<n> while you were reviewing (a restack of v<m>; same changes) · your answer about v<m> stands`,
-  and `[a]pprove` files v<m>'s head, the one shown, whose delta the integrator applies onto `main`
-  as `main` stands. Otherwise `<why>` says what holds it, and `[v]` pages the comparison of v<n>
-  with v<m>:
+  `<change> moved to v<n> while you were reviewing. v<n> is v<m> rebased onto the new main with no other changes, so your approval covers it.`,
+  with `v<n> makes the same changes as v<m> on the same main` as the reason when no landing lies
+  between their bases. `[a]pprove` files v<m>'s head, the one shown, whose delta the integrator
+  applies onto `main` as `main` stands. The verdict names v<n>, which lands, and gives its checks as
+  the checks line reads them:
+  `◐ <change> v<n>  approved · <k> checks running · lands when they pass` while the worker builds
+  them, `✓ <change> v<n>  approved · checks passed · landing on main` once they pass, and
+  `✗ <change> v<n>  approved · <k> of <required> checks failed` when one failed. A required
+  `command` check, which no worker runs, gives
+  `◇ <change> v<n>  approved · waiting for <k> checks (no worker building)` with
+  `run: valley approve <change>`, which runs it here. Otherwise `<why>` says what holds it, and
+  `[v]` pages the comparison of v<n> with v<m>:
 
   | `<why>`                                                                                    | `[a]pprove v<n>` offered |
   | ------------------------------------------------------------------------------------------ | ------------------------ |

@@ -91,7 +91,7 @@ type jsonCheckState struct {
 
 // addChecks gives the active version of each pending change in view its
 // check state, and its build times from the host's worker telemetry,
-// read through c. view is this repository's.
+// read through c, or none when c is nil. view is this repository's.
 func (l listed) addChecks(view *jsonRepo, c *costs, stderr io.Writer) {
 	if l.err != nil {
 		return
@@ -121,7 +121,10 @@ func (l listed) addChecks(view *jsonRepo, c *costs, stderr io.Writer) {
 		warn("origin has no main to read the policy at, so no ready change lists its checks")
 		return
 	}
-	reading := c.start(l.g)
+	var reading *costRead
+	if c != nil {
+		reading = c.start(l.g)
+	}
 	if _, err := l.snap.layers(); err != nil {
 		warn("the policy at main did not read, so no ready change lists its checks: %v", err)
 		return
@@ -206,7 +209,11 @@ func (l listed) addChecks(view *jsonRepo, c *costs, stderr io.Writer) {
 	if p != nil {
 		here = counting{project: project(l.g), integrator: p.name, projects: p.projects}
 	}
-	builds, timed := c.wait(reading, warn)
+	var builds []checkBuild
+	timed := false
+	if c != nil {
+		builds, timed = c.wait(reading, warn)
+	}
 
 	for _, h := range read {
 		stored := storedFor(h.digest, o.refs)
@@ -299,35 +306,48 @@ func checksLine(c *jsonVersionChecks) string {
 // check state, and so no line. What could not be read is said on stderr,
 // as valley pending --checks says it, and leaves the line out.
 func runCheckLine(g git, args []string, stdout, stderr io.Writer) error {
-	wanted := map[string]bool{}
 	for _, a := range args {
 		if !change.ValidID(a) {
 			return failure("usage: valley-go checkline <change ID>...")
 		}
-		wanted[a] = true
 	}
 	if !g.succeeds(true, "rev-parse", "--git-dir") {
 		return failure("not a git repository")
 	}
-	list, _, err := sources(g, listing{}, stderr)
+	changes, err := activeChecks(g, args, newCosts(), stderr)
 	if err != nil {
 		return err
 	}
-	repos := readSources(list, newVerifier())
-	defer closeSources(repos)
-	r := repos[0]
-	if r.err != nil {
-		return r.err
-	}
-	named := func(s *snapshot, n recorded) bool { return wanted[n.id] && pendingChange(s, n) }
-	view := r.repoView(handles(repos), named, unlanded)
-	r.addChecks(&view, newCosts(), stderr)
 	var b strings.Builder
-	for _, c := range view.Changes {
+	for _, c := range changes {
 		if v := c.Versions[c.Active-1]; v.Checks != nil {
 			fmt.Fprintf(&b, "%s\t%s\n", c.ChangeID, readable(checksLine(v.Checks)))
 		}
 	}
 	_, err = io.WriteString(stdout, b.String())
 	return err
+}
+
+// activeChecks is each change named that is ready and has not landed, in
+// this repository, with its active version's check state, as valley pending
+// --checks reads it, and with build times read through c when it is given.
+func activeChecks(g git, ids []string, c *costs, stderr io.Writer) ([]jsonChange, error) {
+	wanted := map[string]bool{}
+	for _, id := range ids {
+		wanted[id] = true
+	}
+	list, _, err := sources(g, listing{}, stderr)
+	if err != nil {
+		return nil, err
+	}
+	repos := readSources(list, newVerifier())
+	defer closeSources(repos)
+	r := repos[0]
+	if r.err != nil {
+		return nil, r.err
+	}
+	named := func(s *snapshot, n recorded) bool { return wanted[n.id] && pendingChange(s, n) }
+	view := r.repoView(handles(repos), named, unlanded)
+	r.addChecks(&view, c, stderr)
+	return view.Changes, nil
 }

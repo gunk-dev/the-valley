@@ -8,6 +8,7 @@ package main
 //	✓ nqyw v3  approved · checks passed · landing on main
 //	◇ nqyw v3  approved · waiting for 2 checks (no worker building)
 //	  run: valley approve --build-here nqyw
+//	◐ nqyw v4  approved · 19 checks running · lands when they pass
 //	⊘ nqyw v3  not approved · change is a draft
 //	  run: valley ready nqyw
 //
@@ -16,7 +17,9 @@ package main
 // goes to stdout, a refusal to stderr. On a terminal the glyph has its
 // colour and the change's name is bold; in a pipe, or with NO_COLOR set,
 // the text is the same without them. A verdict never says a change landed:
-// approve files a request and does not watch it land.
+// approve files a request and does not watch it land. An approval whose
+// answer carried to a later version names that version, which lands, with
+// its checks as the host's worker builds them.
 //
 // checking runs the checks approve builds here, as one line redrawn in
 // place on a terminal and as a start line in a pipe, and keeps the
@@ -57,6 +60,7 @@ type verdict struct {
 	took     string
 	waiting  []string // required checks no evidence is published for yet
 	worker   bool     // a check worker builds the waiting checks
+	carried  bool     // the version is the later one the answer carried to, its checks the active version's
 	failed   []string
 	why      string // what stops the approval, or what is not known
 	run      string // the command the person runs next
@@ -136,6 +140,10 @@ func (v verdict) lines(t terminal) string {
 	case "approved":
 		clauses = []string{"approved"}
 		switch {
+		case len(v.failed) > 0:
+			glyph, colour = "✗", colourRefused
+			clauses = append(clauses, fmt.Sprintf("%d of %s failed", len(v.failed), countOf(v.required, "check")))
+			action = t.tint(colourRefused, "✗") + " " + strings.Join(v.failed, ", ") + " — see: valley status " + v.name
 		case v.required == 0:
 			glyph, colour = "✓", colourDone
 			clauses = append(clauses, "no checks required", "landing on "+v.target)
@@ -146,6 +154,13 @@ func (v verdict) lines(t terminal) string {
 				passed = countOf(v.required, "check") + " passed in " + v.took
 			}
 			clauses = append(clauses, passed, "landing on "+v.target)
+		case v.carried && v.worker:
+			glyph, colour = "◐", colourWorking
+			pass := "they pass"
+			if len(v.waiting) == 1 {
+				pass = "it passes"
+			}
+			clauses = append(clauses, countOf(len(v.waiting), "check")+" running", "lands when "+pass)
 		case v.worker:
 			glyph, colour = "◐", colourWorking
 			if v.passed >= 0 && v.required > 0 {

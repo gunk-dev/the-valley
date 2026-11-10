@@ -502,10 +502,11 @@ usage: valley review [-v] [--build-here] <change>
                    <time> is when the record last changed, in UTC.
                    a new version with the same changes and commits, such
                    as a restack the carry mode allows, keeps the answer:
-                     `<change> moved to v<n> while you were reviewing
-                     (a restack of v<m>; same changes) · your answer
-                     about v<m> stands`
-                   and [a]pprove files v<m>, the head shown. otherwise
+                     `<change> moved to v<n> while you were reviewing.
+                     v<n> is v<m> rebased onto the new main with no
+                     other changes, so your approval covers it.`
+                   and [a]pprove files v<m>, the head shown. its verdict
+                   names v<n>, which lands, with v<n>'s checks. otherwise
                    <why> says whether the change's commits changed or
                    only main moved under them, and why the answer does
                    not carry. with its commits unchanged, [a]pprove v<n>

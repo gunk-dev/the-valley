@@ -2,7 +2,8 @@
 // it showed carries to a later version the change gained while the
 // review was open (review.go's moved). It is information only: it files
 // no request, and the integrator judges what approve files as it judges
-// any request.
+// any request. valley pending reads a request at an earlier version's
+// head through the same rules (carriedApproval, pending.go).
 //
 // The later version is set against the version shown as compare sets a
 // version against its approved one (compare.go), with main's tip on
@@ -15,11 +16,13 @@
 //
 // The output is one line, the verdict, carries or review, and a short
 // reason, separated by a tab, and then the comparison's text, which
-// review pages when it asks the operator to look again. A review line has
-// a third field, when review offers to approve the later version in
-// place: approve, at once, since the change's commits are unchanged;
-// view, once the operator has paged the comparison, since a commit
-// changed; or none, when the versions could not be set side by side.
+// review pages when it asks the operator to look again. A reason is one
+// plain clause about the later version: for carries, why the answer
+// covers it. A review line has a third field, when review offers to
+// approve the later version in place: approve, at once, since the
+// change's commits are unchanged; view, once the operator has paged the
+// comparison, since a commit changed; or none, when the versions could
+// not be set side by side.
 
 package main
 
@@ -31,6 +34,7 @@ import (
 	"strings"
 
 	"the-valley/change"
+	"the-valley/composed"
 	"the-valley/derive"
 )
 
@@ -59,20 +63,7 @@ func runCarry(g git, args []string, w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if to > len(h.versions) {
-		return failure(fmt.Sprintf("change %s has no v%d", h.handle, to))
-	}
-	if h.tip == "" {
-		return failure("origin has no main to compare the versions against")
-	}
-	if err := fetch(g, h.tip, h.head(from), h.head(to)); err != nil {
-		return err
-	}
-	c, err := compareWith(g, h, h.tip, reference{version: from}, to, false)
-	if err != nil {
-		return err
-	}
-	verdict, reason, offer, err := carryVerdict(g, h.tip, c, from)
+	c, verdict, reason, offer, err := carryBetween(g, h, from, to, func() (*composed.Model, error) { return tipModel(g, h.tip) })
 	if err != nil {
 		return err
 	}
@@ -83,10 +74,45 @@ func runCarry(g git, args []string, w io.Writer) error {
 	return err
 }
 
-// carryVerdict says whether an answer about version from carries to the
-// version c compared with it, and why, and for review, when the later
-// version is offered for approval in place.
-func carryVerdict(g git, tip string, c comparison, from int) (verdict, reason, offer string, err error) {
+// carryBetween sets version to of the change h holds against version
+// from, at main's tip as h read it, and says whether an answer about from
+// carries to it, and why (carryVerdict). model is the policy at that tip,
+// read only when the change's carry mode decides.
+func carryBetween(g git, h *history, from, to int, model func() (*composed.Model, error)) (c comparison, verdict, reason, offer string, err error) {
+	if to > len(h.versions) {
+		return c, "", "", "", failure(fmt.Sprintf("change %s has no v%d", h.handle, to))
+	}
+	if h.tip == "" {
+		return c, "", "", "", failure("origin has no main to compare the versions against")
+	}
+	if err := fetch(g, h.tip, h.head(from), h.head(to)); err != nil {
+		return c, "", "", "", err
+	}
+	if c, err = compareWith(g, h, h.tip, reference{version: from}, to, false); err != nil {
+		return c, "", "", "", err
+	}
+	verdict, reason, offer, err = carryVerdict(g, c, from, to, model)
+	return c, verdict, reason, offer, err
+}
+
+// tipModel is the policy at main's tip, as carry reads it on its own.
+func tipModel(g git, tip string) (*composed.Model, error) {
+	instance, project, done, err := policyLayers(g, tip)
+	defer done()
+	if err != nil {
+		return nil, failure(fmt.Sprintf("the policy at main did not read: %v", err))
+	}
+	schema, err := schemaFile(g, "")
+	if err != nil {
+		return nil, err
+	}
+	return policyModel(schema, instance, project, true)
+}
+
+// carryVerdict says whether an answer about version from carries to
+// version to, which c compared with it, and why, and for review, when the
+// later version is offered for approval in place.
+func carryVerdict(g git, c comparison, from, to int, model func() (*composed.Model, error)) (verdict, reason, offer string, err error) {
 	switch {
 	case c.kind == compareNone:
 		return "review", fmt.Sprintf("it could not be set against v%d", from), "none", nil
@@ -97,16 +123,16 @@ func carryVerdict(g git, tip string, c comparison, from int) (verdict, reason, o
 	case c.meta:
 		return "review", "its commit messages or authors differ", "view", nil
 	case len(c.landings) == 1:
-		return "carries", fmt.Sprintf("same changes as v%d", from), "", nil
+		return "carries", fmt.Sprintf("v%d makes the same changes as v%d on the same main", to, from), "", nil
 	}
-	mode, shared, err := carryMode(g, tip, c)
+	mode, shared, err := carryMode(g, c, model)
 	if err != nil {
 		return "", "", "", err
 	}
 	if !carryAllows(mode, shared) {
 		return "review", fmt.Sprintf("a restack; carry mode %s holds it over what landed since", mode), "approve", nil
 	}
-	return "carries", fmt.Sprintf("a restack of v%d; same changes", from), "", nil
+	return "carries", fmt.Sprintf("v%d is v%d rebased onto the new main with no other changes", to, from), "", nil
 }
 
 // rebasedReason says that a rebase changed the change's files and not its
@@ -145,19 +171,10 @@ func editedReason(c comparison, from int) string {
 }
 
 // carryMode is the change's carry mode under the policy at main's tip,
-// and whether a landing between the two bases touched a path in a class
-// the change touches.
-func carryMode(g git, tip string, c comparison) (mode string, shared bool, err error) {
-	instance, project, done, err := policyLayers(g, tip)
-	defer done()
-	if err != nil {
-		return "", false, failure(fmt.Sprintf("the policy at main did not read: %v", err))
-	}
-	schema, err := schemaFile(g, "")
-	if err != nil {
-		return "", false, err
-	}
-	model, err := policyModel(schema, instance, project, true)
+// which model reads, and whether a landing between the two bases touched
+// a path in a class the change touches.
+func carryMode(g git, c comparison, policy func() (*composed.Model, error)) (mode string, shared bool, err error) {
+	model, err := policy()
 	if err != nil {
 		return "", false, err
 	}

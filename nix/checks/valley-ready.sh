@@ -758,17 +758,20 @@ fi
 # the rebased head as a new version, as the operator. ready --if-active,
 # which it does that with, adds nothing unless the change is ready at that
 # active head. A rebase while the review is open brings the same changes
-# onto main, so the answer stands with no second review: [a]pprove files
-# the head shown, whose delta the integrator applies onto main.
+# onto main, so the answer covers the rebased version with no second
+# review: [a]pprove files the head shown, whose delta the integrator
+# applies onto main, and the verdict names the rebased version, which
+# lands, with its checks.
 unchanged "$rid" refused "$rh v2 is at" as contributor valley ready --if-active "$raced" --change "$rid"
 review_while "$rh" 'a\n' as requester valley rebase "$rh"
 rebased="$(git -C "$origin" rev-parse refs/heads/drafts/raced)"
 [ "$rebased" != "$raced_again" ] || fail 'rebase did not move the branch'
 grep -qx "project $rh v3 ready" "$w/out" || fail 'rebase did not add the rebased head as v3'
 grep -qF "$behind" "$w/review.out" || fail 'review did not say the change is behind main'
-grep -qxF "$prompt$rh moved to v3 while you were reviewing (a restack of v2; same changes) · your answer about v2 stands" "$w/review.out" \
+grep -qxF "$prompt$rh moved to v3 while you were reviewing. v3 is v2 rebased onto the new main with no other changes, so your approval covers it." "$w/review.out" \
   || fail "review did not carry the answer across the restack to v3: $(cat "$w/review.out")"
-grep -q "^[^ ]* $rh v2  approved · " "$w/review.out" || fail "review did not approve v2 across the restack: $(cat "$w/review.err")"
+grep -qxF "✓ $rh v3  approved · no checks required · landing on main" "$w/review.out" \
+  || fail "review's verdict did not name v3, which lands, with its checks: $(cat "$w/review.out" "$w/review.err")"
 [ "$(git -C "$origin" rev-parse "$raced_request")" = "$raced_again" ] \
   || fail 'review filed another head than the one it showed'
 [ "$(grep -cF '[v]iew diff' "$w/review.out")" = 1 ] || fail 'review asked again about a restacked change'
@@ -823,6 +826,19 @@ grep -qF "$prompt$sh moved to v3 while you were reviewing (its commits changed (
   || fail "review did not say the change's commits changed, offering only what changed: $(cat "$w/review.out")"
 [ "$(git -C "$origin" rev-parse "refs/the-valley/integration-requests/main/c-$sid")" = "$shared_head" ] \
   || fail 'review approved an edited version before showing what changed'
+# pending and the walk count a request at an earlier version's head where
+# review's answer would carry. raced's, at v2's head, carries to v3: it is
+# moving, approved, and the walk does not offer it. shared's, at v2's head,
+# does not carry to v3, whose commits changed, so the operator is asked.
+ok valley pending
+grep -qE "^  ◐ $rh v3 +approved · no checks required\$" "$w/out" \
+  || fail 'pending did not list a change whose approval carries as approved and moving'
+if grep -qE "^ +[0-9]+  $rh " "$w/out"; then fail 'pending asked for a change whose approval carries'; fi
+grep -qE "^ +[0-9]+  $sh v3( |\$)" "$w/out" || fail 'pending did not ask for a change whose approval does not carry'
+seq 50 | sed 's/.*/s/' > "$w/skips"
+as requester valley review --repo project < "$w/skips" > "$w/out" 2> "$w/err" || fail 'the walk failed'
+if grep -qF "· $rh v3" "$w/out"; then fail 'the walk offered a change whose approval carries'; fi
+grep -qF "· $sh v3" "$w/out" || fail 'the walk did not offer a change whose approval does not carry'
 git checkout --quiet main
 git pull --quiet --ff-only origin main
 

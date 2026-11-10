@@ -80,7 +80,8 @@ type jsonChange struct {
 	// change, active knots first (does.go).
 	Knots []knotRef `json:"knots"`
 	// Approved is valley-pending/v1's alone, on a pending change: whether
-	// its active version has an integration request (approved, pending.go).
+	// its active version has an integration request at its head, or an
+	// earlier version's request carries to it (addCarried, pending.go).
 	Approved *bool `json:"approved,omitempty"`
 }
 

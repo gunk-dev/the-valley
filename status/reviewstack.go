@@ -151,8 +151,9 @@ func (r *review) summarizeStack() {
 // baseStack offers a stack whose bottom does not fast-forward from main,
 // before any layer is paged, [b]ase, which rebases every layer as the
 // rebase verb does (rebase.go), [v]iew diff, which pages the top's whole
-// diff, or [s]kip. After a rebase the stack is read again and listed
-// again, so the heads paged are the heads approved. A rebase refused or
+// diff and keeps the notes taken in it on the top layer, or [s]kip. After
+// a rebase the stack is read again and listed again, so the heads paged
+// are the heads approved, and the top keeps its notes. A rebase refused or
 // left unfinished has said what happened, and only [v]iew diff and [s]kip
 // are offered then. It reports false when the review stops here.
 func (r *review) baseStack() bool {
@@ -179,15 +180,19 @@ func (r *review) baseStack() bool {
 					}
 				}
 				r.bind()
+				notes := r.layers[n-1].notes
 				if !r.readStack() {
 					r.die("could not read the stack under " + r.topName + " again after the rebase")
 				}
+				r.layers[len(r.layers)-1].notes = notes
 				r.summarizeStack()
 			default:
 				clause, stopped, r.walkRefused = "not rebased", "", true
 			}
 		case "v":
+			r.notes = nil
 			r.viewFull(r.c.branch)
+			r.keepLayerNotes(n - 1)
 		case "s":
 			fmt.Fprintf(r.stdout, "stopped reviewing %s before its first layer%s\n", r.layers[n-1].name, stopped)
 			r.skipped()

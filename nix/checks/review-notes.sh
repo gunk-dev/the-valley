@@ -459,8 +459,24 @@ if grep -q 'change 1 of 3' stale-stop.out; then exit 1; fi
 
 # [b]ase rebases the whole stack. The review then lists the stack again
 # and pages the rebased layers, and [a]pprove at the top files the
-# request at the top's rebased head.
-printf 'b\nn\nn\na\n' | valley review pppp > stale-review.out 2>&1
+# request at the top's rebased head. A note written in [v]iew diff before
+# the rebase, beside the bottom layer's line, is printed once, under the
+# top's branch, since the whole diff it was written in is the top's. The
+# answers wait for each page and prompt, as on a terminal every key goes
+# to whatever holds it.
+# shellcheck disable=SC2094 # the answers wait on the review's own output
+{
+  answer_after stale-review.log '\]kip: ' : 'v\n'
+  answer_after stale-review.log 'log against origin/main:' : vq
+  answer_after "$XDG_STATE_HOME/valley/notes/three.md" 'one wants a second line' : 'b\n'
+  answer_after stale-review.log '| change 1 of 3: one on main' : q
+  answer_after stale-review.log 'one, 1 of 3: \[n\]ext' : 'n\n'
+  answer_after stale-review.log 'qqqq, 2 of 3: \[n\]ext' : 'n\n'
+  answer_after stale-review.log '| change 3 of 3: pppp on qqqq' : q
+  answer_after stale-review.log '\]pprove all 3' : 'a\n'
+  wait_for stale-review.log 'note(s) on three'
+} | EDITOR="$TMPDIR/stack-editor" script -qec "valley review pppp" /dev/null > stale-review.log 2>&1
+sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r//g' stale-review.log > stale-review.out
 grep -qF '[b]ase onto main  [v]iew diff  [s]kip: ' stale-review.out
 grep -qF 'the stack under pppp, bottom first:' stale-review.out
 git fetch --quiet origin
@@ -468,19 +484,23 @@ newone="$(git rev-parse origin/one)" newthree="$(git rev-parse origin/three)"
 [ "$newone" != "$onehead" ]
 git merge-base --is-ancestor origin/main "$newone"
 awk '/change 1 of 3: /{ on = 1 } /change 2 of 3: /{ on = 0 } on' stale-review.out > stale-page1
-grep -q "^$(git rev-parse --short "$newone") layer one$" stale-page1
+grep -q "^| $(git rev-parse --short "$newone") layer one$" stale-page1
 if grep -q "$(git rev-parse --short "$onehead")" stale-page1; then exit 1; fi
 grep -qF '[a]pprove all 3  [v]iew diff  [r]eject pppp  [s]top: ' stale-review.out
 [ "$(git -C "$stack" rev-parse "$requests/c-$p")" = "$newthree" ]
+[ "$(grep -c 'one wants a second line' "$XDG_STATE_HOME/valley/notes/three.md")" = 1 ]
+[ "$(grep -c '^  one.md:1: one wants a second line$' stale-review.out)" = 1 ]
+grep -A1 '^1 note(s) on three, appended to .*/valley/notes/three.md:$' stale-review.out \
+  | grep -qx '  one.md:1: one wants a second line'
 # qqqq's v1 was approved earlier, and the rebase gave it v2 with the same
 # file delta, so its layer is printed as rebased with the same file
 # changes, and not paged. pppp has no approved version, so its layer is
 # paged in full.
 grep -qx "qqqq v2 at [0-9a-f]*: rebased since you approved v1 at $(git rev-parse --short "$two"), with the same file changes\." stale-review.out
 awk '/change 2 of 3: /{ on = 1 } /change 3 of 3: /{ on = 0 } on' stale-review.out > stale-page2
-if grep -q '^diff --git' stale-page2; then exit 1; fi
+if grep -q '^| diff --git' stale-page2; then exit 1; fi
 awk '/change 3 of 3: /{ on = 1 } on' stale-review.out > stale-page3
-[ "$(grep '^diff --git' stale-page3)" = 'diff --git a/three.md b/three.md' ]
+[ "$(grep '^| diff --git' stale-page3)" = '| diff --git a/three.md b/three.md' ]
 
 # ----------------------------------------------------------------------
 # A note taken on an edited comparison. v1 of a change is approved, and

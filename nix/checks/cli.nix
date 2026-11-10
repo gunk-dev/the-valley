@@ -115,14 +115,15 @@ in
   # on to review a stack layer by layer, and a stale stack: approving its
   # top refused, its bottom approved, and review's [b]ase before the first
   # page, after which the pages and the request are at the rebased heads,
-  # and the layer approved before the rebase is printed as rebased with the
-  # same file changes instead of paged. Last, a note written beside an
-  # edited line of a version paged as edited since its approval keeps its
-  # file and line, through a structure-preserving renderer and through
-  # less, whose views are styled while the buffer the editor opens is
-  # plain. Ctrl-C with the pager open, and SIGTERM at the prompt, end the
-  # review with status 130, its walk outcome interrupted, and nothing of
-  # its own left in its TMPDIR.
+  # the layer approved before the rebase is printed as rebased with the
+  # same file changes instead of paged, and a note written in the whole
+  # diff viewed before the rebase is printed once, under the top. Last, a
+  # note written beside an edited line of a version paged as edited since
+  # its approval keeps its file and line, through a structure-preserving
+  # renderer and through less, whose views are styled while the buffer the
+  # editor opens is plain. Ctrl-C with the pager open, and SIGTERM at the
+  # prompt, end the review with status 130, its walk outcome interrupted,
+  # and nothing of its own left in its TMPDIR.
   review-notes = pkgs.runCommand "valley-review-notes" {
     nativeBuildInputs = [
       pkgs.git

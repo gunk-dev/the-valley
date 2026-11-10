@@ -407,7 +407,7 @@ valley review [-v] [--build-here] [--repo <name>]
   and its `result` is `"conflict"`, the header says `conflicts with main (owner resolving)` instead,
   and `[a]pprove` is still offered.
 - **A change that moves during review:** Before `[a]pprove` or `[r]eject` acts on a change with a
-  record, `valley review` reads the change again with `valley-go standing`. When the change differs
+  record, `valley review` reads the change again (`status/standing.go`). When the change differs
   from what review showed, it prints one line and acts on nothing, unless the reviewer approves a
   new version it offers:
   - `<change> changed while you were reviewing: it was returned to draft (since <time>), so there is nothing to approve now. It comes back when it is ready again.`
@@ -438,10 +438,10 @@ valley review [-v] [--build-here] [--repo <name>]
   | `it could not be set against v<m>`                                                         | no                       |
 
   With `[a]pprove v<n>` offered after `[v]`, the page ends with `[a]pprove v<n>, [s]kip?`. `[a]`
-  files v<n>'s head through the same `valley-go approve --reviewing` call, with that version and
-  head. When the change moves again before it files, the approval is refused and review's prompt
-  comes back. `valley-go carry` prints the offer as a third field on its first line: `approve`,
-  `view`, or `none`. A review whose answer is `[r]eject` is offered no approval.
+  files v<n>'s head through the same approval attempt as `[a]pprove`, with that version and head.
+  When the change moves again before it files, the approval is refused and review's prompt comes
+  back. `valley-go carry` prints the offer as a third field on its first line: `approve`, `view`, or
+  `none`. A review whose answer is `[r]eject` is offered no approval.
 
 - **Inline review notes:** Pressing `v` inside `less` opens the diff buffer in `$EDITOR`. Any lines
   inserted by the reviewer are anchored to their file and new-side line number, appended to
@@ -449,7 +449,7 @@ valley review [-v] [--build-here] [--repo <name>]
 
 #### The walk
 
-`valley review` with no change runs `valley-go walk` (`status/walk.go`). It reads the rows
+`valley review` with no change walks the queue (`status/walk.go`). It reads the rows
 `valley pending --all` lists under needs you, or `valley pending --repo <name>` with `--repo`, and
 reviews each in landing order. A project that did not read, and a discovery failure that leaves the
 walk with the current project alone, are printed as `✗` lines before the first step and again in the
@@ -963,11 +963,11 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
   - `attest key --key <path> [--name <name>]` — prints the `<name>+<8-hex-hash>+<base64>` verifier
     key line.
 - **`valley-go`** ([`status/main.go`](../status/main.go)): Internal helper binary invoked by
-  `bin/valley` for `status`, `ready`, `unready`, `withdraw`, `changes`, `pending`, `rebase`, `knot`,
-  `plan`, `checks`, `telemetry`, and `self-update`, for `review` with no change
-  (`walk [--repo <name>] [-v] [--build-here]`, see [the walk](#the-walk)), plus internal plumbing
-  verbs (`resolve <change>`, `stack <change>`, `does [-v] <change-id>...`,
-  `brings [--change <id>] <head>`, `versions <change-id>`,
+  `bin/valley` for `status`, `ready`, `unready`, `withdraw`, `changes`, `pending`,
+  `review [-v] [--build-here] [<change> | --repo <name>]` (with no change, [the walk](#the-walk)),
+  `approve`, `rebase`, `knot`, `plan`, `checks`, `telemetry`, and `self-update`, plus internal
+  plumbing verbs (`walk [--repo <name>] [-v] [--build-here]`, `resolve <change>`, `stack <change>`,
+  `does [-v] <change-id>...`, `brings [--change <id>] <head>`, `versions <change-id>`,
   `compare --tip <commit> <change-id> <version> <head>`,
   `coverage --head <sha> [--check <name>=<attribute>]...`, and `checks --json`, which prints the Go
   deriver's `valley-checks/v1` document in place of the report). `work` is the check worker, which
@@ -1372,7 +1372,7 @@ export VALLEY_ATTEST_NAME=operator
 | `VALLEY_ATTEST_SCHEMA`       | `attest`, `integrator`                                          | Path to `schema/attestation.cue`, set by the Nix wrapper.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `VALLEY_EVENT_SCHEMA`        | `integrator`                                                    | Path to `schema/events.cue`, set by the Nix wrapper.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `VALLEY_IDENTITY_SCHEMA`     | `identity`                                                      | Path to `schema/identity.cue`, set by the Nix wrapper.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `VALLEY_COMMAND`             | `review`                                                        | Executable invoked by `valley-go walk` to run `<valley> review <change ID>` for each step (`bin/valley` sets `VALLEY_COMMAND` to its own path; defaults to `"valley"`).                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `VALLEY_COMMAND`             | `review`                                                        | Executable the walk (`valley review` with no change) runs as `<valley> review <change ID>` for each step (`bin/valley` sets `VALLEY_COMMAND` to its own path; defaults to `"valley"`).                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `VALLEY_NOW`                 | `knot`, `plan`, `valley-worker`                                 | Optional UTC timestamp in `RFC 3339` format (`YYYY-MM-DDTHH:MM:SSZ`) overriding the system clock for knot `created` dates, comment stamps, comment edit times, claim timestamps, claim age calculations, and the check worker's waits after a failed batch. Invalid values exit `2`.                                                                                                                                                                                                                                                                                                                           |
 | `VALLEY_TELEMETRY_DIR`       | `valley-worker`, `integrator`                                   | Host-side: the directory a producer exports its telemetry to, set by the NixOS module ([Telemetry](architecture.md#telemetry)). Unset, the producer records nothing.                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `VALLEY_REVIEW_CHECKS_WAIT`  | `review`                                                        | Whole seconds `valley review` waits, at most, for a change's checks line before the prompt (default `0`: it does not wait). The line takes about as long to read as `valley pending --checks` takes for one project, so a prompt that follows a short diff right away shows it only with a wait of a few seconds.                                                                                                                                                                                                                                                                                              |
@@ -1488,19 +1488,19 @@ exit. It carries the project, the CLI's version stamp, `verb`, `subverb` (a `kno
 `telemetry` operation), `flags` (each known flag name once, never values or anything after `--`),
 `status` (exit status), and `elapsed_ms` (wall time from the start of `bin/valley`), and never an
 argument's value, path, title, or body. A verb `valley-go` runs (`pending`, `status`, `changes`,
-`ready`, `unready`, `withdraw`, `knot`, `plan`, `rebase`, `telemetry`, `self-update`, and `review`
-with no change) adds `shell_ms` (script time before `valley-go` started, including `pending`'s fetch
-of origin) and each phase's `<phase>_ms` (wall time, excluding nested phases) and `<phase>_procs`
-(processes started). The phases are `fetch` (`ls-remote` and `fetch`), `records` (reading change and
-outcome records), `transfers` (verifying transfer statements), `knots`, `changes` (the queue's
-change states), `checks` (the queue's check evidence), `policy` (policy at main), `main` (main's
-follow checks and worker runs), `branches` (pending's branches and stacks), `steps` (the reviews a
-walk runs), and `other`. With telemetry off, `valley-go` verbs start no extra process and write no
-file: `valley-go` reads the git configuration files directly and runs `git` only when one mentions
-telemetry or includes another file. With telemetry on, the command runs one `git config` and starts
-the background flusher. Verbs the script runs itself (`review` of one change, `approve`, `checks`,
-`tail`, `replay`) pass their record on exit to `valley-go telemetry command`, which checks
-configuration the same way.
+`ready`, `unready`, `withdraw`, `knot`, `plan`, `rebase`, `approve`, `checks`, `telemetry`,
+`self-update`, and `review` with no change) adds `shell_ms` (script time before `valley-go` started,
+including `pending`'s fetch of origin) and each phase's `<phase>_ms` (wall time, excluding nested
+phases) and `<phase>_procs` (processes started). The phases are `fetch` (`ls-remote` and `fetch`),
+`records` (reading change and outcome records), `transfers` (verifying transfer statements),
+`knots`, `changes` (the queue's change states), `checks` (the queue's check evidence), `policy`
+(policy at main), `main` (main's follow checks and worker runs), `branches` (pending's branches and
+stacks), `steps` (the reviews a walk runs), and `other`. With telemetry off, `valley-go` verbs start
+no extra process and write no file: `valley-go` reads the git configuration files directly and runs
+`git` only when one mentions telemetry or includes another file. With telemetry on, the command runs
+one `git config` and starts the background flusher. `review` of one change records no phases: its
+time is the operator's reading. `tail` and `replay`, which the script runs itself, pass their record
+on exit to `valley-go telemetry command`, which checks configuration the same way.
 
 Every approval attempt also records its steps: `valley approve`, and each `[a]pprove` answer in
 `valley review`, a stack's layers included. An attempt records its start, the policy it derived,

@@ -1,6 +1,6 @@
 // valley-go compare: a version under review, set against the version of
 // its change the operator last approved. review runs it for each change it
-// shows, a stack's layers included, and prints what it says (bin/valley).
+// shows, a stack's layers included, and prints what it says (review.go).
 // It is information only: it files no request and skips no check.
 //
 // The approved version is the greatest version below the one shown whose

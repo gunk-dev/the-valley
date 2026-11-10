@@ -1,9 +1,9 @@
 package main
 
 // approve files a change's integration request: the whole of `valley
-// approve`, which bin/valley hands to it, and review's [a]pprove, which
-// bin/valley runs it for with --reviewing. Both run one attempt
-// (approval.attempt), so the verb and the key cannot drift apart.
+// approve`, which bin/valley hands to it, and review's [a]pprove
+// (review.go). Both run one attempt (approval.attempt), so the verb and
+// the key cannot drift apart.
 //
 // An attempt binds the head it files, derives what the policy at main's
 // tip requires of it (../derive), reuses the evidence origin already
@@ -21,9 +21,9 @@ package main
 // evidence, nothing reads one to decide anything, and a record that cannot
 // be stored costs that record alone.
 //
-// Review's [a]pprove is told the change review bound, as flags, and runs
-// on review's own terminal. It writes how the attempt ended to the file
-// --outcome names, as one line of tab-separated fields:
+// Review's [a]pprove is told the change review bound (reviewApproval), and
+// runs on review's own terminal. It leaves how the attempt ended in its
+// result, as fields:
 //
 //	approved <change ID> <handle> <version> <head>
 //	checks-failed <head>
@@ -31,7 +31,7 @@ package main
 //	unknown
 //	interrupted
 //
-// The approved line names what was filed, after the attempt's own reads
+// The approved result names what was filed, after the attempt's own reads
 // of the record, with empty fields for a plain branch. unknown is a
 // request whose state the attempt could not establish after the push.
 
@@ -51,7 +51,6 @@ import (
 	"syscall"
 	"time"
 
-	"the-valley/change"
 	"the-valley/derive"
 	"the-valley/telemetry"
 )
@@ -77,7 +76,7 @@ type approval struct {
 
 	verbose, buildHere bool
 	reviewing, carried bool
-	outcome            string // the file review reads the outcome from
+	result             []string // how the attempt ended, for review
 
 	// name is the change as it was named, read again before filing in case
 	// a plain branch has come to name a change. For a change, id, handle,
@@ -107,14 +106,6 @@ var errUnknown = errors.New("unknown")
 
 func runApprove(g git, args []string, stdout, stderr io.Writer) int {
 	a := &approval{g: g, stdout: stdout, stderr: stderr}
-	if len(args) > 0 && args[0] == "--reviewing" {
-		if err := a.reviewFlags(args[1:]); err != nil {
-			fmt.Fprintf(stderr, "valley: %s\n", err)
-			return 2
-		}
-		a.watch()
-		return a.run()
-	}
 	want, err := a.verbFlags(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "valley: %s\n", err)
@@ -140,7 +131,7 @@ func runApprove(g git, args []string, stdout, stderr io.Writer) int {
 	if err := fetch.Run(); err != nil {
 		return exitCode(err)
 	}
-	a.watch()
+	a.watch(os.Interrupt, syscall.SIGTERM)
 	if a.id != "" {
 		if a.bindHead(want) != nil {
 			return 1
@@ -188,46 +179,23 @@ func (a *approval) verbFlags(args []string) (want string, err error) {
 	return want, nil
 }
 
-// reviewFlags reads what review bound for [a]pprove: the name as typed
-// and the file the outcome goes to, then for a change its ID, handle,
-// version and the head shown, or for a plain branch the branch and the
-// head shown, when review showed one.
-func (a *approval) reviewFlags(args []string) error {
-	a.reviewing = true
-	values := map[string]*string{"--name": &a.name, "--outcome": &a.outcome, "--change": &a.id,
-		"--handle": &a.handle, "--version": &a.version, "--head": &a.bound, "--branch": &a.branch}
-	for i := 0; i < len(args); i++ {
-		switch arg := args[i]; {
-		case arg == "--build-here":
-			a.buildHere = true
-		case arg == "-v":
-			a.verbose = true
-		case arg == "--carried":
-			a.carried = true
-		case arg == "--shown" && i+1 < len(args):
-			a.bound = args[i+1]
-			i++
-		case values[arg] != nil && i+1 < len(args):
-			*values[arg] = args[i+1]
-			i++
-		default:
-			return fmt.Errorf("approve --reviewing: unexpected %q", arg)
-		}
+// reviewApproval is review's [a]pprove of the change it shows, c, bound
+// to head and, for a change with a record, to version. name is the change
+// as review was given it, read again before filing. A plain branch's
+// attempt is told the branch, and the head review showed when it showed
+// one. carried is set when review's line that the answer carries ended the
+// line its prompt left open.
+func reviewApproval(g git, stdout, stderr io.Writer, c shownChange, head, version string, verbose, buildHere, carried bool) *approval {
+	a := &approval{g: g, stdout: stdout, stderr: stderr, reviewing: true, carried: carried,
+		verbose: verbose, buildHere: buildHere, name: c.name, bound: head}
+	if c.id == "" {
+		a.branch = c.branch
+		return a
 	}
-	switch {
-	case a.name == "" || a.outcome == "":
-		return errors.New("approve --reviewing needs --name and --outcome")
-	case a.id != "" && (!change.ValidID(a.id) || a.handle == "" || a.version == "" || !isObjectID(a.bound)):
-		return errors.New("approve --reviewing --change needs --handle, --version and --head")
-	case a.id == "" && a.branch == "":
-		return errors.New("approve --reviewing needs --change or --branch")
-	}
-	if a.id != "" {
-		// Review shows a change at its active version's head, and binds
-		// [a]pprove to it.
-		a.head, a.boundVersion = a.bound, a.version
-	}
-	return nil
+	// Review shows a change at its active version's head, and binds
+	// [a]pprove to it.
+	a.id, a.handle, a.version, a.head, a.boundVersion = c.id, c.handle, version, head, version
+	return a
 }
 
 // run is one attempt, its telemetry run, and its outcome: 0 when it
@@ -266,31 +234,34 @@ func (a *approval) run() int {
 	return 1
 }
 
-// writeOutcome writes review's outcome line, when review asked for one.
+// writeOutcome keeps how the attempt ended, for review.
 func (a *approval) writeOutcome(fields ...string) {
-	if a.outcome == "" {
-		return
-	}
-	if err := os.WriteFile(a.outcome, []byte(strings.Join(fields, "\t")+"\n"), 0o600); err != nil {
-		fmt.Fprintf(a.stderr, "valley: could not write the approval's outcome: %v\n", err)
-	}
+	a.mu.Lock()
+	a.result = fields
+	a.mu.Unlock()
 }
 
-// watch takes over SIGINT and SIGTERM for the rest of the process: a
-// signal interrupts the attempt.
-func (a *approval) watch() {
+// watch takes over the signals given until unwatch: one interrupts the
+// attempt. The approve verb is interrupted by SIGINT and SIGTERM. Review's
+// [a]pprove is interrupted by SIGINT alone, which a terminal's Ctrl-C sends
+// to the checks as well, and review acts on a SIGTERM once the attempt has
+// ended (review.go).
+func (a *approval) watch(signals ...os.Signal) {
 	a.signals = make(chan os.Signal, 2)
-	signal.Notify(a.signals, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(a.signals, signals...)
 	go func() {
 		<-a.signals
 		a.interrupt()
 	}()
 }
 
+// unwatch gives the signals back once the attempt has ended.
+func (a *approval) unwatch() { signal.Stop(a.signals) }
+
 // interrupt ends an attempt a signal cut short: it stops the checks
 // running, if any, waits for them to end, removes their worktree, records
-// the attempt's end as interrupted, writes that outcome for review, and
-// exits 130. A second signal while the checks are ending kills them. A
+// the attempt's end as interrupted, keeps that result, and exits 130
+// through exitWith, which review sets to end its review first. A second signal while the checks are ending kills them. A
 // signal that reaches the checks first ends them, and checking's caller
 // interrupts the attempt itself; whichever comes first ends it.
 func (a *approval) interrupt() {

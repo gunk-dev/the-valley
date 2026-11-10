@@ -1,7 +1,7 @@
 package main
 
-// valley review with no change: a walk through what needs the operator.
-// bin/valley runs valley-go walk for it.
+// valley review with no change: a walk through what needs the operator
+// (review.go).
 //
 // The walk reads the queue once, as valley pending reads it
 // (operatorQueue, queue.go), across every project the serving host

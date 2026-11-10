@@ -55,31 +55,51 @@ func runStack(g git, args []string, w io.Writer) error {
 	if !g.succeeds(true, "rev-parse", "--git-dir") {
 		return failure("not a git repository")
 	}
-	r, err := resolveRecorded(g, args[0])
-	if err != nil {
-		return err
-	}
-	s, err := readSnapshot(g, newVerifier())
-	if err != nil {
-		return err
-	}
-	if s.tip == "" {
-		return failure("origin has no " + recordTarget + " to read a stack against")
-	}
-	f, err := rebase.Capture(s.land, rebase.Selection{ID: r.id, Branch: r.branch})
+	layers, err := stackLayers(g, args[0])
 	if err != nil {
 		return err
 	}
 	var b strings.Builder
+	for _, l := range layers {
+		fmt.Fprintf(&b, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", l.kind, l.name, l.base, l.head, l.state, l.approved, l.title)
+	}
+	_, err = io.WriteString(w, b.String())
+	return err
+}
+
+// stackLayer is one line runStack prints.
+type stackLayer struct {
+	kind, name, base, head, state, approved, title string
+}
+
+// stackLayers is the layers runStack prints of the change named, bottom
+// first, the change itself last.
+func stackLayers(g git, name string) ([]stackLayer, error) {
+	r, err := resolveRecorded(g, name)
+	if err != nil {
+		return nil, err
+	}
+	s, err := readSnapshot(g, newVerifier())
+	if err != nil {
+		return nil, err
+	}
+	if s.tip == "" {
+		return nil, failure("origin has no " + recordTarget + " to read a stack against")
+	}
+	f, err := rebase.Capture(s.land, rebase.Selection{ID: r.id, Branch: r.branch})
+	if err != nil {
+		return nil, err
+	}
+	var layers []stackLayer
 	for _, l := range f.Layers {
 		if !utf8.ValidString(l.Name) {
-			return failure(fmt.Sprintf("the stack under %s holds the branch %s, whose name is not UTF-8", args[0], shellQuote(l.Name)))
+			return nil, failure(fmt.Sprintf("the stack under %s holds the branch %s, whose name is not UTF-8", name, shellQuote(l.Name)))
 		}
 		var base string
 		if l.Below != nil {
 			base = l.Below.Head
 		} else if base, err = s.g.output(true, "merge-base", s.tip, l.Head); err != nil {
-			return failure(fmt.Sprintf("%s and %s share no history", l.Name, recordTarget))
+			return nil, failure(fmt.Sprintf("%s and %s share no history", l.Name, recordTarget))
 		}
 		kind, state, approved, title := "branch", "-", "-", ""
 		if l.ID != "" {
@@ -94,8 +114,7 @@ func runStack(g git, args []string, w io.Writer) error {
 			}
 			title = s.branchTitle(l.Head, not)
 		}
-		fmt.Fprintf(&b, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", kind, l.Name, base, l.Head, state, approved, title)
+		layers = append(layers, stackLayer{kind: kind, name: l.Name, base: base, head: l.Head, state: state, approved: approved, title: title})
 	}
-	_, err = io.WriteString(w, b.String())
-	return err
+	return layers, nil
 }

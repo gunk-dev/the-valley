@@ -1,4 +1,4 @@
-// Where a change stands now, for bin/valley's review. Review shows a
+// Where a change stands now, for review (review.go). Review shows a
 // change as its record read when the review began, and the operator may
 // read it for a long time. Meanwhile its owner may return it to draft,
 // ready a new version, or withdraw it, another change may land and the
@@ -40,24 +40,40 @@ func runStanding(g git, args []string, w io.Writer) error {
 	if !g.succeeds(true, "rev-parse", "--git-dir") {
 		return failure("not a git repository")
 	}
-	o, n, found, err := lookupRecorded(g, args[0])
+	s, err := standingOf(g, args[0])
 	if err != nil {
 		return err
 	}
+	_, err = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", s.state, s.version, s.head, s.since, s.landed, s.conflict)
+	return err
+}
+
+// standing is the line runStanding prints, one field each.
+type standing struct {
+	state, version, head, since, landed, conflict string
+}
+
+// standingOf reads where the change id stands now, as runStanding prints
+// it.
+func standingOf(g git, id string) (standing, error) {
+	o, n, found, err := lookupRecorded(g, id)
+	if err != nil {
+		return standing{}, err
+	}
 	if !found {
-		return failure("origin holds no record of change " + args[0])
+		return standing{}, failure("origin holds no record of change " + id)
 	}
 	s, err := readRecorded(g, o, n, io.Discard)
 	if err != nil {
-		return err
+		return standing{}, err
 	}
 	out, err := g.output(true, "show", "-s", "--format=%ct", n.commit)
 	if err != nil {
-		return failure("could not read the record commit of change " + args[0])
+		return standing{}, failure("could not read the record commit of change " + id)
 	}
 	sec, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
 	if err != nil {
-		return failure("the record commit of change " + args[0] + " has no committer date")
+		return standing{}, failure("the record commit of change " + id + " has no committer date")
 	}
 	landed, conflict := "", ""
 	if s.recorded.landedAs != 0 {
@@ -67,9 +83,8 @@ func runStanding(g git, args []string, w io.Writer) error {
 		conflict = "conflict"
 	}
 	v := n.record.ActiveVersion()
-	_, err = fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\t%s\n", n.record.State, v.N, headOf(v),
-		clockTime(time.Unix(sec, 0), time.Now()), landed, conflict)
-	return err
+	return standing{state: n.record.State, version: strconv.Itoa(v.N), head: headOf(v),
+		since: clockTime(time.Unix(sec, 0), time.Now()), landed: landed, conflict: conflict}, nil
 }
 
 // clockTime is t in UTC as hours and minutes, with the date before them

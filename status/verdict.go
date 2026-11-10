@@ -1,7 +1,7 @@
 package main
 
-// verdict prints what approve and review's prompt say (bin/valley), from
-// the facts bin/valley already holds. An approval ends in one verdict
+// verdict prints what approve and review's prompt say (approve.go,
+// review.go), from the facts they already hold. An approval ends in one verdict
 // line, the change and what happened to it, with one indented line under
 // it only when the person must act:
 //

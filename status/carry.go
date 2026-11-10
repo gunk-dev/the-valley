@@ -1,6 +1,6 @@
 // valley-go carry: whether review's answer about the version of a change
 // it showed carries to a later version the change gained while the
-// review was open (bin/valley's moved). It is information only: it files
+// review was open (review.go's moved). It is information only: it files
 // no request, and the integrator judges what approve files as it judges
 // any request.
 //

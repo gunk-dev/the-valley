@@ -160,15 +160,15 @@ type resolution struct {
 }
 
 // resolveRecorded reads a change's name for the verbs that act on a
-// change: review, approve and rebase, through runResolve. It is
-// lookupRecorded's reading. A change whose active version names no branch
-// resolves with an empty branch: approve files the head alone, and
-// bin/valley refuses it for review and rebase, which act on a branch.
+// change: review, approve and rebase. It is lookupRecorded's reading. A
+// change whose active version names no branch resolves with an empty
+// branch: approve files the head alone, and review and rebase, which act
+// on a branch, refuse it.
 //
 // A name no record is on is a branch, and is refused unless it is a valid
 // branch name in UTF-8. The name comes from the command line, and
-// runResolve prints it in a line of fields that bin/valley splits, so a
-// name holding a separator could read as some other branch.
+// runResolve prints it in a line of fields a caller splits, so a name
+// holding a separator could read as some other branch.
 func resolveRecorded(g git, name string) (resolution, error) {
 	o, n, found, err := lookupRecorded(g, name)
 	switch {
@@ -247,9 +247,8 @@ func unlandedOn(g git, o origin, branch string) ([]recorded, error) {
 	return fromEngine(found), err
 }
 
-// runResolve prints what a change's name stands for, for the verbs
-// bin/valley runs itself, as resolveRecorded reads it: one line of fields
-// separated by tabs. For a change it is
+// runResolve prints what a change's name stands for, as resolveRecorded
+// reads it: one line of fields separated by tabs. For a change it is
 //
 //	change <ID> <handle> <version> <head> <branch> <state> <owner>
 //

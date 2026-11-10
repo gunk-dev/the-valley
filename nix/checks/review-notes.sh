@@ -139,6 +139,53 @@ verdict="$(grep -n 'skipped scratch' plain.log | cut -d: -f1)"
 notes="$(grep -n '6 note(s) on scratch' plain.log | cut -d: -f1)"
 [ "$verdict" -lt "$notes" ]
 
+# Ctrl-C with the pager open, and SIGTERM at the prompt, each end the
+# review with status 130, its walk outcome interrupted, and nothing of
+# its own left in its TMPDIR. less takes the Ctrl-C itself, and the
+# review ends once less quits, before any prompt.
+# signalled <case> <driver>: review scratch on a terminal, with a TMPDIR
+# and a walk outcome of its own, its keys and signals sent by the driver,
+# which is given the session log and the review's pid file.
+signalled() {
+  local case="$1" status=0 tmp="$TMPDIR/$1-tmp" pid="$TMPDIR/$1.pid" outcome="$TMPDIR/$1.outcome"
+  mkdir "$tmp"
+  # shellcheck disable=SC2094 # the driver waits on the review's own output
+  "$2" "$case.log" "$pid" \
+    | TMPDIR="$tmp" VALLEY_WALK_OUTCOME="$outcome" \
+      script -qec "sh -c 'echo \$\$ > $pid; exec valley review scratch'" /dev/null \
+      > "$case.log" 2>&1 || status=$?
+  [ "$status" = 130 ]
+  [ "$(cat "$outcome")" = interrupted ]
+  [ -z "$(ls -A "$tmp")" ]
+}
+# ended <pid file> [<key>]: wait for the review to end, for a minute at
+# most, sending the key meanwhile, so a pager still open takes it.
+ended() {
+  local i=0
+  while kill -0 "$(cat "$1")" 2> /dev/null; do
+    if [ "$i" -ge 600 ]; then
+      kill -KILL "$(cat "$1")"
+      return 1
+    fi
+    if [ -n "${2:-}" ] && [ $((i % 5)) = 0 ]; then printf '%s' "$2"; fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+}
+pager_ctrl_c() {
+  wait_for "$1" '| @@ ' || true
+  printf '\003'
+  ended "$2" q
+}
+prompt_term() {
+  wait_for "$1" '| @@ ' && printf q && wait_for "$1" '\]kip: ' || true
+  kill -TERM "$(cat "$2")"
+  ended "$2"
+}
+signalled pager-int pager_ctrl_c
+if grep -q 'kip: ' pager-int.log; then exit 1; fi
+signalled prompt-term prompt_term
+
 # Piped, review is what it always was: the diff on stdout,
 # the verdict from stdin, and no notes to take.
 printf 's\n' | valley review scratch > piped.log

@@ -2984,12 +2984,19 @@ grep -rh '"type":"approve.end"' "$w/held-state" | grep -qF '"result":"interrupte
   exit 1
 }
 printf 'a\n' > "$w/answers"
-ctrl_c held-review "$w/answers" env VALLEY_WALK_OUTCOME="$w/held.outcome" valley review topic/held
+mkdir "$w/held-tmp"
+ctrl_c held-review "$w/answers" env TMPDIR="$w/held-tmp" VALLEY_WALK_OUTCOME="$w/held.outcome" valley review topic/held
 [ "$stopped" = 130 ] && [ "$(cat "$w/held.outcome")" = interrupted ] || {
   echo "valley-request: review exited $stopped, with the outcome $(cat "$w/held.outcome"), after a ctrl-C during its checks" >&2
   exit 1
 }
 left_behind review
+# Nor is anything of review's own: its pages, and the approval's
+# scratch. attest run's scratch tree is attest's (attest/run.go).
+if ls -A "$w/held-tmp" | grep -v '^valley-attest-tree'; then
+  echo "valley-request: review left the above in its TMPDIR after a ctrl-C during its checks" >&2
+  exit 1
+fi
 
 # ----------------------------------------------------------------------
 # The verbs the loop offers are the whole of what an operator can do to a

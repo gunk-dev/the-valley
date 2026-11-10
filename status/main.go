@@ -2,21 +2,22 @@
 // that read a change's state from origin, and the verbs that write its
 // change record there. bin/valley runs it for status, ready, unready and
 // withdraw, for changes and pending, which list every change across the
-// repositories a host serves, and for resolve, which turns the name of a
-// change into its branch for the verbs bin/valley runs itself, for
-// stack, which lists the layers under a change for review (stack.go), for
-// walk, which steps review through what needs the operator when it is
-// given no change (walk.go), for
+// repositories a host serves, for review, which pages a change or a stack
+// for the operator's answer, and with no change walks what needs the
+// operator (review.go, walk.go), for approve, for
 // rebase, which rebases a change's whole stack onto main, and brings, which
 // lists the changes a head would bring that have not landed, for approve
-// (rebase.go), for does, which lists the knots each change does, for review
-// (does.go), for checkline, which says what review shows of a change's
-// checks and their build times (versionchecks.go), for knot, the plan graph's API (knot.go), which reads and
+// (rebase.go), for knot, the plan graph's API (knot.go), which reads and
 // writes a project's knots at refs/the-valley/knots, for plan, which
-// shows that graph as a view (plan.go), for compare, which sets a
-// version review shows against the change's approved version
-// (compare.go), and for self-update, which installs the tip of a branch of
-// the-valley into the user's nix profile (selfupdate.go). checks prints
+// shows that graph as a view (plan.go), and for self-update, which
+// installs the tip of a branch of the-valley into the user's nix profile
+// (selfupdate.go). resolve turns the name of a change into its record or
+// branch (changes.go), stack lists the layers under a change (stack.go),
+// does lists the knots each change does (does.go), checkline says what
+// review shows of a change's checks and their build times
+// (versionchecks.go), and compare sets a version review shows against the
+// change's approved version (compare.go); review calls each, and runs
+// checkline as a background process while the operator reads. checks prints
 // which checks a change requires, as the Go deriver derives them
 // (checks.go); no verb of bin/valley runs it. coverage says which of a
 // head's required nix checks already have evidence on origin that approve
@@ -61,6 +62,7 @@ const usage = `usage: valley-go status [--json] [-v] <change>
        valley-go ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp] [<branch>]
        valley-go unready <change>
        valley-go withdraw <change>
+       valley-go review [-v] [--build-here] [<change> | --repo <name>]
        valley-go resolve <change>
        valley-go stack <change>
        valley-go does [-v] <change ID>...
@@ -92,13 +94,18 @@ func main() {
 	// once it has run (command.go).
 	inv := execed(os.Args[1:])
 	exitWith = func(status int) {
-		inv.record(status, true)
+		inv.record(status, commandTimed)
 		os.Exit(status)
 	}
 	status := run(os.Args[1:], os.Stdout, os.Stderr)
-	inv.record(status, true)
+	inv.record(status, commandTimed)
 	os.Exit(status)
 }
+
+// commandTimed is whether the command record holds each phase's time.
+// A review of one change clears it: its time is the operator's reading,
+// which no phase of the program accounts for.
+var commandTimed = true
 
 // failure is a verb that ends without doing what it was asked: a message
 // for stderr and nothing on stdout. Exit status 1, as bin/valley's die
@@ -162,6 +169,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runChanges(g, args, stdout, stderr)
 	case "pending":
 		err = runPending(g, args, stdout, stderr)
+	case "review":
+		return runReview(g, args, stdout, stderr)
 	case "walk":
 		return runWalk(g, args, stdout, stderr)
 	case "telemetry":

@@ -23,7 +23,8 @@
 // An interrupt or a SIGTERM while the stack is rebased cancels the
 // rebase: the engine kills git and anything git started, such as a hook,
 // and removes its worktree and its refs. Nothing is pushed, and the verb
-// exits 130.
+// exits 130. Review's [b]ase is cancelled by an interrupt alone, and
+// review acts on a SIGTERM once the rebase has ended (review.go).
 
 package main
 
@@ -77,6 +78,7 @@ type rebaseRun struct {
 	f              *rebase.Family
 	given          string // the name the change was given by
 	stdout, stderr io.Writer
+	signals        []os.Signal // what cancels the rebase
 }
 
 // top is the change the stack is under, the last of its layers.
@@ -127,7 +129,12 @@ func parseRebaseArgs(args []string) (name, want string, err error) {
 // the caller showed as the change's: the rebase refuses when the change
 // is at another head by now.
 func runRebase(g git, args []string, stdout, stderr io.Writer) int {
-	err := rebaseStack(g, args, stdout, stderr)
+	return rebaseCancelledBy(g, args, stdout, stderr, os.Interrupt, syscall.SIGTERM)
+}
+
+// rebaseCancelledBy is runRebase, cancelled by the signals given.
+func rebaseCancelledBy(g git, args []string, stdout, stderr io.Writer, signals ...os.Signal) int {
+	err := rebaseStack(g, args, stdout, stderr, signals)
 	switch {
 	case err == nil:
 		return 0
@@ -139,7 +146,7 @@ func runRebase(g git, args []string, stdout, stderr io.Writer) int {
 	return 1
 }
 
-func rebaseStack(g git, args []string, stdout, stderr io.Writer) error {
+func rebaseStack(g git, args []string, stdout, stderr io.Writer, signals []os.Signal) error {
 	name, want, err := parseRebaseArgs(args)
 	if err != nil {
 		return err
@@ -166,7 +173,7 @@ func rebaseStack(g git, args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	r := &rebaseRun{g: g, s: s, f: f, given: name, stdout: stdout, stderr: stderr}
+	r := &rebaseRun{g: g, s: s, f: f, given: name, stdout: stdout, stderr: stderr, signals: signals}
 	if err := f.Check(); err != nil {
 		return r.refused(err)
 	}
@@ -223,7 +230,7 @@ func (r *rebaseRun) prepare(eg rebase.Git) (*rebase.Prepared, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	interrupted := make(chan os.Signal, 1)
-	signal.Notify(interrupted, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(interrupted, r.signals...)
 	defer signal.Stop(interrupted)
 	var signalled atomic.Bool
 	done := make(chan struct{})

@@ -2195,12 +2195,12 @@ Nothing in the-valley calls `sigverify` yet.
 ## The valley command
 
 `bin/valley` is a shell script, also packaged with its schema (`nix/packages.nix`). Its `status`,
-`ready`, `unready`, `withdraw`, `rebase`, `changes`, `pending`, `knot`, `plan` and `self-update`
-verbs, and `review` with no change, are a Go program, `valley-go` (`status/`), which the package
-puts on the script's `PATH`. `valley-go` rebases with the rebase engine, a Go module of its own
-(`rebase/`), which also reads how far each version has landed for its listings. The package stamps
-its version on the script, and `valley self-update` keeps a user's `valley` at the tip of a branch
-(see [Version and self-update](#version-and-self-update)).
+`ready`, `unready`, `withdraw`, `review`, `approve`, `rebase`, `changes`, `pending`, `knot`, `plan`
+and `self-update` verbs are a Go program, `valley-go` (`status/`), which the package puts on the
+script's `PATH`. `valley-go` rebases with the rebase engine, a Go module of its own (`rebase/`),
+which also reads how far each version has landed for its listings. The package stamps its version on
+the script, and `valley self-update` keeps a user's `valley` at the tip of a branch (see
+[Version and self-update](#version-and-self-update)).
 
 | Command                      | What it does                                                                                          |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -2342,11 +2342,11 @@ when the run finishes. `[a]pprove` would be refused. `[r]eject` is not offered, 
 nothing on the change. It only deletes the branch, which the owner may still be working on.
 
 The change can move while the review is open: it can return to draft, gain a new version, be
-withdrawn, or land. So before `[a]pprove` or `[r]eject` acts, `review` reads the change again with
-`valley-go standing`. When the change differs from what review showed, `review` says what changed in
-one line, acts on nothing, and moves on without asking again. A new version the answer carries to is
-the exception. `valley-go carry` (`status/carry.go`) sets it against the version shown by the
-comparison `valley-go compare` makes, at `main`'s tip on origin. The answer carries when the file
+withdrawn, or land. So before `[a]pprove` or `[r]eject` acts, `review` reads the change again
+(`status/standing.go`). When the change differs from what review showed, `review` says what changed
+in one line, acts on nothing, and moves on without asking again. A new version the answer carries to
+is the exception. Carry (`status/carry.go`) sets it against the version shown by the comparison
+review makes (`status/compare.go`), at `main`'s tip on origin. The answer carries when the file
 delta, the commit messages and the authors are the same, and the change's carry mode, derived under
 the policy at that tip, allows the landings between the two bases. Then the answer stands, and
 `[a]pprove` files the head shown, so a restack during review needs no second review. An approval
@@ -2590,10 +2590,9 @@ branch is. `rebase` and `review`'s `[r]eject` act on the branch itself, so they 
 branch's tip on origin is another commit than the active version's head, and the refusal names both
 commits. `[r]eject` deletes the branch under a lease on the recorded head. `approve`, `rebase`, and
 `review`'s `[a]pprove` refuse a change whose record is not `ready`, and the refusal names its state.
-`review` does not offer `[a]pprove` for a change that is not ready when it shows it.
-`valley-go resolve` gives `review` the change's ID, handle, active version, recorded head, branch,
-state and owner on one line, and `valley-go standing` says where a change stands now. `approve` and
-`rebase` read the record themselves (`status/approve.go`, `status/rebase.go`).
+`review` does not offer `[a]pprove` for a change that is not ready when it shows it. `review`,
+`approve` and `rebase` read the record themselves (`status/review.go`, `status/approve.go`,
+`status/rebase.go`), and `review` reads where a change stands now (`status/standing.go`).
 
 The record can change while one of these verbs runs. Another principal may unready or withdraw the
 change, or ready a new version, while a review is open or the checks run. So `approve` reads the
@@ -2667,9 +2666,9 @@ step's outcome, then reads the queue again and names what still needs the operat
 ### Review against the approved version
 
 `review` sets each version it shows against the change's approved version, so that approving a
-rebased change again is a short, informed step. `valley-go compare` (`status/compare.go`) makes the
-comparison, and `bin/valley` prints what it says. It is information only: it files no request and
-skips no check, and `[a]pprove` is the same act whatever it says. A plain branch is never compared.
+rebased change again is a short, informed step. The comparison is `status/compare.go`'s, and
+`review` prints what it says. It is information only: it files no request and skips no check, and
+`[a]pprove` is the same act whatever it says. A plain branch is never compared.
 
 The approved version is the greatest version below the one shown whose exact head one of these
 names:

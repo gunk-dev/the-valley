@@ -1,6 +1,6 @@
 // valley-go style: review's page, styled for a terminal. review pages a
 // plain buffer, which the editor opens and notes are read from, and shows
-// a rendering of it (bin/valley's page_file): the diff pager's, then
+// a rendering of it (reviewpage.go's page): the diff pager's, then
 // style's. style comes last so that the pager never reads its escapes,
 // and it changes no line's place, so the editor opens the buffer on the
 // line the view shows.

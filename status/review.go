@@ -1,0 +1,844 @@
+package main
+
+// valley review: a change, or a stack layer by layer, paged for the
+// operator to approve, reject or skip. With no change it walks what needs
+// the operator (walk.go), and each step of the walk runs this verb again,
+// for one change, through the valley command. bin/valley hands the verb
+// to this program.
+//
+// A change is resolved before origin is fetched, as approve resolves it,
+// and shown at the head its record names, or a plain branch at its tip on
+// origin. A stack is read first (stack.go), and reviewed one layer at a
+// time (reviewstack.go). Each page is set against the change's approved
+// version (compare.go), paged through the configured diff pager into
+// less, and read back for notes (reviewpage.go). The prompt is verdict.go's.
+// [a]pprove is approve's attempt (approve.go), [b]ase onto main is the
+// rebase verb's (rebase.go), and before either acts, and before
+// [r]eject, the change is read again (standing.go, carry.go).
+//
+// A review that is a walk's step is told what the walker's queue held of
+// the change, in VALLEY_WALK_QUEUED, and writes how it ended to the file
+// VALLEY_WALK_OUTCOME names, as walk.go's header gives.
+//
+// SIGINT and SIGTERM end the review with status 130, its outcome
+// interrupted. One that arrives while a program it runs in the foreground
+// has the terminal, such as less or the editor less starts, ends it once
+// that program has ended: less takes Ctrl-C itself. During [a]pprove's
+// attempt, SIGINT is the attempt's to act on: it stops the checks, and the
+// attempt ends the review through exitWith. SIGHUP ends the review at
+// once, with status 129. However it ends, the review leaves nothing of its
+// own behind: its pages, the background read of the checks, and the
+// published known-signers file the reads wrote out.
+
+import (
+	"bytes"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"os/signal"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+)
+
+const reviewUsage = "usage: valley review [-v] [--build-here] [<change> | --repo <name>]"
+
+// shownChange is the change review acts on: the one it was given, or a
+// layer of its stack (useLayer). For a change with a record, id, handle,
+// version, head, state and owner are its record's, with head the active
+// version's. A plain branch has a name and a branch alone.
+type shownChange struct {
+	name, id, handle, version, head, branch, state, owner string
+}
+
+// review is one review of a change and the stack under it.
+type review struct {
+	g                  git
+	stdout, stderr     io.Writer
+	verbose, buildHere bool
+
+	c                           shownChange
+	approveHead, approveVersion string // what [a]pprove files (bind)
+	carried                     bool   // the answer carried to the version the change moved to
+	checksFailedAt              string // the head [a]pprove's checks failed at
+	checksClause                string // the checks line for the prompt's header
+	topName                     string // the name review was given
+	layers                      []reviewLayer
+	notes                       []string // taken in the pages since the last layer began
+	does                        doers
+	checks                      *checksRead
+
+	walkQueued, walkFile     string
+	walkWritten, walkRefused bool
+
+	exitProcess func(int) // main's exitWith
+	mu          sync.Mutex
+	scratch     string // the directory holding the page being shown
+	armed       bool   // whether an exit says how the review ended
+	exiting     bool
+	foreground  int  // programs the review waits on with signals held
+	pending     bool // a signal held until they end
+}
+
+func runReview(g git, args []string, stdout, stderr io.Writer) int {
+	var name, repo string
+	var verbose, buildHere, repoGiven bool
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "-v":
+			verbose = true
+		case a == "--build-here":
+			buildHere = true
+		case a == "--repo":
+			if i+1 >= len(args) {
+				fmt.Fprintf(stderr, "valley: %s\n", reviewUsage)
+				return 1
+			}
+			repo, repoGiven = args[i+1], true
+			i++
+		case strings.HasPrefix(a, "-") || name != "":
+			fmt.Fprintf(stderr, "valley: %s\n", reviewUsage)
+			return 1
+		default:
+			name = a
+		}
+	}
+	if name == "" {
+		var walk []string
+		if verbose {
+			walk = append(walk, "-v")
+		}
+		if buildHere {
+			walk = append(walk, "--build-here")
+		}
+		if repoGiven {
+			walk = append(walk, "--repo", repo)
+		}
+		if err := fetchOrigin(g, stdout, stderr); err != nil {
+			return exitCode(err)
+		}
+		return runWalk(g, walk, stdout, stderr)
+	}
+	if repoGiven {
+		fmt.Fprintf(stderr, "valley: %s\n", reviewUsage)
+		return 1
+	}
+	os.Unsetenv("VALLEY_COMMAND")
+	commandTimed = false
+	r := &review{g: g, stdout: stdout, stderr: stderr, verbose: verbose, buildHere: buildHere,
+		walkQueued: os.Getenv("VALLEY_WALK_QUEUED"), walkFile: os.Getenv("VALLEY_WALK_OUTCOME"),
+		exitProcess: exitWith}
+	os.Unsetenv("VALLEY_WALK_QUEUED")
+	os.Unsetenv("VALLEY_WALK_OUTCOME")
+	exitWith = r.exit
+	r.listen()
+	return r.finish(r.run(name))
+}
+
+// run is the review of the change named, and its exit status.
+func (r *review) run(name string) int {
+	if err := r.resolve(name); err != nil {
+		fmt.Fprintf(r.stderr, "valley: %s\n", err)
+		return 1
+	}
+	if err := fetchOrigin(r.g, r.stdout, r.stderr); err != nil {
+		return exitCode(err)
+	}
+	if !r.queued() {
+		return 0
+	}
+	// Notes are kept under the branch, and [r]eject deletes it. approve
+	// files the head alone, so it approves such a change.
+	if r.c.id != "" && r.c.branch == "" {
+		fmt.Fprintf(r.stderr, "valley: change %s v%s records no branch, and review acts on a change's branch. Approve its head alone: valley approve --head %s %s\n",
+			r.c.handle, r.c.version, r.c.head, r.c.handle)
+		return 1
+	}
+	branch := r.c.branch
+	r.topName = name
+	if r.ref("refs/remotes/origin/"+branch) == "" {
+		fmt.Fprintf(r.stderr, "valley: no such branch on origin: %s\n", branch)
+		return 1
+	}
+	r.bind()
+	r.mu.Lock()
+	r.armed = true
+	r.mu.Unlock()
+	// The verdict disposes of the change; the notes are what the human made
+	// of it, so they are printed whatever the verdict was. A stack that
+	// cannot be read is reviewed whole against main, as a change with
+	// nothing under it is.
+	if !r.readStack() {
+		fmt.Fprintf(r.stderr, "valley: warning: the stack under %s could not be read; reviewing it whole, against main\n", name)
+		r.layers = nil
+	}
+	r.readDoes()
+	if len(r.layers) > 1 {
+		r.reviewStack()
+		r.printStackNotes()
+	} else {
+		r.showReview(branch)
+		r.decide(branch, "", 0)
+		r.printNotes(branch, r.notes)
+	}
+	return 0
+}
+
+// fetchOrigin brings this checkout's remote-tracking refs up to date.
+func fetchOrigin(g git, stdout, stderr io.Writer) error {
+	fetch := exec.Command("git", "fetch", "--prune", "--quiet", "origin")
+	fetch.Env, fetch.Stdout, fetch.Stderr = g.env, stdout, stderr
+	processStarted()
+	return fetch.Run()
+}
+
+// listen takes SIGINT, SIGTERM and SIGHUP for the rest of the review.
+func (r *review) listen() {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	go func() {
+		for s := range c {
+			if s == syscall.SIGHUP {
+				r.exit(128 + int(syscall.SIGHUP))
+			}
+			r.mu.Lock()
+			held := r.foreground > 0
+			r.pending = r.pending || held
+			r.mu.Unlock()
+			if !held {
+				r.exit(interruptedStatus)
+			}
+		}
+	}()
+}
+
+// inForeground runs f, which runs a program that has the terminal or
+// handles signals itself, holding any signal until it returns.
+func (r *review) inForeground(f func()) {
+	r.mu.Lock()
+	r.foreground++
+	r.mu.Unlock()
+	f()
+	r.mu.Lock()
+	r.foreground--
+	act := r.foreground == 0 && r.pending
+	r.mu.Unlock()
+	if act {
+		r.exit(interruptedStatus)
+	}
+}
+
+// cleanup says how the review ended, when nothing has yet, and removes
+// what it leaves outside the repository. Only the first call acts: it
+// reports false to any other, whose caller leaves the process to the
+// first.
+func (r *review) cleanup(status int) bool {
+	r.mu.Lock()
+	if r.exiting {
+		r.mu.Unlock()
+		return false
+	}
+	r.exiting = true
+	unsaid := r.armed && !r.walkWritten
+	scratch, checks := r.scratch, r.checks
+	r.scratch, r.checks = "", nil
+	r.mu.Unlock()
+	if unsaid {
+		if status == interruptedStatus {
+			r.writeOutcome("interrupted")
+		} else {
+			r.writeOutcome("error")
+		}
+	}
+	if scratch != "" {
+		os.RemoveAll(scratch)
+	}
+	checks.stop()
+	verification.done()
+	return true
+}
+
+// finish ends a review that ran to its end, with status.
+func (r *review) finish(status int) int {
+	if !r.cleanup(status) {
+		select {} // the exit under way ends the process
+	}
+	return status
+}
+
+// exit ends the review and the process from anywhere, with status.
+func (r *review) exit(status int) {
+	if !r.cleanup(status) {
+		select {}
+	}
+	r.exitProcess(status)
+}
+
+// die ends the review: nothing is left to offer.
+func (r *review) die(msg string) {
+	fmt.Fprintf(r.stderr, "valley: %s\n", msg)
+	r.exit(1)
+}
+
+// refuse reports what was not done, without leaving the review: the
+// change is still under review and the operator can still answer. It
+// returns false.
+func (r *review) refuse(msg string) bool {
+	fmt.Fprintf(r.stderr, "valley: %s\n", msg)
+	return false
+}
+
+// newScratch makes the directory the next page is written to.
+func (r *review) newScratch() string {
+	dir, err := os.MkdirTemp("", "valley-review-")
+	if err != nil {
+		r.die(fmt.Sprintf("no scratch directory for the review: %v", err))
+	}
+	r.mu.Lock()
+	if r.exiting {
+		r.mu.Unlock()
+		os.RemoveAll(dir)
+		select {}
+	}
+	r.scratch = dir
+	r.mu.Unlock()
+	return dir
+}
+
+// dropScratch removes the page's directory.
+func (r *review) dropScratch() {
+	r.mu.Lock()
+	dir := r.scratch
+	r.scratch = ""
+	r.mu.Unlock()
+	if dir != "" {
+		os.RemoveAll(dir)
+	}
+}
+
+// writeOutcome writes how a walk's step ended, as one line of
+// tab-separated fields for the walker. The last one written stands.
+func (r *review) writeOutcome(fields ...string) {
+	if r.walkFile == "" {
+		return
+	}
+	if err := os.WriteFile(r.walkFile, []byte(strings.Join(fields, "\t")+"\n"), 0o666); err != nil {
+		fmt.Fprintf(r.stderr, "valley: %v\n", err)
+		return
+	}
+	r.mu.Lock()
+	r.walkWritten = true
+	r.mu.Unlock()
+}
+
+// outcome writes how the step ended, unless the review is already exiting
+// and says so itself.
+func (r *review) outcome(fields ...string) {
+	r.mu.Lock()
+	exiting := r.exiting
+	r.mu.Unlock()
+	if !exiting {
+		r.writeOutcome(fields...)
+	}
+}
+
+// skipped is the outcome of a step whose review was skipped or stopped:
+// refused when an answer was refused first.
+func (r *review) skipped() {
+	if r.walkRefused {
+		r.outcome("refused")
+	} else {
+		r.outcome("skipped")
+	}
+}
+
+// queued compares a walk's step with what the walker's queue held of it.
+// A change that landed, is no longer ready or has no branch on origin is
+// not reviewed, and the step ends; one at another version is reviewed at
+// it, saying so first. It reports false when the step ends here.
+func (r *review) queued() bool {
+	if r.walkQueued == "" {
+		return true
+	}
+	s, _ := r.readStanding()
+	why := ""
+	switch {
+	case s.landed != "":
+		why = "it landed as " + s.landed
+	case r.c.state != "ready":
+		why = "it is " + strings.Replace(r.c.state, "draft", "a draft", 1)
+	case r.c.branch == "" || r.ref("refs/remotes/origin/"+r.c.branch) == "":
+		why = "its branch is gone from origin"
+	}
+	if why != "" {
+		fmt.Fprintf(r.stdout, "%s is not reviewed: %s\n", r.c.handle, why)
+		r.outcome("not-reviewed", why)
+		return false
+	}
+	if strings.Join(strings.Fields(r.walkQueued), " ") != r.c.id+" "+r.c.version+" "+r.c.head {
+		fmt.Fprintf(r.stdout, "%s moved to v%s since the queue was read\n", r.c.handle, r.c.version)
+	}
+	return true
+}
+
+// resolve reads the name as approve and rebase read a change's name: a
+// change's ID, handle, or the branch its active version names, or else a
+// plain branch.
+func (r *review) resolve(name string) error {
+	r.c = shownChange{name: name}
+	if !r.g.succeeds(true, "rev-parse", "--git-dir") {
+		return failure("not a git repository")
+	}
+	res, err := resolveRecorded(r.g, name)
+	if err != nil {
+		return err
+	}
+	r.c.branch = res.branch
+	if res.id != "" {
+		r.c.id, r.c.handle, r.c.version, r.c.head = res.id, res.handle, strconv.Itoa(res.version), res.head
+		r.c.state, r.c.owner = res.state, res.owner
+	}
+	return nil
+}
+
+// ref is the object ID a ref holds, read by its exact name, or "".
+func (r *review) ref(name string) string {
+	oid, ok, err := r.g.ref(name)
+	if err != nil || !ok {
+		return ""
+	}
+	return oid
+}
+
+func (r *review) short(oid string) string {
+	s, _ := r.g.output(false, "rev-parse", "--short", oid)
+	return s
+}
+
+// changeHead is the commit review acts on: the recorded head for a change
+// with a record, and otherwise the branch's head on origin.
+func (r *review) changeHead(branch string) string {
+	if r.c.head != "" {
+		return r.c.head
+	}
+	return r.ref("refs/remotes/origin/" + branch)
+}
+
+// fastForwards reports whether commit fast-forwards from main's tip as the
+// fetch left it. A main that cannot be read is not one it fast-forwards
+// from.
+func (r *review) fastForwards(commit string) bool {
+	tip := r.ref("refs/remotes/origin/main")
+	return tip != "" && r.g.succeeds(false, "merge-base", "--is-ancestor", tip, commit)
+}
+
+// bind binds [a]pprove to the active version's head of a change with a
+// record. A plain branch is bound to the head review pages, when it pages
+// it (showReview, useLayer).
+func (r *review) bind() {
+	r.approveHead, r.approveVersion = "", ""
+	if r.c.id != "" {
+		r.approveHead, r.approveVersion = r.c.head, r.c.version
+	}
+}
+
+// readStanding reads where the change under review stands now. A plain
+// branch has no record, and reads as nothing. It reports false, having
+// said why, when origin cannot be read.
+func (r *review) readStanding() (standing, bool) {
+	if r.c.id == "" {
+		return standing{}, true
+	}
+	s, err := standingOf(r.g, r.c.id)
+	if err != nil {
+		fmt.Fprintf(r.stderr, "valley: %s\n", err)
+		return standing{}, false
+	}
+	return s, true
+}
+
+// notReady is the line review shows for a change whose record is not
+// ready, above its diff and in its prompt, or "" for a ready change and a
+// plain branch. A draft is often a change an agent is still working on,
+// so the prompt then offers only [v]iew diff and [s]kip: [a]pprove would
+// be refused, and [r]eject records nothing on the change, but deletes the
+// branch its owner may still be working on.
+func notReady(handle, version, state, owner string) string {
+	switch state {
+	case "draft":
+		return fmt.Sprintf("%s v%s is a draft: its owner (%s) hasn't marked it ready, so it can't be approved yet.", handle, version, owner)
+	case "withdrawn":
+		return handle + " is withdrawn: there is nothing to approve."
+	}
+	return ""
+}
+
+// answer reads one answer from the terminal, a byte at a time so that
+// nothing after it is taken from whatever reads the input next, with the
+// spaces and tabs around it trimmed. ok is false when the input ends
+// before the line does.
+func answer() (string, bool) {
+	var line []byte
+	b := make([]byte, 1)
+	for {
+		n, err := os.Stdin.Read(b)
+		if n == 1 {
+			if b[0] == '\n' {
+				return strings.Trim(string(line), " \t"), true
+			}
+			line = append(line, b[0])
+		}
+		if err != nil {
+			return "", false
+		}
+	}
+}
+
+// mustAnswer is answer, ending the review when the input has ended.
+func (r *review) mustAnswer() string {
+	choice, ok := answer()
+	if !ok {
+		r.die("stdin closed before an answer; nothing done")
+	}
+	return choice
+}
+
+// prompt prints review's prompt: the header's clauses, the empty ones
+// left out, and the keys.
+func (r *review) prompt(header []string, keys ...string) {
+	var shown []string
+	for _, h := range header {
+		if h != "" {
+			shown = append(shown, h)
+		}
+	}
+	fmt.Fprint(r.stdout, promptLines(terminalOf(r.stdout), shown, keys))
+}
+
+// decide takes the verdict on a change alone, and on the top of a stack
+// of n, named name. Its prompt is one header line, the change and what
+// stands in its way, and the keys it takes. A change is named by its
+// handle and version, a plain branch by its name, and a change alone
+// carries the checks line review read for it. The top of a stack says that
+// approving it lands all n layers. [v]iew diff pages the change's whole
+// diff, or the top layer's.
+//
+// A change that is not ready says so in its header, and is offered only
+// [v]iew diff and [s]kip, or [s]top. The top of a stack with a layer under
+// it that is not ready says why it can't be approved (layerHeld), as does
+// a change whose checks failed at the head shown, and neither is offered
+// [a]pprove. A change that can be approved and does not fast-forward from
+// main says so (behindMain). Before [a]pprove and [r]eject act, moved
+// reads the change again, and ends its review when it moved.
+func (r *review) decide(branch, name string, n int) {
+	approve, reject, stop := "[a]pprove", "[r]eject", "[s]kip"
+	stopped := "skipped " + branch + "; nothing done"
+	header := []string{branch}
+	own, held, behind := "", "", ""
+	if r.c.id != "" {
+		header = []string{r.c.handle + " v" + r.c.version}
+		switch r.c.state {
+		case "draft":
+			own = "draft (its owner, " + r.c.owner + ", has not readied it)"
+		case "withdrawn":
+			own = "withdrawn"
+		}
+	}
+	if n > 0 {
+		header = append(header, fmt.Sprintf("stack of %d", n))
+		approve, reject, stop = fmt.Sprintf("[a]pprove all %d", n), "[r]eject "+name, "[s]top"
+		stopped = fmt.Sprintf("stopped reviewing %s at change %d of %d; nothing done", name, n, n)
+		held = r.layerHeld(n - 1)
+	} else if r.checksClause != "" {
+		header = append(header, r.checksClause)
+	}
+	if own == "" && held == "" {
+		behind = r.behindMain(branch)
+	}
+	for {
+		var clause, answers string
+		var keys []string
+		failed := ""
+		switch {
+		case own != "":
+			clause, keys, answers = own, []string{"[v]iew diff", stop}, "v or s"
+		case held != "":
+			clause, keys, answers = held, []string{"[v]iew diff", reject, stop}, "v, r, or s"
+		default:
+			if failed = r.approveFailedAt(branch); failed != "" {
+				clause, keys, answers = "checks failed at "+failed, []string{"[v]iew diff", reject, stop}, "v, r, or s"
+			} else {
+				clause, keys, answers = behind, []string{approve, "[v]iew diff", reject, stop}, "a, v, r, or s"
+			}
+		}
+		r.prompt(append(append([]string{}, header...), clause), keys...)
+		// A refusal from approve is not a verdict: it says what it did not
+		// do and the prompt comes back, so the branch can still be rejected
+		// or skipped. When the checks failed, approving the same head again
+		// is no longer offered, nor is approving a change that is not ready.
+		// A change that moved since it was shown is not acted on, and its
+		// review ends.
+		switch r.mustAnswer() {
+		case "a":
+			if failed != "" || own != "" || held != "" {
+				fmt.Fprintln(r.stdout, "answer "+answers)
+			} else if r.moved(true) || r.approve(branch) {
+				return
+			}
+		case "v":
+			if n > 0 {
+				r.viewLayer(n - 1)
+			} else {
+				r.viewFull(branch)
+			}
+		case "r":
+			if own != "" {
+				fmt.Fprintln(r.stdout, "answer "+answers)
+			} else if r.moved(false) || r.reject(branch) {
+				return
+			}
+		case "s":
+			fmt.Fprintln(r.stdout, stopped)
+			r.skipped()
+			return
+		default:
+			fmt.Fprintln(r.stdout, "answer "+answers)
+		}
+	}
+}
+
+// approveFailedAt is the head the checks failed at in this review, short,
+// while the change is still at it, or "". Approving that head again would
+// run the same checks over the same tree and fail the same way, so the
+// prompt stops offering [a]pprove until the change has a new head.
+func (r *review) approveFailedAt(branch string) string {
+	if r.checksFailedAt == "" || r.checksFailedAt != r.changeHead(branch) {
+		return ""
+	}
+	return r.short(r.checksFailedAt)
+}
+
+// behindMain is the clause review's prompt shows for a change that does
+// not fast-forward from main, or "". Being behind main asks nothing of the
+// operator: the integrator applies the change's delta onto main as main
+// stands, with the evidence for the head approved, and the host's
+// restacker rebases ready changes itself. When the restacker reports that
+// rebasing the change conflicted, the clause says so instead, and
+// [a]pprove stays offered: the integrator decides whether the change
+// applies.
+func (r *review) behindMain(branch string) string {
+	if r.fastForwards(r.changeHead(branch)) {
+		return ""
+	}
+	if s, _ := r.readStanding(); s.conflict == "conflict" {
+		return "conflicts with main (owner resolving)"
+	}
+	return "behind main (integrator merges)"
+}
+
+// moved reads a change with a record again before review acts on an
+// answer about it: another principal may return it to draft, ready a new
+// version, or withdraw it while the operator reads, and it may land. When
+// it is no longer what review showed, moved says in one line what changed
+// and what happens next, and the review of that change ends: the prompt's
+// answers were about what was shown, so it is not asked again. A new
+// version the answer carries to does not end it (carried), nor does
+// approving the new version in place, which moved offers for an approval.
+// It reports false when the change is still as shown, the answer carries
+// or the new version is to be approved, and for a plain branch, which
+// approve and reject check themselves.
+func (r *review) moved(approving bool) bool {
+	h := r.c.handle
+	r.carried = false
+	if r.c.id == "" {
+		return false
+	}
+	s, ok := r.readStanding()
+	switch {
+	case !ok:
+		fmt.Fprintf(r.stdout, "could not read %s again from origin; nothing done\n", h)
+		r.outcome("error")
+		return true
+	case s.state == "withdrawn":
+		fmt.Fprintf(r.stdout, "%s changed while you were reviewing: it was withdrawn (since %s), so there is nothing to approve.\n", h, s.since)
+	case s.state == "draft":
+		fmt.Fprintf(r.stdout, "%s changed while you were reviewing: it was returned to draft (since %s), so there is nothing to approve now. It comes back when it is ready again.\n", h, s.since)
+	case s.landed != "":
+		fmt.Fprintf(r.stdout, "%s landed as %s while you were reviewing; there is nothing left to approve.\n", h, s.landed)
+	case s.version == r.c.version && s.head == r.c.head:
+		return false
+	default:
+		if r.carriedTo(s, approving) {
+			return false
+		}
+	}
+	r.outcome("moved")
+	return true
+}
+
+// carriedTo reports whether the answer about the version review showed
+// carries to the version s the change moved to, as carry decides
+// (carry.go). When it does, it says so in one line, and the answer stays
+// bound to the head shown: an approval names what the reviewer read, and
+// the integrator applies its delta onto main as main stands. When it does
+// not, it says why in one line and offers to page only what changed since
+// the version shown. Answering an approval, it also offers to approve the
+// version the change moved to, when carry says: at once, or after the
+// page. [a] binds the approval to that version's head, and the attempt
+// reads the record again before it files. It reports false unless the
+// answer carries or [a] is taken.
+func (r *review) carriedTo(s standing, approving bool) bool {
+	h := r.c.handle
+	r.bind()
+	dir := r.newScratch()
+	defer r.dropScratch()
+	var out bytes.Buffer
+	verdict, reason, offer, text := "", "", "", ""
+	if err := runCarry(r.g, []string{r.c.id, r.c.version, s.version}, &out); err != nil {
+		fmt.Fprintf(r.stderr, "valley: %s\n", err)
+	} else {
+		first, rest, _ := strings.Cut(out.String(), "\n")
+		f := strings.Fields(first)
+		if len(f) > 0 {
+			verdict = f[0]
+		}
+		if t := strings.Split(first, "\t"); len(t) > 1 {
+			reason = t[1]
+			if len(t) > 2 {
+				offer = t[2]
+			}
+		}
+		text = rest
+	}
+	if !approving {
+		offer = "none"
+	}
+	switch verdict {
+	case "carries":
+		fmt.Fprintf(r.stdout, "%s moved to v%s while you were reviewing (%s) · your answer about v%s stands\n", h, s.version, reason, r.c.version)
+		r.carried = true
+		return true
+	case "review":
+		keys := "[v]iew what changed since v" + r.c.version + ", [s]kip?"
+		switch offer {
+		case "approve":
+			keys = "[a]pprove v" + s.version + ", " + keys
+		case "view":
+		default:
+			offer, keys = "", "review it again to approve it · "+keys
+		}
+		fmt.Fprintf(r.stdout, "%s moved to v%s while you were reviewing (%s) · %s ", h, s.version, reason, keys)
+		choice, _ := answer()
+		if choice == "v" {
+			changed := dir + "/changed"
+			if err := os.WriteFile(changed, []byte(text), 0o600); err == nil {
+				r.page(changed)
+			}
+			if offer != "" {
+				offer = "approve"
+				fmt.Fprintf(r.stdout, "[a]pprove v%s, [s]kip? ", s.version)
+				choice, _ = answer()
+			}
+		}
+		if choice == "a" && offer == "approve" {
+			r.approveVersion, r.approveHead = s.version, s.head
+			return true
+		}
+	default:
+		fmt.Fprintf(r.stdout, "%s moved to v%s while you were reviewing; review it again to approve what would land.\n", h, s.version)
+	}
+	return false
+}
+
+// approve is review's [a]pprove: one attempt of approve's own for each
+// answer, a stack's layers included (approve.go), told the change and head
+// review bound and the name as typed, which it reads again before filing.
+// It ends approved, with what it filed; checks-failed, with the head the
+// checks failed at, which the prompt stops offering [a]pprove for
+// (approveFailedAt); refused or unknown; or interrupted, when the attempt
+// has ended the review itself. It reports false unless it filed.
+func (r *review) approve(branch string) bool {
+	c := r.c
+	if c.id == "" {
+		c.branch = branch
+	}
+	a := reviewApproval(r.g, r.stdout, r.stderr, c, r.approveHead, r.approveVersion, r.verbose, r.buildHere, r.carried)
+	r.inForeground(func() {
+		a.watch(os.Interrupt)
+		a.run()
+		a.unwatch()
+	})
+	result := a.result
+	switch {
+	case len(result) == 5 && result[0] == "approved":
+		r.outcome(result...)
+		return true
+	case len(result) == 2 && result[0] == "checks-failed":
+		r.checksFailedAt = result[1]
+	case len(result) == 1 && (result[0] == "refused" || result[0] == "unknown"):
+	default:
+		fmt.Fprintln(r.stderr, "valley: warning: the approval left no outcome; taking it as refused")
+	}
+	r.walkRefused = true
+	return false
+}
+
+// reject deletes the change's branch on origin, once the operator confirms
+// it. For a change with a record, what is rejected is the head its record
+// names, so the branch is deleted only while its tip is that head, and
+// the delete is leased on it. When the tip is another commit, reject
+// refuses and names both, and deletes nothing. A plain branch is deleted
+// as it stands. It reports false when it refused.
+func (r *review) reject(branch string) bool {
+	var lease []string
+	if r.c.head != "" {
+		if !r.recordedTip(branch, "nothing deleted") {
+			r.walkRefused = true
+			return false
+		}
+		lease = []string{"--force-with-lease=refs/heads/" + branch + ":" + r.c.head}
+	}
+	fmt.Fprintf(r.stdout, "really delete origin/%s? [y/N] ", branch)
+	switch choice, _ := answer(); choice {
+	case "y", "Y", "yes":
+		// The change may have moved while the confirmation waited: say so,
+		// and delete nothing.
+		if r.moved(false) {
+			return true
+		}
+		push := exec.Command("git", append(append([]string{"push", "--quiet"}, lease...), "origin", "--delete", branch)...)
+		push.Env, push.Stdout, push.Stderr = r.g.env, r.stdout, r.stderr
+		var err error
+		r.inForeground(func() { err = push.Run() })
+		if err != nil {
+			r.refuse("origin did not delete " + branch + ", which may have moved since the fetch; nothing deleted")
+			r.walkRefused = true
+			return false
+		}
+		fmt.Fprintf(r.stdout, "rejected %s: deleted from origin\n", branch)
+		r.outcome("rejected", branch)
+	default:
+		fmt.Fprintf(r.stdout, "kept %s\n", branch)
+		r.outcome("kept", branch)
+	}
+	return true
+}
+
+// recordedTip reports whether the branch's tip on origin is the head a
+// change's record names, and refuses, naming both, when it is not:
+// [r]eject acts on the branch itself, and deleting it while it is
+// elsewhere would delete a commit no version records. undone is what the
+// refusal leaves undone.
+func (r *review) recordedTip(branch, undone string) bool {
+	tip := r.ref("refs/remotes/origin/" + branch)
+	switch {
+	case tip == "":
+		return r.refuse("no such branch on origin: " + branch + "; " + undone)
+	case tip != r.c.head:
+		return r.refuse(fmt.Sprintf("change %s v%s records the head %s, and origin/%s is at %s; %s. Ready the branch's head as a new version of %s to act on it",
+			r.c.handle, r.c.version, r.c.head, branch, tip, undone, r.c.handle))
+	}
+	return true
+}

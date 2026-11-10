@@ -104,10 +104,10 @@ func (d doers) of(id string) []knotRef {
 	return []knotRef{}
 }
 
-// runDoes implements `valley-go does`, which `valley review` calls to find
-// the knots each change in the review does. It reads this project's plan
-// graph once and prints one tab-separated line per knot, in the order the
-// change IDs are given:
+// runDoes implements `valley-go does`: the knots each change does, as
+// review reads them (readDoers). It reads this project's plan graph once
+// and prints one tab-separated line per knot, in the order the change IDs
+// are given:
 //
 //	<change ID>\tdoes <knot ID> (<status>): <title>
 //

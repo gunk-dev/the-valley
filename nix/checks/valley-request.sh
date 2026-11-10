@@ -2991,9 +2991,9 @@ ctrl_c held-review "$w/answers" env TMPDIR="$w/held-tmp" VALLEY_WALK_OUTCOME="$w
   exit 1
 }
 left_behind review
-# Nor is anything of review's own: its pages, and the approval's
-# scratch. attest run's scratch tree is attest's (attest/run.go).
-if ls -A "$w/held-tmp" | grep -v '^valley-attest-tree'; then
+# Nor is anything of review's own: its pages, the approval's scratch, and
+# attest run's tree.
+if ls -A "$w/held-tmp" | grep .; then
   echo "valley-request: review left the above in its TMPDIR after a ctrl-C during its checks" >&2
   exit 1
 fi

@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"the-valley/telemetry"
@@ -153,6 +155,7 @@ func cmdRun(args []string) (err error) {
 		return err
 	}
 	defer os.RemoveAll(tree)
+	defer removeOnInterrupt(tree)()
 	if err := exportTree(root, *rev, tree); err != nil {
 		return err
 	}
@@ -414,4 +417,29 @@ func sortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// removeOnInterrupt removes dir when the process is interrupted or
+// terminated, then ends the process by that same signal, so the exit
+// status is the one an unhandled signal gives. A terminal's Ctrl-C reaches
+// the whole process group, so the checks' own processes are stopped by it
+// as well. The returned function stops the handling.
+func removeOnInterrupt(dir string) (stop func()) {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case sig := <-sigs:
+			os.RemoveAll(dir)
+			signal.Reset(os.Interrupt, syscall.SIGTERM)
+			syscall.Kill(os.Getpid(), sig.(syscall.Signal))
+			select {}
+		case <-done:
+		}
+	}()
+	return func() {
+		signal.Stop(sigs)
+		close(done)
+	}
 }

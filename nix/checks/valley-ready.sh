@@ -273,10 +273,9 @@ grep -qx 'project kkkk v1 withdrawn' "$w/out" || fail 'withdraw did not take a b
 git checkout --quiet -b stamped main
 commit stamped
 ok as contributor valley ready --stamp
-stamped_id="$(sed -n 's/^The change ID \([k-z]*\) is new\..*/\1/p' "$w/out")"
-[ "${#stamped_id}" = 32 ] || fail '--stamp made no change ID'
-[ "$(git log -1 --format='%(trailers:key=Change-Id,valueonly)' | head -n1)" = "$stamped_id" ] \
-  || fail '--stamp did not carry the ID in the head'
+grep -q 'is new' "$w/out" && fail '--stamp hinted at carrying an ID the head already has'
+stamped_id="$(git log -1 --format='%(trailers:key=Change-Id,valueonly)' | head -n1)"
+[ "${#stamped_id}" = 32 ] || fail '--stamp did not carry an ID in the head'
 [ "$(git rev-parse HEAD)" = "$(git -C "$origin" rev-parse refs/heads/stamped)" ] \
   || fail '--stamp did not push the stamped head'
 record "$stamped_id" ".versions[0].head == \"git-sha1:$(git rev-parse HEAD)\""

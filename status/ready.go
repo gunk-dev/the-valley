@@ -247,7 +247,7 @@ func ready(g git, a readyArgs, w io.Writer) (int, error) {
 		return 0, err
 	}
 	fmt.Fprintf(w, "%s %s v%d ready\n", project(g), handle, version.N)
-	if generated {
+	if generated && !a.stamp {
 		fmt.Fprintf(w, "The change ID %s is new. Ready a later head of this change with --change %s, or carry the ID in the head with --stamp.\n", id, id)
 	}
 	return version.N, nil

@@ -444,14 +444,38 @@ ok valley status --json pushed
 jq -e '.change_id == null and .handle == null and .version == null and .title == null
   and .owner == null and .landing == null' "$w/out" > /dev/null \
   || fail "status --json of a branch with no record: $(cat "$w/out")"
-# With the branch at the recorded head, rejecting it in review deletes it.
+# With the branch at the recorded head, a reject declined at its
+# confirmation keeps the branch and the record as they are.
 as contributor git push --quiet --force origin "$elsewhere:refs/heads/victim"
+rec="$(git -C "$origin" rev-parse "refs/the-valley/changes/main/$target_id")"
+printf 'r\nn\n' | as requester valley review pppp > "$w/out" 2> "$w/err" || fail 'a declined reject failed'
+grep -qF 'kept victim' "$w/out" || fail 'a declined reject did not say it kept the branch'
+[ "$(git -C "$origin" rev-parse refs/heads/victim)" = "$elsewhere" ] || fail 'a declined reject moved the branch'
+[ "$(git -C "$origin" rev-parse "refs/the-valley/changes/main/$target_id")" = "$rec" ] \
+  || fail 'a declined reject wrote the record'
+# Anyone may delete a topic branch, but only the owner or a holder of the
+# approve grant may withdraw the change: bystander's reject deletes the
+# branch, says the withdrawal failed, and names the command that does it.
+printf 'r\nyes\n' | as bystander valley review pppp > "$w/out" 2> "$w/err" \
+  || fail "bystander's reject failed"
+grep -qF 'rejected victim: deleted from origin · withdrawing pppp failed' "$w/out" \
+  || fail 'reject did not say the withdrawal failed'
+grep -qx '  run: valley withdraw pppp' "$w/out" || fail 'a failed withdrawal did not name valley withdraw'
+if git -C "$origin" rev-parse --verify --quiet refs/heads/victim > /dev/null; then
+  fail 'a reject whose withdrawal failed kept the branch'
+fi
+record "$target_id" '.state == "ready"'
+# requester holds the grant: rejecting the change deletes its branch and
+# withdraws it.
+as contributor git push --quiet origin "$elsewhere:refs/heads/victim"
 printf 'r\nyes\n' | as requester valley review pppp > "$w/out" 2> "$w/err" \
   || fail 'rejecting a handle at its recorded head failed'
-grep -qF 'rejected victim: deleted from origin' "$w/out" || fail 'reject did not say it deleted the branch'
+grep -qF 'rejected victim: deleted from origin · pppp withdrawn' "$w/out" \
+  || fail 'reject did not say it deleted the branch and withdrew the change'
 if git -C "$origin" rev-parse --verify --quiet refs/heads/victim > /dev/null; then
   fail 'reject kept a branch at the recorded head'
 fi
+record "$target_id" '.state == "withdrawn"'
 
 # A version may record no branch: the record allows one, though valley
 # ready always names a branch. The change's record line then has an empty

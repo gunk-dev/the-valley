@@ -233,7 +233,9 @@ whose restack stopped, which their author fixes. A last line counts the drafts a
 `--drafts` and `--branches` list them, and `-v` shows each row's commits and diff.
 
 Use a handle from `pending`. Review pages the diff and offers actions at the terminal. Choose
-`[s]kip` to leave it alone or `[a]pprove` to approve the head you saw. A draft or withdrawn layer
+`[s]kip` to leave it alone or `[a]pprove` to approve the head you saw. `[r]eject` deletes the
+change's branch once you confirm, then withdraws the change, so it leaves `needs you`; if the
+withdrawal fails, review names the `valley withdraw` command to run. A draft or withdrawn layer
 stops review from offering approval for that layer or anything above it. A stack is shown from the
 bottom up; approving its top includes the layers below. Review lists a layer below the top that is
 already approved but does not page it. Name that layer to review it.

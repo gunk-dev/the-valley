@@ -41,6 +41,8 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+
+	"the-valley/change"
 )
 
 const reviewUsage = "usage: valley review [-v] [--build-here] [<change> | --repo <name>]"
@@ -463,8 +465,8 @@ func (r *review) readStanding() (standing, bool) {
 // ready, above its diff and in its prompt, or "" for a ready change and a
 // plain branch. A draft is often a change an agent is still working on,
 // so the prompt then offers only [v]iew diff and [s]kip: [a]pprove would
-// be refused, and [r]eject records nothing on the change, but deletes the
-// branch its owner may still be working on.
+// be refused, and [r]eject would delete the branch its owner may still be
+// working on.
 func notReady(handle, version, state, owner string) string {
 	switch state {
 	case "draft":
@@ -786,11 +788,12 @@ func (r *review) approve(branch string) bool {
 }
 
 // reject deletes the change's branch on origin, once the operator confirms
-// it. For a change with a record, what is rejected is the head its record
-// names, so the branch is deleted only while its tip is that head, and
-// the delete is leased on it. When the tip is another commit, reject
-// refuses and names both, and deletes nothing. A plain branch is deleted
-// as it stands. It reports false when it refused.
+// it, and withdraws a change with a record (rejected). For a change with a
+// record, what is rejected is the head its record names, so the branch is
+// deleted only while its tip is that head, and the delete is leased on it.
+// When the tip is another commit, reject refuses and names both, and
+// deletes nothing. A plain branch is deleted as it stands. It reports
+// false when it refused.
 func (r *review) reject(branch string) bool {
 	var lease []string
 	if r.c.head != "" {
@@ -817,13 +820,37 @@ func (r *review) reject(branch string) bool {
 			r.walkRefused = true
 			return false
 		}
-		fmt.Fprintf(r.stdout, "rejected %s: deleted from origin\n", branch)
-		r.outcome("rejected", branch)
+		r.rejected(branch)
 	default:
 		fmt.Fprintf(r.stdout, "kept %s\n", branch)
 		r.outcome("kept", branch)
 	}
 	return true
+}
+
+// rejected says reject deleted the branch. A change with a record is
+// withdrawn too, by valley withdraw's own code and under its rules, while
+// its active version is still at the head deleted: a rejection says the
+// change is not wanted, and withdrawing it voids what is outstanding on it
+// and takes it off what needs the operator. When the
+// withdrawal fails, the line says so and names the command to run. The
+// branch is gone either way, so the outcome is rejected. Signals are held
+// until the line is printed, so a deleted branch is always reported.
+func (r *review) rejected(branch string) {
+	r.inForeground(func() {
+		line, run := "rejected "+branch+": deleted from origin", ""
+		if r.c.id != "" {
+			if err := setState(r.g, []string{r.c.id}, io.Discard, r.stderr, "withdraw", change.Withdrawn, r.c.head); err != nil {
+				fmt.Fprintf(r.stderr, "valley: %s\n", err)
+				line += " · withdrawing " + r.c.handle + " failed"
+				run = "  run: valley withdraw " + r.c.handle + "\n"
+			} else {
+				line += " · " + r.c.handle + " withdrawn"
+			}
+		}
+		fmt.Fprint(r.stdout, line+"\n"+run)
+		r.outcome("rejected", branch)
+	})
 }
 
 // recordedTip reports whether the branch's tip on origin is the head a

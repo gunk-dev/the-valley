@@ -148,22 +148,24 @@ ready "$O1" o-one
 # cache clone: the first approved and the second rejected there, the
 # third skipped. Each step is headed by its place, project, change and
 # checks, and the summary names every outcome, then what still needs the
-# operator: the rejected change's record is still ready.
+# operator: the rejected change is withdrawn, and pending lists it no more.
 walk 0 'a\nr\nyes\ns\n'
 line '^needs you \(3, in landing order\)$'
 before '^\[1/3\] guarded · kmkm v1 · 1 check pending$' '^\[2/3\] guarded · knkn v1 · 1 check pending$'
 before '^\[2/3\] guarded · knkn v1' '^\[3/3\] open · popo v1 · 1 check pending$'
-line 'rejected g-two: deleted from origin$'
+line 'rejected g-two: deleted from origin · knkn withdrawn$'
 line '^  ✓ guarded kmkm v1  approved$'
 line '^  ✓ guarded knkn v1  rejected · branch deleted$'
 line '^  ◇ open popo v1  skipped$'
-line '^still needs you \(2\): guarded knkn, open popo$'
+line '^still needs you \(1\): open popo$'
 no_line 'nothing needs you'
 [ "$(git -C "$data/guarded.git" rev-parse "refs/the-valley/integration-requests/main/c-$G1")" = \
   "$(git -C "$w/guarded" rev-parse g-one)" ] || fail "the approval filed no request at kmkm's head"
 if git -C "$data/guarded.git" rev-parse --verify --quiet refs/heads/g-two > /dev/null; then
   fail "the rejection left g-two on origin"
 fi
+ok valley pending --all
+no_line knkn
 clone="$(echo "$XDG_CACHE_HOME"/valley/repos/*-guarded)"
 [ -d "$clone" ] || fail "guarded was read through no cache clone"
 for key in valley.principal user.name user.email; do
@@ -173,8 +175,7 @@ done
 # ----------------------------------------------------------------------
 # A stale stack in guarded, based from the walk with [b]ase onto main: the
 # rebase commits and writes records in the cache clone, as alice, with the
-# identity the walk lent it. The rejected change before it is not
-# reviewed, since its branch is gone, and the walk goes on.
+# identity the walk lent it.
 cd "$w/guarded"
 git checkout --quiet main
 branch s-one main s-one
@@ -188,10 +189,8 @@ git commit --quiet -m "main moves"
 VALLEY_PRINCIPAL=integrator git push --quiet origin main
 cd "$w/open"
 walk 0 'b\nn\ns\n' --repo guarded
-line '^needs you \(2, in landing order\)$'
-line '^\[2/2\] guarded · srsr v1 · stack of 2 · 1 check pending$'
-line '^knkn is not reviewed: its branch is gone from origin$'
-line '^  ⊘ guarded knkn v1  not reviewed · its branch is gone from origin$'
+line '^needs you \(1, in landing order\)$'
+line '^\[1/1\] guarded · srsr v1 · stack of 2 · 1 check pending$'
 line '^  ◇ guarded srsr v1  skipped$'
 tip="$(git -C "$data/guarded.git" rev-parse main)"
 for b in s-one s-two; do
@@ -203,9 +202,9 @@ ok valley-go resolve "$S2"
 
 # ----------------------------------------------------------------------
 # Changes that move after the walk read its queue: while popo's prompt
-# waits, mlml is unreadied and mnmn readied at a second version. mlml is
-# not reviewed, and mnmn is said to have moved, then reviewed and approved
-# at its new version.
+# waits, mlml is unreadied, mnmn readied at a second version, and mpmp's
+# branch deleted. mlml and mpmp are not reviewed, and mnmn is said to have
+# moved, then reviewed and approved at its new version.
 cd "$w/open"
 branch m-one main m-one
 ready "$M1" m-one
@@ -225,9 +224,10 @@ echo again > m-two.txt
 git commit --quiet -am "m-two again"
 git push --quiet origin m-two
 ready "$M2" m-two
+git push --quiet origin --delete m-three
 printf 's\n' >&3
 wait_for "$w/walk.out" 'moved to v2'
-printf 'a\ns\n' >&3
+printf 'a\n' >&3
 exec 3>&-
 status=0
 wait "$walker" || status=$?
@@ -239,7 +239,8 @@ line '^mlml is not reviewed: it is a draft$'
 line '^mnmn moved to v2 since the queue was read$'
 line '^  ⊘ open mlml v1  not reviewed · it is a draft$'
 line '^  ✓ open mnmn v1  approved v2$'
-line '^  ◇ open mpmp v1  skipped$'
+line '^mpmp is not reviewed: its branch is gone from origin$'
+line '^  ⊘ open mpmp v1  not reviewed · its branch is gone from origin$'
 [ "$(git -C "$data/open.git" rev-parse "refs/the-valley/integration-requests/main/c-$M2")" = "$(git rev-parse m-two)" ] ||
   fail "mnmn was not approved at its second version"
 

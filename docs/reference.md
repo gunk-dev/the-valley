@@ -389,7 +389,14 @@ valley review [-v] [--build-here] [--repo <name>]
   - `[v]iew diff`: Pages the full log and diff against `origin/main` (or the layer below) regardless
     of approved-version comparison. A layer below the top offers it as `[v]iew full diff`.
   - `[r]eject`: Confirms and deletes the remote branch `refs/heads/<branch>` on `origin`, leased on
-    the recorded head (offered only on a single change or the ready top of a stack).
+    the recorded head (offered only on a single change or the ready top of a stack). A change with a
+    record is then withdrawn as [`valley withdraw`](#valley-withdraw) withdraws it, while its active
+    version is still at the deleted head; `origin` accepts the withdrawal only from the change's
+    owner or a holder of the `approve` grant. Review prints
+    `rejected <branch>: deleted from origin · <handle> withdrawn`. When the withdrawal fails, the
+    branch stays deleted, the line ends `· withdrawing <handle> failed` instead, and a second line
+    reads `  run: valley withdraw <handle>`. A plain branch prints
+    `rejected <branch>: deleted from origin`.
   - `[n]ext layer`: In a stack review, advances to the next layer up.
   - **Approved layers:** A stack review lists a layer below the top that is approved, as
     [`valley pending`](#valley-pending) defines it, as `(approved, not paged)` and does not page it.

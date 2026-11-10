@@ -254,17 +254,20 @@ func ready(g git, a readyArgs, w io.Writer) (int, error) {
 }
 
 func runUnready(g git, args []string, stdout, stderr io.Writer) error {
-	return setState(g, args, stdout, stderr, "unready", change.Draft)
+	return setState(g, args, stdout, stderr, "unready", change.Draft, "")
 }
 
 func runWithdraw(g git, args []string, stdout, stderr io.Writer) error {
-	return setState(g, args, stdout, stderr, "withdraw", change.Withdrawn)
+	return setState(g, args, stdout, stderr, "withdraw", change.Withdrawn, "")
 }
 
 // setState writes a record that moves a change to the state to, and
 // changes nothing else but the seq. unready moves a ready change to draft,
-// and withdraw moves a ready change or a draft to withdrawn.
-func setState(g git, args []string, stdout, stderr io.Writer, verb, to string) error {
+// and withdraw moves a ready change or a draft to withdrawn. Given at, a
+// head, it writes only while the change's active version is at it, and
+// the push is leased on the record that check read: review's [r]eject
+// withdraws the version whose branch it deleted, never one readied since.
+func setState(g git, args []string, stdout, stderr io.Writer, verb, to, at string) error {
 	if len(args) != 1 {
 		return failure("usage: valley " + verb + " <change>")
 	}
@@ -288,6 +291,8 @@ func setState(g git, args []string, stdout, stderr io.Writer, verb, to string) e
 	}
 	handle := o.handle(n.id)
 	switch from := n.record.State; {
+	case at != "" && n.record.ActiveVersion().Head != change.HeadPrefix+at:
+		return failure(fmt.Sprintf("%s is at v%d now, not at %s as it was read", handle, n.record.Active, short(at)))
 	case from == change.Withdrawn && to == change.Withdrawn:
 		return failure(fmt.Sprintf("%s is withdrawn already; ready it to bring it back", handle))
 	case from == change.Withdrawn:

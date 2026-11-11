@@ -119,7 +119,7 @@ verb:
 		if len(rest) > 0 && rest[0] == "--" {
 			n, err := strconv.Atoi(status)
 			if err == nil {
-				invocationOf(rest[1:], since, version).record(n, false)
+				invocationOf(rest[1:], since, version).record(g, n, false)
 			}
 		}
 		return nil

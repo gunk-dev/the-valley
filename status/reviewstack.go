@@ -36,7 +36,7 @@ func (r *review) readStack() bool {
 	if name == "" {
 		name = "origin/" + r.c.branch
 	}
-	read, err := stackLayers(r.g, name)
+	read, err := stackLayers(r.g, r.verifier(), name)
 	if err != nil {
 		fmt.Fprintf(r.stderr, "valley: %s\n", err)
 		return false
@@ -156,7 +156,7 @@ func (r *review) summarizeStack() {
 // are the heads approved, and the top keeps its notes. A rebase refused or
 // left unfinished has said what happened, and only [v]iew diff and [s]kip
 // are offered then. It reports false when the review stops here.
-func (r *review) baseStack() bool {
+func (r *review) baseStack() (bool, error) {
 	clause, stopped := "behind main", "; nothing done"
 	for !r.fastForwards(r.layers[0].head) {
 		n := len(r.layers)
@@ -165,7 +165,11 @@ func (r *review) baseStack() bool {
 			keys, answers = []string{"[v]iew diff", "[s]kip"}, "v or s"
 		}
 		r.prompt([]string{r.layers[n-1].name, fmt.Sprintf("stack of %d", n), clause}, keys...)
-		switch r.mustAnswer() {
+		choice, err := r.mustAnswer()
+		if err != nil {
+			return false, err
+		}
+		switch choice {
 		case "b":
 			switch {
 			case clause != "behind main":
@@ -176,32 +180,34 @@ func (r *review) baseStack() bool {
 					handle := r.c.handle
 					if err := r.resolve(r.c.id); err != nil {
 						fmt.Fprintf(r.stderr, "valley: %s\n", err)
-						r.die("could not read change " + handle + " again after the rebase")
+						return false, r.die("could not read change " + handle + " again after the rebase")
 					}
 				}
 				r.bind()
 				notes := r.layers[n-1].notes
 				if !r.readStack() {
-					r.die("could not read the stack under " + r.topName + " again after the rebase")
+					return false, r.die("could not read the stack under " + r.topName + " again after the rebase")
 				}
 				r.layers[len(r.layers)-1].notes = notes
 				r.summarizeStack()
 			default:
-				clause, stopped, r.walkRefused = "not rebased", "", true
+				clause, stopped, r.refused = "not rebased", "", true
 			}
 		case "v":
 			r.notes = nil
-			r.viewFull(r.c.branch)
+			if err := r.viewFull(r.c.branch); err != nil {
+				return false, err
+			}
 			r.keepLayerNotes(n - 1)
 		case "s":
 			fmt.Fprintf(r.stdout, "stopped reviewing %s before its first layer%s\n", r.layers[n-1].name, stopped)
 			r.skipped()
-			return false
+			return false, nil
 		default:
 			fmt.Fprintln(r.stdout, "answer "+answers)
 		}
 	}
-	return true
+	return true, nil
 }
 
 // rebaseShown is [b]ase onto main for the stack under review, while its
@@ -218,7 +224,7 @@ func (r *review) rebaseShown(head string) bool {
 	}
 	status := 0
 	r.inForeground(func() {
-		status = rebaseCancelledBy(r.g, []string{"--head", head, name}, r.stdout, r.stderr, os.Interrupt)
+		status = rebaseCancelledBy(r.g, r.verifier(), []string{"--head", head, name}, r.stdout, r.stderr, os.Interrupt)
 	})
 	if status != 0 {
 		return false
@@ -262,33 +268,48 @@ func (r *review) layerHeld(k int) string {
 // the layer below it. The notes taken in it are kept under its own branch.
 // When it can't be approved, layerHeld's line follows its heading, before
 // the layer's knots.
-func (r *review) pageLayer(k int) {
+func (r *review) pageLayer(k int) error {
 	r.notes = nil
 	l := r.layers[k]
 	heading := r.layerHeading(k)
 	if held := r.layerHeld(k); held != "" {
 		heading += "\n" + held
 	}
-	r.newScratch()
+	if _, err := r.newScratch(); err != nil {
+		return err
+	}
 	kind, compared := r.compareShown(l.id, l.version, l.head)
-	r.showCompared(r.notesKey(k), l.head, heading, r.doesOf(l.id), kind, compared, func(w io.Writer) { r.layerDiff(w, k) })
+	if err := r.showCompared(r.notesKey(k), l.head, heading, r.doesOf(l.id), kind, compared, func(w io.Writer) error { return r.layerDiff(w, k) }); err != nil {
+		return err
+	}
 	if line := r.checksLine(l.id, true); line != "" {
 		fmt.Fprintln(r.stdout, line)
 	}
 	r.keepLayerNotes(k)
+	return nil
 }
 
 // viewLayer is [v]iew full diff for layer k: its whole diff against the
 // layer below it.
-func (r *review) viewLayer(k int) {
+func (r *review) viewLayer(k int) error {
 	r.notes = nil
-	dir := r.newScratch()
+	dir, err := r.newScratch()
+	if err != nil {
+		return err
+	}
 	var b bytes.Buffer
 	b.WriteString(r.layerHeading(k) + "\n")
-	r.layerDiff(&b, k)
-	r.writePage(dir, b.Bytes())
-	r.pageBuffer(r.notesKey(k), r.short(r.layers[k].head))
+	if err := r.layerDiff(&b, k); err != nil {
+		return err
+	}
+	if err := r.writePage(dir, b.Bytes()); err != nil {
+		return err
+	}
+	if err := r.pageBuffer(r.notesKey(k), r.short(r.layers[k].head)); err != nil {
+		return err
+	}
 	r.keepLayerNotes(k)
+	return nil
 }
 
 // keepLayerNotes adds the notes just taken to layer k's.
@@ -298,7 +319,7 @@ func (r *review) keepLayerNotes(k int) {
 
 // layerDiff writes layer k's whole diff: its log and its diff against the
 // layer below it.
-func (r *review) layerDiff(w io.Writer, k int) {
+func (r *review) layerDiff(w io.Writer, k int) error {
 	l := r.layers[k]
 	below := "main"
 	if k > 0 {
@@ -314,8 +335,10 @@ func (r *review) layerDiff(w io.Writer, k int) {
 	default:
 		fmt.Fprintf(w, "change %s v%s at %s, log against %s:\n\n", l.name, l.version, sha, on)
 	}
-	r.commitLog(w, l.base+".."+l.head)
-	r.gitTo(w, "--no-pager", "diff", l.base+"..."+l.head)
+	if err := r.commitLog(w, l.base+".."+l.head); err != nil {
+		return err
+	}
+	return r.gitTo(w, "--no-pager", "diff", l.base+"..."+l.head)
 }
 
 // reviewStack shows each layer under the top and asks after each, naming
@@ -328,10 +351,10 @@ func (r *review) layerDiff(w io.Writer, k int) {
 // layer that is not ready, and the prompt says why in its place
 // (layerHeld). After the top, its verdict is taken as for any change, with
 // a prompt that names the top and says approving it lands all n.
-func (r *review) reviewStack() {
+func (r *review) reviewStack() error {
 	r.summarizeStack()
-	if !r.baseStack() {
-		return
+	if ok, err := r.baseStack(); !ok {
+		return err
 	}
 	fmt.Fprintln(r.stdout)
 	n, top := len(r.layers), len(r.layers)-1
@@ -339,7 +362,9 @@ func (r *review) reviewStack() {
 		if r.layerSkipped(k) {
 			continue
 		}
-		r.pageLayer(k)
+		if err := r.pageLayer(k); err != nil {
+			return err
+		}
 		l := r.layers[k]
 		var lands string
 		switch k {
@@ -367,7 +392,11 @@ func (r *review) reviewStack() {
 			default:
 				fmt.Fprintf(r.stdout, "%s, %d of %d: [n]ext layer, [a]pprove %s, [v]iew full diff, [s]top? ", l.name, k+1, n, lands)
 			}
-			switch r.mustAnswer() {
+			choice, err := r.mustAnswer()
+			if err != nil {
+				return err
+			}
+			switch choice {
 			case "n":
 				break answering
 			case "a":
@@ -376,24 +405,32 @@ func (r *review) reviewStack() {
 					continue
 				}
 				r.useLayer(k)
-				if r.moved(true) || r.approve(r.c.branch) {
-					return
+				moved, err := r.moved(true)
+				if err != nil {
+					return err
+				}
+				if moved || r.approve(r.c.branch) {
+					return nil
 				}
 				r.useLayer(top)
 			case "v":
-				r.viewLayer(k)
+				if err := r.viewLayer(k); err != nil {
+					return err
+				}
 			case "s":
 				fmt.Fprintf(r.stdout, "stopped reviewing %s at change %d of %d, %s; nothing done\n", r.layers[top].name, k+1, n, l.name)
 				r.skipped()
-				return
+				return nil
 			default:
 				fmt.Fprintln(r.stdout, "answer "+answers)
 			}
 		}
 	}
-	r.pageLayer(top)
+	if err := r.pageLayer(top); err != nil {
+		return err
+	}
 	r.useLayer(top)
-	r.decide(r.layers[top].branch, r.layers[top].name, n)
+	return r.decide(r.layers[top].branch, r.layers[top].name, n)
 }
 
 // printStackNotes prints the notes taken on every layer, each under its

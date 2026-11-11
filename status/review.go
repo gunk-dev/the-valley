@@ -2,9 +2,9 @@ package main
 
 // valley review: a change, or a stack layer by layer, paged for the
 // operator to approve, reject or skip. With no change it walks what needs
-// the operator (walk.go), and each step of the walk runs this verb again,
-// for one change, through the valley command. bin/valley hands the verb
-// to this program.
+// the operator (walk.go), and each step of the walk is this review of one
+// change, called with the step's repository. bin/valley hands the verb to
+// this program.
 //
 // A change is resolved before origin is fetched, as approve resolves it,
 // and shown at the head its record names, or a plain branch at its tip on
@@ -16,26 +16,41 @@ package main
 // rebase verb's (rebase.go), and before either acts, and before
 // [r]eject, the change is read again (standing.go, carry.go).
 //
-// A review that is a walk's step is told what the walker's queue held of
-// the change, in VALLEY_WALK_QUEUED, and writes how it ended to the file
-// VALLEY_WALK_OUTCOME names, as walk.go's header gives.
+// A review is given a reviewStep: the repository it runs in, whose
+// directory and environment every process it starts is given, unless the
+// process targets a tree of its own; what a walk's queue held of the
+// change; the terminal it reads answers from, a byte at a time, and the
+// streams it writes to; the signer source its reads verify a transfer
+// statement with; the caller's catch of SIGINT and SIGTERM; and the path
+// an interrupt ends it by. It returns how it ended as a stepOutcome, the
+// same for a walk's step as for valley review <change>, which turns it
+// into the exit status.
 //
-// SIGINT and SIGTERM end the review with status 130, its outcome
-// interrupted. One that arrives while a program it runs in the foreground
-// has the terminal, such as less or the editor less starts, ends it once
-// that program has ended: less takes Ctrl-C itself. During [a]pprove's
-// attempt, SIGINT is the attempt's to act on: it stops the checks, and the
-// attempt ends the review through exitWith. SIGHUP ends the review at
-// once, with status 129. However it ends, the review leaves nothing of its
-// own behind: its pages, the background read of the checks, and the
-// published known-signers file the reads wrote out.
+// The caller catches SIGINT and SIGTERM from before the review starts
+// until the process exits, so neither ever gets the default handling. The
+// review takes them from the caller's catch while it listens, until its
+// cleanup, and acts on each: it ends the review with status 130, its
+// outcome interrupted, through the step's end path, which ends the
+// process: once the command is recorded for valley review <change>, and
+// once the walk's summary so far is printed for a step (walk.go). One that
+// arrives while a program it runs in the foreground has the terminal, such
+// as less or the editor less starts, ends it once that program has ended:
+// less takes Ctrl-C itself. During [a]pprove's attempt, SIGINT is the
+// attempt's to act on: it stops the checks, and the attempt ends the
+// review through the same path. One that arrives during the cleanup stays
+// in the caller's catch, and the caller acts on it once the review has
+// returned: valley review <change> then exits 130. SIGHUP ends the review
+// at once while it listens, with status 129. Every other ending returns, a
+// failure included, so a walk goes on to its next step. However it ends,
+// the review leaves nothing of its own behind: its pages and the
+// background read of the checks.
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -47,6 +62,46 @@ import (
 
 const reviewUsage = "usage: valley review [-v] [--build-here] [<change> | --repo <name>]"
 
+// reviewStep is what one review of a change is given: by valley review
+// <change> for the current checkout, and by the walk for each step.
+type reviewStep struct {
+	// g is the repository the review runs in, at its root for a walk's
+	// step, with the environment every process the review starts is given.
+	g                  git
+	queued             *queuedChange // what the walk's queue held of the change; nil outside a walk
+	verbose, buildHere bool
+	stdin              *os.File // the terminal: read a byte at a time, and given to the programs that read it
+	stdout, stderr     io.Writer
+	signers            *signerSource // what the review's reads verify a transfer statement with
+	// interrupts is the caller's catch of SIGINT and SIGTERM, which it
+	// holds until the process exits. The review takes from it only while
+	// it listens.
+	interrupts <-chan os.Signal
+	// end ends the process once a signal has ended the review and the
+	// review has cleaned up, with the status and how the review ended. It
+	// does not return.
+	end func(status int, o stepOutcome)
+}
+
+// queuedChange is a change as the walk's queue held it.
+type queuedChange struct {
+	id      string
+	version int
+	head    string
+}
+
+// stepOutcome is how a review ended. kind is approved, rejected, kept,
+// skipped, refused (an answer was refused, then the change skipped),
+// moved (it moved while it was shown), not-reviewed, interrupted or error.
+// status is the exit status valley review <change> gives it.
+type stepOutcome struct {
+	kind                      string
+	id, handle, version, head string // approved: what was filed, the head alone for a plain branch
+	branch                    string // rejected and kept: the branch
+	reason                    string // not-reviewed, and an error that says why
+	status                    int
+}
+
 // shownChange is the change review acts on: the one it was given, or a
 // layer of its stack (useLayer). For a change with a record, id, handle,
 // version, head, state and owner are its record's, with head the active
@@ -57,7 +112,9 @@ type shownChange struct {
 
 // review is one review of a change and the stack under it.
 type review struct {
+	step               reviewStep
 	g                  git
+	stdin              *os.File
 	stdout, stderr     io.Writer
 	verbose, buildHere bool
 
@@ -72,19 +129,33 @@ type review struct {
 	does                        doers
 	checks                      *checksRead
 
-	walkQueued, walkFile     string
-	walkWritten, walkRefused bool
+	said    *stepOutcome    // how the review ended, once it says; the last said stands
+	refused bool            // an answer was refused
+	attempt func(*approval) // runs [a]pprove's attempt: approval.run
 
-	exitProcess func(int) // main's exitWith
-	mu          sync.Mutex
-	scratch     string // the directory holding the page being shown
-	armed       bool   // whether an exit says how the review ended
-	exiting     bool
-	foreground  int  // programs the review waits on with signals held
-	pending     bool // a signal held until they end
+	mu         sync.Mutex
+	scratch    string // the directory holding the page being shown
+	exiting    bool
+	foreground int  // programs the review waits on with signals held
+	pending    bool // a signal held until they end
 }
 
-func runReview(g git, args []string, stdout, stderr io.Writer) int {
+// reviewEnded is a review that cannot go on, having said why. status is
+// the exit status valley review <change> gives it.
+type reviewEnded struct{ status int }
+
+func (e reviewEnded) Error() string { return "the review ended with status " + strconv.Itoa(e.status) }
+
+// endedStatus is the exit status of a review err ended.
+func endedStatus(err error) int {
+	var ended reviewEnded
+	if errors.As(err, &ended) {
+		return ended.status
+	}
+	return 1
+}
+
+func runReview(g git, args []string, stdout, stderr io.Writer, end func(int)) int {
 	var name, repo string
 	var verbose, buildHere, repoGiven bool
 	for i := 0; i < len(args); i++ {
@@ -121,53 +192,81 @@ func runReview(g git, args []string, stdout, stderr io.Writer) int {
 		if err := fetchOrigin(g, stdout, stderr); err != nil {
 			return exitCode(err)
 		}
-		return runWalk(g, walk, stdout, stderr)
+		return runWalk(g, walk, stdout, stderr, end)
 	}
 	if repoGiven {
 		fmt.Fprintf(stderr, "valley: %s\n", reviewUsage)
 		return 1
 	}
-	os.Unsetenv("VALLEY_COMMAND")
 	commandTimed = false
-	r := &review{g: g, stdout: stdout, stderr: stderr, verbose: verbose, buildHere: buildHere,
-		walkQueued: os.Getenv("VALLEY_WALK_QUEUED"), walkFile: os.Getenv("VALLEY_WALK_OUTCOME"),
-		exitProcess: exitWith}
-	os.Unsetenv("VALLEY_WALK_QUEUED")
-	os.Unsetenv("VALLEY_WALK_OUTCOME")
-	exitWith = r.exit
-	r.listen()
-	return r.finish(r.run(name))
+	// Never stopped: the process exits holding it.
+	interrupts := make(chan os.Signal, 1)
+	signal.Notify(interrupts, os.Interrupt, syscall.SIGTERM)
+	o := reviewChange(reviewStep{g: g, verbose: verbose, buildHere: buildHere, stdin: os.Stdin,
+		stdout: stdout, stderr: stderr, signers: verification, interrupts: interrupts,
+		end: func(status int, _ stepOutcome) {
+			verification.done()
+			end(status)
+		}}, name)
+	if caught(interrupts) {
+		return interruptedStatus
+	}
+	return o.status
 }
 
-// run is the review of the change named, and its exit status.
-func (r *review) run(name string) int {
+// reviewChange is one review of the change named, and how it ended. Only
+// a signal ends it any other way: through s.end.
+func reviewChange(s reviewStep, name string) stepOutcome {
+	return newReview(s).review(name)
+}
+
+// newReview is a review given s.
+func newReview(s reviewStep) *review {
+	return &review{step: s, g: s.g, stdin: s.stdin, stdout: s.stdout, stderr: s.stderr,
+		verbose: s.verbose, buildHere: s.buildHere, attempt: func(a *approval) { a.run() }}
+}
+
+// review reviews the change named, and returns how it ended. It stops
+// listening before it cleans up: a signal taken during the cleanup would
+// find the review already ending and leave the listener parked in exit,
+// and stop would wait for it forever. A signal that arrives during the
+// cleanup stays in the caller's catch instead.
+func (r *review) review(name string) stepOutcome {
+	stop := r.listen()
+	defer stop() // for an end that leaves this goroutine rather than the process
+	status := 0
+	if err := r.run(name); err != nil {
+		status = endedStatus(err)
+	}
+	stop()
+	o, _ := r.cleanup(status)
+	return o
+}
+
+// run is the review of the change named. An error is a review that ended
+// without a verdict, having said why.
+func (r *review) run(name string) error {
 	if err := r.resolve(name); err != nil {
-		fmt.Fprintf(r.stderr, "valley: %s\n", err)
-		return 1
+		return r.die(err.Error())
 	}
 	if err := fetchOrigin(r.g, r.stdout, r.stderr); err != nil {
-		return exitCode(err)
+		return reviewEnded{exitCode(err)}
 	}
 	if !r.queued() {
-		return 0
+		return nil
 	}
 	// Notes are kept under the branch, and [r]eject deletes it. approve
 	// files the head alone, so it approves such a change.
 	if r.c.id != "" && r.c.branch == "" {
-		fmt.Fprintf(r.stderr, "valley: change %s v%s records no branch, and review acts on a change's branch. Approve its head alone: valley approve --head %s %s\n",
-			r.c.handle, r.c.version, r.c.head, r.c.handle)
-		return 1
+		return r.die(fmt.Sprintf("change %s v%s records no branch, and review acts on a change's branch. Approve its head alone: valley approve --head %s %s",
+			r.c.handle, r.c.version, r.c.head, r.c.handle))
 	}
 	branch := r.c.branch
 	r.topName = name
 	if r.ref("refs/remotes/origin/"+branch) == "" {
-		fmt.Fprintf(r.stderr, "valley: no such branch on origin: %s\n", branch)
-		return 1
+		return r.die("no such branch on origin: " + branch)
 	}
 	r.bind()
-	r.mu.Lock()
-	r.armed = true
-	r.mu.Unlock()
 	// The verdict disposes of the change; the notes are what the human made
 	// of it, so they are printed whatever the verdict was. A stack that
 	// cannot be read is reviewed whole against main, as a change with
@@ -178,42 +277,78 @@ func (r *review) run(name string) int {
 	}
 	r.readDoes()
 	if len(r.layers) > 1 {
-		r.reviewStack()
+		if err := r.reviewStack(); err != nil {
+			return err
+		}
 		r.printStackNotes()
-	} else {
-		r.showReview(branch)
-		r.decide(branch, "", 0)
-		r.printNotes(branch, r.notes)
+		return nil
 	}
-	return 0
+	if err := r.showReview(branch); err != nil {
+		return err
+	}
+	if err := r.decide(branch, "", 0); err != nil {
+		return err
+	}
+	r.printNotes(branch, r.notes)
+	return nil
 }
 
 // fetchOrigin brings this checkout's remote-tracking refs up to date.
 func fetchOrigin(g git, stdout, stderr io.Writer) error {
-	fetch := exec.Command("git", "fetch", "--prune", "--quiet", "origin")
-	fetch.Env, fetch.Stdout, fetch.Stderr = g.env, stdout, stderr
+	fetch := g.command("fetch", "--prune", "--quiet", "origin")
+	fetch.Stdout, fetch.Stderr = stdout, stderr
 	processStarted()
 	return fetch.Run()
 }
 
-// listen takes SIGINT, SIGTERM and SIGHUP for the rest of the review.
-func (r *review) listen() {
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+// listen takes SIGINT and SIGTERM from the caller's catch, and SIGHUP,
+// until the stop it returns, which returns once every signal taken has
+// been acted on: one that ends the review ends the process, so nothing of
+// the review acts on a signal once stop has returned. A SIGINT or SIGTERM
+// that arrives after is left in the caller's catch.
+func (r *review) listen() (stop func()) {
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	quit, done := make(chan struct{}), make(chan struct{})
 	go func() {
-		for s := range c {
-			if s == syscall.SIGHUP {
-				r.exit(128 + int(syscall.SIGHUP))
-			}
-			r.mu.Lock()
-			held := r.foreground > 0
-			r.pending = r.pending || held
-			r.mu.Unlock()
-			if !held {
-				r.exit(interruptedStatus)
+		defer close(done)
+		for {
+			select {
+			case s := <-r.step.interrupts:
+				r.signalled(s)
+			case s := <-hup:
+				r.signalled(s)
+			case <-quit:
+				if caught(hup) {
+					r.signalled(syscall.SIGHUP)
+				}
+				return
 			}
 		}
 	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			signal.Stop(hup)
+			close(quit)
+			<-done
+		})
+	}
+}
+
+// signalled acts on a signal: SIGHUP ends the review at once, and another
+// ends it now, or once the programs in the foreground have ended.
+func (r *review) signalled(s os.Signal) {
+	if s == syscall.SIGHUP {
+		r.exit(128 + int(syscall.SIGHUP))
+	}
+	r.mu.Lock()
+	held := r.foreground > 0
+	r.pending = r.pending || held
+	r.mu.Unlock()
+	if !held {
+		r.exit(interruptedStatus)
+	}
 }
 
 // inForeground runs f, which runs a program that has the terminal or
@@ -232,56 +367,48 @@ func (r *review) inForeground(f func()) {
 	}
 }
 
-// cleanup says how the review ended, when nothing has yet, and removes
-// what it leaves outside the repository. Only the first call acts: it
-// reports false to any other, whose caller leaves the process to the
-// first.
-func (r *review) cleanup(status int) bool {
+// cleanup removes what the review leaves outside the repository, and
+// returns how it ended with status: what it said, or else interrupted for
+// a signal's status and error for any other. Only the first call acts: it
+// reports false to any other, whose caller leaves the ending to the first.
+func (r *review) cleanup(status int) (stepOutcome, bool) {
 	r.mu.Lock()
 	if r.exiting {
 		r.mu.Unlock()
-		return false
+		return stepOutcome{}, false
 	}
 	r.exiting = true
-	unsaid := r.armed && !r.walkWritten
+	o := stepOutcome{kind: "error"}
+	if r.said != nil {
+		o = *r.said
+	} else if status == interruptedStatus {
+		o.kind = "interrupted"
+	}
+	o.status = status
 	scratch, checks := r.scratch, r.checks
 	r.scratch, r.checks = "", nil
 	r.mu.Unlock()
-	if unsaid {
-		if status == interruptedStatus {
-			r.writeOutcome("interrupted")
-		} else {
-			r.writeOutcome("error")
-		}
-	}
 	if scratch != "" {
 		os.RemoveAll(scratch)
 	}
 	checks.stop()
-	verification.done()
-	return true
+	return o, true
 }
 
-// finish ends a review that ran to its end, with status.
-func (r *review) finish(status int) int {
-	if !r.cleanup(status) {
-		select {} // the exit under way ends the process
-	}
-	return status
-}
-
-// exit ends the review and the process from anywhere, with status.
+// exit ends the review and the process, from anywhere, with status.
 func (r *review) exit(status int) {
-	if !r.cleanup(status) {
-		select {}
+	o, first := r.cleanup(status)
+	if !first {
+		select {} // the ending under way ends the process
 	}
-	r.exitProcess(status)
+	r.step.end(status, o)
 }
 
-// die ends the review: nothing is left to offer.
-func (r *review) die(msg string) {
+// die says what ends the review: nothing is left to offer. It returns the
+// error that ends it, with status 1.
+func (r *review) die(msg string) error {
 	fmt.Fprintf(r.stderr, "valley: %s\n", msg)
-	r.exit(1)
+	return reviewEnded{1}
 }
 
 // refuse reports what was not done, without leaving the review: the
@@ -293,10 +420,10 @@ func (r *review) refuse(msg string) bool {
 }
 
 // newScratch makes the directory the next page is written to.
-func (r *review) newScratch() string {
+func (r *review) newScratch() (string, error) {
 	dir, err := os.MkdirTemp("", "valley-review-")
 	if err != nil {
-		r.die(fmt.Sprintf("no scratch directory for the review: %v", err))
+		return "", r.die(fmt.Sprintf("no scratch directory for the review: %v", err))
 	}
 	r.mu.Lock()
 	if r.exiting {
@@ -306,7 +433,7 @@ func (r *review) newScratch() string {
 	}
 	r.scratch = dir
 	r.mu.Unlock()
-	return dir
+	return dir, nil
 }
 
 // dropScratch removes the page's directory.
@@ -320,39 +447,23 @@ func (r *review) dropScratch() {
 	}
 }
 
-// writeOutcome writes how a walk's step ended, as one line of
-// tab-separated fields for the walker. The last one written stands.
-func (r *review) writeOutcome(fields ...string) {
-	if r.walkFile == "" {
-		return
-	}
-	if err := os.WriteFile(r.walkFile, []byte(strings.Join(fields, "\t")+"\n"), 0o666); err != nil {
-		fmt.Fprintf(r.stderr, "valley: %v\n", err)
-		return
-	}
+// outcome says how the review ended, unless it is already ending and
+// says so itself. The last one said stands.
+func (r *review) outcome(o stepOutcome) {
 	r.mu.Lock()
-	r.walkWritten = true
+	if !r.exiting {
+		r.said = &o
+	}
 	r.mu.Unlock()
 }
 
-// outcome writes how the step ended, unless the review is already exiting
-// and says so itself.
-func (r *review) outcome(fields ...string) {
-	r.mu.Lock()
-	exiting := r.exiting
-	r.mu.Unlock()
-	if !exiting {
-		r.writeOutcome(fields...)
-	}
-}
-
-// skipped is the outcome of a step whose review was skipped or stopped:
-// refused when an answer was refused first.
+// skipped is the outcome of a review that was skipped or stopped: refused
+// when an answer was refused first.
 func (r *review) skipped() {
-	if r.walkRefused {
-		r.outcome("refused")
+	if r.refused {
+		r.outcome(stepOutcome{kind: "refused"})
 	} else {
-		r.outcome("skipped")
+		r.outcome(stepOutcome{kind: "skipped"})
 	}
 }
 
@@ -361,7 +472,8 @@ func (r *review) skipped() {
 // not reviewed, and the step ends; one at another version is reviewed at
 // it, saying so first. It reports false when the step ends here.
 func (r *review) queued() bool {
-	if r.walkQueued == "" {
+	q := r.step.queued
+	if q == nil {
 		return true
 	}
 	s, _ := r.readStanding()
@@ -376,10 +488,10 @@ func (r *review) queued() bool {
 	}
 	if why != "" {
 		fmt.Fprintf(r.stdout, "%s is not reviewed: %s\n", r.c.handle, why)
-		r.outcome("not-reviewed", why)
+		r.outcome(stepOutcome{kind: "not-reviewed", reason: why})
 		return false
 	}
-	if strings.Join(strings.Fields(r.walkQueued), " ") != r.c.id+" "+r.c.version+" "+r.c.head {
+	if q.id != r.c.id || strconv.Itoa(q.version) != r.c.version || q.head != r.c.head {
 		fmt.Fprintf(r.stdout, "%s moved to v%s since the queue was read\n", r.c.handle, r.c.version)
 	}
 	return true
@@ -404,6 +516,10 @@ func (r *review) resolve(name string) error {
 	}
 	return nil
 }
+
+// verifier is what the review's reads verify a transfer statement with:
+// the step's signer source.
+func (r *review) verifier() verifier { return r.step.signers.verifier() }
 
 // ref is the object ID a ref holds, read by its exact name, or "".
 func (r *review) ref(name string) string {
@@ -481,11 +597,11 @@ func notReady(handle, version, state, owner string) string {
 // nothing after it is taken from whatever reads the input next, with the
 // spaces and tabs around it trimmed. ok is false when the input ends
 // before the line does.
-func answer() (string, bool) {
+func (r *review) answer() (string, bool) {
 	var line []byte
 	b := make([]byte, 1)
 	for {
-		n, err := os.Stdin.Read(b)
+		n, err := r.stdin.Read(b)
 		if n == 1 {
 			if b[0] == '\n' {
 				return strings.Trim(string(line), " \t"), true
@@ -499,12 +615,12 @@ func answer() (string, bool) {
 }
 
 // mustAnswer is answer, ending the review when the input has ended.
-func (r *review) mustAnswer() string {
-	choice, ok := answer()
+func (r *review) mustAnswer() (string, error) {
+	choice, ok := r.answer()
 	if !ok {
-		r.die("stdin closed before an answer; nothing done")
+		return "", r.die("stdin closed before an answer; nothing done")
 	}
-	return choice
+	return choice, nil
 }
 
 // prompt prints review's prompt: the header's clauses, the empty ones
@@ -534,7 +650,7 @@ func (r *review) prompt(header []string, keys ...string) {
 // [a]pprove. A change that can be approved and does not fast-forward from
 // main says so (behindMain). Before [a]pprove and [r]eject act, moved
 // reads the change again, and ends its review when it moved.
-func (r *review) decide(branch, name string, n int) {
+func (r *review) decide(branch, name string, n int) error {
 	approve, reject, stop := "[a]pprove", "[r]eject", "[s]kip"
 	stopped := "skipped " + branch + "; nothing done"
 	header := []string{branch}
@@ -582,29 +698,52 @@ func (r *review) decide(branch, name string, n int) {
 		// is no longer offered, nor is approving a change that is not ready.
 		// A change that moved since it was shown is not acted on, and its
 		// review ends.
-		switch r.mustAnswer() {
+		choice, err := r.mustAnswer()
+		if err != nil {
+			return err
+		}
+		switch choice {
 		case "a":
 			if failed != "" || own != "" || held != "" {
 				fmt.Fprintln(r.stdout, "answer "+answers)
-			} else if r.moved(true) || r.approve(branch) {
-				return
+				continue
+			}
+			moved, err := r.moved(true)
+			if err != nil {
+				return err
+			}
+			if moved || r.approve(branch) {
+				return nil
 			}
 		case "v":
+			var err error
 			if n > 0 {
-				r.viewLayer(n - 1)
+				err = r.viewLayer(n - 1)
 			} else {
-				r.viewFull(branch)
+				err = r.viewFull(branch)
+			}
+			if err != nil {
+				return err
 			}
 		case "r":
 			if own != "" {
 				fmt.Fprintln(r.stdout, "answer "+answers)
-			} else if r.moved(false) || r.reject(branch) {
-				return
+				continue
+			}
+			moved, err := r.moved(false)
+			if err != nil {
+				return err
+			}
+			if moved {
+				return nil
+			}
+			if done, err := r.reject(branch); err != nil || done {
+				return err
 			}
 		case "s":
 			fmt.Fprintln(r.stdout, stopped)
 			r.skipped()
-			return
+			return nil
 		default:
 			fmt.Fprintln(r.stdout, "answer "+answers)
 		}
@@ -651,18 +790,18 @@ func (r *review) behindMain(branch string) string {
 // It reports false when the change is still as shown, the answer carries
 // or the new version is to be approved, and for a plain branch, which
 // approve and reject check themselves.
-func (r *review) moved(approving bool) bool {
+func (r *review) moved(approving bool) (bool, error) {
 	h := r.c.handle
 	r.carriedVersion, r.carriedHead = "", ""
 	if r.c.id == "" {
-		return false
+		return false, nil
 	}
 	s, ok := r.readStanding()
 	switch {
 	case !ok:
 		fmt.Fprintf(r.stdout, "could not read %s again from origin; nothing done\n", h)
-		r.outcome("error")
-		return true
+		r.outcome(stepOutcome{kind: "error"})
+		return true, nil
 	case s.state == "withdrawn":
 		fmt.Fprintf(r.stdout, "%s changed while you were reviewing: it was withdrawn (since %s), so there is nothing to approve.\n", h, s.since)
 	case s.state == "draft":
@@ -670,14 +809,15 @@ func (r *review) moved(approving bool) bool {
 	case s.landed != "":
 		fmt.Fprintf(r.stdout, "%s landed as %s while you were reviewing; there is nothing left to approve.\n", h, s.landed)
 	case s.version == r.c.version && s.head == r.c.head:
-		return false
+		return false, nil
 	default:
-		if r.carriedTo(s, approving) {
-			return false
+		carried, err := r.carriedTo(s, approving)
+		if err != nil || carried {
+			return false, err
 		}
 	}
-	r.outcome("moved")
-	return true
+	r.outcome(stepOutcome{kind: "moved"})
+	return true, nil
 }
 
 // carriedTo reports whether the answer about the version review showed
@@ -693,10 +833,13 @@ func (r *review) moved(approving bool) bool {
 // page. [a] binds the approval to that version's head, and the attempt
 // reads the record again before it files. It reports false unless the
 // answer carries or [a] is taken.
-func (r *review) carriedTo(s standing, approving bool) bool {
+func (r *review) carriedTo(s standing, approving bool) (bool, error) {
 	h := r.c.handle
 	r.bind()
-	dir := r.newScratch()
+	dir, err := r.newScratch()
+	if err != nil {
+		return false, err
+	}
 	defer r.dropScratch()
 	var out bytes.Buffer
 	verdict, reason, offer, text := "", "", "", ""
@@ -727,7 +870,7 @@ func (r *review) carriedTo(s standing, approving bool) bool {
 		}
 		fmt.Fprintf(r.stdout, "%s moved to v%s while you were reviewing. %s, so your %s covers it.\n", h, s.version, reason, answer)
 		r.carriedVersion, r.carriedHead = s.version, s.head
-		return true
+		return true, nil
 	case "review":
 		keys := "[v]iew what changed since v" + r.c.version + ", [s]kip?"
 		switch offer {
@@ -738,7 +881,7 @@ func (r *review) carriedTo(s standing, approving bool) bool {
 			offer, keys = "", "review it again to approve it · "+keys
 		}
 		fmt.Fprintf(r.stdout, "%s moved to v%s while you were reviewing (%s) · %s ", h, s.version, reason, keys)
-		choice, _ := answer()
+		choice, _ := r.answer()
 		if choice == "v" {
 			changed := dir + "/changed"
 			if err := os.WriteFile(changed, []byte(text), 0o600); err == nil {
@@ -747,17 +890,17 @@ func (r *review) carriedTo(s standing, approving bool) bool {
 			if offer != "" {
 				offer = "approve"
 				fmt.Fprintf(r.stdout, "[a]pprove v%s, [s]kip? ", s.version)
-				choice, _ = answer()
+				choice, _ = r.answer()
 			}
 		}
 		if choice == "a" && offer == "approve" {
 			r.approveVersion, r.approveHead = s.version, s.head
-			return true
+			return true, nil
 		}
 	default:
 		fmt.Fprintf(r.stdout, "%s moved to v%s while you were reviewing; review it again to approve what would land.\n", h, s.version)
 	}
-	return false
+	return false, nil
 }
 
 // approve is review's [a]pprove: one attempt of approve's own for each
@@ -772,16 +915,16 @@ func (r *review) approve(branch string) bool {
 	if c.id == "" {
 		c.branch = branch
 	}
-	a := reviewApproval(r.g, r.stdout, r.stderr, c, r.approveHead, r.approveVersion, r.verbose, r.buildHere, r.carriedVersion, r.carriedHead)
+	a := reviewApproval(r, c)
 	r.inForeground(func() {
 		a.watch(os.Interrupt)
-		a.run()
+		r.attempt(a)
 		a.unwatch()
 	})
 	result := a.result
 	switch {
 	case len(result) == 5 && result[0] == "approved":
-		r.outcome(result...)
+		r.outcome(stepOutcome{kind: "approved", id: result[1], handle: result[2], version: result[3], head: result[4]})
 		return true
 	case len(result) == 2 && result[0] == "checks-failed":
 		r.checksFailedAt = result[1]
@@ -789,7 +932,7 @@ func (r *review) approve(branch string) bool {
 	default:
 		fmt.Fprintln(r.stderr, "valley: warning: the approval left no outcome; taking it as refused")
 	}
-	r.walkRefused = true
+	r.refused = true
 	return false
 }
 
@@ -800,38 +943,38 @@ func (r *review) approve(branch string) bool {
 // When the tip is another commit, reject refuses and names both, and
 // deletes nothing. A plain branch is deleted as it stands. It reports
 // false when it refused.
-func (r *review) reject(branch string) bool {
+func (r *review) reject(branch string) (bool, error) {
 	var lease []string
 	if r.c.head != "" {
 		if !r.recordedTip(branch, "nothing deleted") {
-			r.walkRefused = true
-			return false
+			r.refused = true
+			return false, nil
 		}
 		lease = []string{"--force-with-lease=refs/heads/" + branch + ":" + r.c.head}
 	}
 	fmt.Fprintf(r.stdout, "really delete origin/%s? [y/N] ", branch)
-	switch choice, _ := answer(); choice {
+	switch choice, _ := r.answer(); choice {
 	case "y", "Y", "yes":
 		// The change may have moved while the confirmation waited: say so,
 		// and delete nothing.
-		if r.moved(false) {
-			return true
+		if moved, err := r.moved(false); err != nil || moved {
+			return true, err
 		}
-		push := exec.Command("git", append(append([]string{"push", "--quiet"}, lease...), "origin", "--delete", branch)...)
-		push.Env, push.Stdout, push.Stderr = r.g.env, r.stdout, r.stderr
+		push := r.g.command(append(append([]string{"push", "--quiet"}, lease...), "origin", "--delete", branch)...)
+		push.Stdout, push.Stderr = r.stdout, r.stderr
 		var err error
 		r.inForeground(func() { err = push.Run() })
 		if err != nil {
 			r.refuse("origin did not delete " + branch + ", which may have moved since the fetch; nothing deleted")
-			r.walkRefused = true
-			return false
+			r.refused = true
+			return false, nil
 		}
 		r.rejected(branch)
 	default:
 		fmt.Fprintf(r.stdout, "kept %s\n", branch)
-		r.outcome("kept", branch)
+		r.outcome(stepOutcome{kind: "kept", branch: branch})
 	}
-	return true
+	return true, nil
 }
 
 // rejected says reject deleted the branch. A change with a record is
@@ -855,7 +998,7 @@ func (r *review) rejected(branch string) {
 			}
 		}
 		fmt.Fprint(r.stdout, line+"\n"+run)
-		r.outcome("rejected", branch)
+		r.outcome(stepOutcome{kind: "rejected", branch: branch})
 	})
 }
 

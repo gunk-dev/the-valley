@@ -36,7 +36,7 @@ func TestSetStateWithdrawsOnlyAtTheHeadRead(t *testing.T) {
 	valley := func(args ...string) {
 		t.Helper()
 		var stdout, stderr bytes.Buffer
-		if code := run(args, &stdout, &stderr); code != 0 {
+		if code := run(args, &stdout, &stderr, os.Exit); code != 0 {
 			t.Fatalf("valley %s: %s", strings.Join(args, " "), stderr.String())
 		}
 	}

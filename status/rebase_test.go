@@ -48,7 +48,7 @@ func TestRebaseSignalledWhileAHookBlocks(t *testing.T) {
 	t.Chdir(work)
 	id := strings.Repeat("q", 32)
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"ready", "--change", id, "one"}, &stdout, &stderr); code != 0 {
+	if code := run([]string{"ready", "--change", id, "one"}, &stdout, &stderr, os.Exit); code != 0 {
 		t.Fatalf("ready: %s", stderr.String())
 	}
 	git(work, "checkout", "--quiet", "main")
@@ -73,7 +73,7 @@ func TestRebaseSignalledWhileAHookBlocks(t *testing.T) {
 	stdout.Reset()
 	stderr.Reset()
 	exited := make(chan int, 1)
-	go func() { exited <- run([]string{"rebase", id}, &stdout, &stderr) }()
+	go func() { exited <- run([]string{"rebase", id}, &stdout, &stderr, os.Exit) }()
 	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(20 * time.Millisecond) {
 		if _, err := os.Stat(started); err == nil {
 			break

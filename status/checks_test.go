@@ -88,7 +88,7 @@ floor: {
 
 func (r *checksRepo) checks(args ...string) (stdout, stderr string, code int) {
 	var out, errb bytes.Buffer
-	code = run(append([]string{"checks"}, args...), &out, &errb)
+	code = run(append([]string{"checks"}, args...), &out, &errb, os.Exit)
 	return out.String(), errb.String(), code
 }
 

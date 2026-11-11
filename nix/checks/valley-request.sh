@@ -989,17 +989,10 @@ git push --quiet origin \
 arm_race "git -C '$origin' update-ref -d refs/the-valley/integration-requests/main/topic-ten"
 : > "$pushlog"
 printf 'a\ns\n' > "$w/answers"
-VALLEY_WALK_OUTCOME="$w/posthoc.outcome" valley review -v topic/ten < "$w/answers" \
-  > "$w/posthoc.out" 2> "$w/posthoc.err"
+valley review -v topic/ten < "$w/answers" > "$w/posthoc.out" 2> "$w/posthoc.err"
 disarm_race
 
 grep -qx '? topic/ten  approved · request consumed meanwhile · see: valley status topic/ten' "$w/posthoc.out"
-# In a walk, a request whose state approve could not establish is a
-# refusal of the step, as review takes it from approve's outcome.
-[ "$(cat "$w/posthoc.outcome")" = refused ] || {
-  echo "valley-request: review took a request in an unknown state as $(cat "$w/posthoc.outcome")" >&2
-  exit 1
-}
 # The claim the old code would have made, from a read that had gone out of
 # date under it.
 if grep -q 'the request already stood at this head' "$w/posthoc.out"; then
@@ -2891,10 +2884,9 @@ git show-ref --verify --quiet refs/tags/refs/remotes/origin/main || {
 cd "$repo" || exit 1
 
 # ----------------------------------------------------------------------
-# 23. review's [a]pprove runs valley-go approve on review's terminal, and
-#     approve tells review how the attempt ended. In a walk, review passes
-#     it on as the step's outcome: approved with the head filed, and
-#     refused after a failed check. A ctrl-C during the checks stops them,
+# 23. review's [a]pprove runs valley-go approve on review's terminal:
+#     a plain branch approved is filed at the head review showed, and a
+#     failed check is said at the prompt. A ctrl-C during the checks stops them,
 #     removes their worktree, records the attempt's end as interrupted and
 #     exits 130, from the approve verb and from review alike. The check
 #     that holds until it is stopped is main's for held/, which nothing
@@ -2910,20 +2902,16 @@ for branch in walked leaked; do
 done
 git checkout --quiet main
 printf 'a\n' > "$w/answers"
-VALLEY_WALK_OUTCOME="$w/walked.outcome" valley review topic/walked < "$w/answers" \
-  > "$w/walked.out" 2> "$w/walked.err"
-if [ "$(cat "$w/walked.outcome")" != "$(printf 'approved\t\t\t\t%s' "$(git rev-parse topic/walked)")" ]; then
-  echo "valley-request: review's outcome for a plain branch it approved is $(cat "$w/walked.outcome")" >&2
+valley review topic/walked < "$w/answers" > "$w/walked.out" 2> "$w/walked.err"
+walked="$(git -C "$origin" show-ref --verify --hash refs/the-valley/integration-requests/main/topic-walked || true)"
+if [ "$walked" != "$(git rev-parse topic/walked)" ]; then
+  echo "valley-request: review's approval of a plain branch filed $walked, not its head" >&2
   exit 1
 fi
 printf 'a\ns\n' > "$w/answers"
-VALLEY_WALK_OUTCOME="$w/leaked.outcome" valley review topic/leaked < "$w/answers" \
-  > "$w/leaked.out" 2> "$w/leaked.err"
+valley review topic/leaked < "$w/answers" > "$w/leaked.out" 2> "$w/leaked.err"
 grep -qxF "topic/leaked · checks failed at $(git rev-parse --short topic/leaked)" "$w/leaked.out"
-[ "$(cat "$w/leaked.outcome")" = refused ] || {
-  echo "valley-request: review's outcome after a failed check is $(cat "$w/leaked.outcome")" >&2
-  exit 1
-}
+grep -qF 'skipped topic/leaked; nothing done' "$w/leaked.out"
 
 held="$TMPDIR/held"
 git checkout --quiet -b held-policy origin/main
@@ -2985,9 +2973,9 @@ grep -rh '"type":"approve.end"' "$w/held-state" | grep -qF '"result":"interrupte
 }
 printf 'a\n' > "$w/answers"
 mkdir "$w/held-tmp"
-ctrl_c held-review "$w/answers" env TMPDIR="$w/held-tmp" VALLEY_WALK_OUTCOME="$w/held.outcome" valley review topic/held
-[ "$stopped" = 130 ] && [ "$(cat "$w/held.outcome")" = interrupted ] || {
-  echo "valley-request: review exited $stopped, with the outcome $(cat "$w/held.outcome"), after a ctrl-C during its checks" >&2
+ctrl_c held-review "$w/answers" env TMPDIR="$w/held-tmp" valley review topic/held
+[ "$stopped" = 130 ] || {
+  echo "valley-request: review exited $stopped after a ctrl-C during its checks" >&2
   exit 1
 }
 left_behind review

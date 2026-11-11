@@ -55,7 +55,7 @@ func runStack(g git, args []string, w io.Writer) error {
 	if !g.succeeds(true, "rev-parse", "--git-dir") {
 		return failure("not a git repository")
 	}
-	layers, err := stackLayers(g, args[0])
+	layers, err := stackLayers(g, newVerifier(), args[0])
 	if err != nil {
 		return err
 	}
@@ -73,13 +73,13 @@ type stackLayer struct {
 }
 
 // stackLayers is the layers runStack prints of the change named, bottom
-// first, the change itself last.
-func stackLayers(g git, name string) ([]stackLayer, error) {
+// first, the change itself last, read with v.
+func stackLayers(g git, v verifier, name string) ([]stackLayer, error) {
 	r, err := resolveRecorded(g, name)
 	if err != nil {
 		return nil, err
 	}
-	s, err := readSnapshot(g, newVerifier())
+	s, err := readSnapshot(g, v)
 	if err != nil {
 		return nil, err
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -41,7 +42,7 @@ func TestResolveRefusesANameThatIsNoBranch(t *testing.T) {
 
 	for _, name := range []string{"main\x1fjunk", "main\tjunk", "origin/main\x1fjunk", "topic/\xff", "a..b", "with space"} {
 		var stdout, stderr bytes.Buffer
-		if code := run([]string{"resolve", name}, &stdout, &stderr); code == 0 {
+		if code := run([]string{"resolve", name}, &stdout, &stderr, os.Exit); code == 0 {
 			t.Errorf("resolve %q was accepted: %q", name, stdout.String())
 		}
 		if stdout.Len() != 0 {
@@ -53,7 +54,7 @@ func TestResolveRefusesANameThatIsNoBranch(t *testing.T) {
 	}
 	for name, want := range map[string]string{"main": "branch\tmain\n", "origin/main": "branch\tmain\n"} {
 		var stdout, stderr bytes.Buffer
-		if code := run([]string{"resolve", name}, &stdout, &stderr); code != 0 {
+		if code := run([]string{"resolve", name}, &stdout, &stderr, os.Exit); code != 0 {
 			t.Fatalf("resolve %q: %s", name, stderr.String())
 		}
 		if stdout.String() != want {

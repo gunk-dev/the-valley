@@ -30,18 +30,29 @@ func TestTelemetryMentioned(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Chdir(repo)
-	if !telemetryMentioned() {
+	if !telemetryMentioned(git{env: os.Environ()}) {
 		t.Fatal("outside a repository, git must answer")
 	}
 	os.MkdirAll(filepath.Join(repo, ".git"), 0o755)
 	os.WriteFile(filepath.Join(repo, ".git", "config"), []byte("[core]\n\tbare = false\n"), 0o644)
-	if telemetryMentioned() {
+	if telemetryMentioned(git{env: os.Environ()}) {
 		t.Fatal("no file mentions telemetry, yet git would be asked")
 	}
 	for _, text := range []string{"[valley]\n\tTelemetry = true\n", "[include]\n\tpath = elsewhere\n"} {
 		os.WriteFile(filepath.Join(home, ".gitconfig"), []byte(text), 0o644)
-		if !telemetryMentioned() {
+		if !telemetryMentioned(git{env: os.Environ()}) {
 			t.Fatalf("%q is not read as a possible yes", text)
 		}
+	}
+	// A walk's step asks about its own repository, wherever the process is.
+	os.Remove(filepath.Join(home, ".gitconfig"))
+	step := t.TempDir()
+	os.MkdirAll(filepath.Join(step, ".git"), 0o755)
+	os.WriteFile(filepath.Join(step, ".git", "config"), []byte("[valley]\n\ttelemetry = true\n"), 0o644)
+	if !telemetryMentioned(git{env: os.Environ(), dir: step}) {
+		t.Fatal("the step's repository mentions telemetry, and it was not read")
+	}
+	if telemetryMentioned(git{env: os.Environ()}) {
+		t.Fatal("the working directory's repository mentions no telemetry, yet git would be asked")
 	}
 }

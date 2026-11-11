@@ -91,15 +91,15 @@ what the serving host publishes at refs/the-valley/signers.`
 
 func main() {
 	// A verb bin/valley execs this program for records its command record
-	// once it has run (command.go).
+	// once it has run (command.go), in the current checkout. A verb a
+	// signal ends records it too, through end.
 	inv := execed(os.Args[1:])
-	exitWith = func(status int) {
-		inv.record(status, commandTimed)
+	here := git{env: gitEnvironment(os.Environ()), stderr: io.Discard}
+	end := func(status int) {
+		inv.record(here, status, commandTimed)
 		os.Exit(status)
 	}
-	status := run(os.Args[1:], os.Stdout, os.Stderr)
-	inv.record(status, commandTimed)
-	os.Exit(status)
+	end(run(os.Args[1:], os.Stdout, os.Stderr, end))
 }
 
 // commandTimed is whether the command record holds each phase's time.
@@ -114,7 +114,9 @@ type failure string
 
 func (f failure) Error() string { return string(f) }
 
-func run(args []string, stdout, stderr io.Writer) int {
+// run runs the verb args name. end ends the process from a verb a signal
+// interrupts, once the verb has cleaned up; it does not return.
+func run(args []string, stdout, stderr io.Writer, end func(int)) int {
 	g := git{env: gitEnvironment(os.Environ()), stderr: stderr}
 	verb := ""
 	if len(args) > 0 {
@@ -162,7 +164,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "checks":
 		err = runChecks(g, args, stdout)
 	case "approve":
-		return runApprove(g, args, stdout, stderr)
+		return runApprove(g, args, stdout, stderr, end)
 	case "verdict":
 		return runVerdict(args, stdout, stderr)
 	case "changes":
@@ -170,9 +172,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "pending":
 		err = runPending(g, args, stdout, stderr)
 	case "review":
-		return runReview(g, args, stdout, stderr)
+		return runReview(g, args, stdout, stderr, end)
 	case "walk":
-		return runWalk(g, args, stdout, stderr)
+		return runWalk(g, args, stdout, stderr, end)
 	case "telemetry":
 		err = runTelemetry(g, args, stdout, stderr)
 	case "self-update":
@@ -242,6 +244,17 @@ func gitEnvironment(inherited []string) []string {
 	return append(kept, "GIT_NO_REPLACE_OBJECTS=1")
 }
 
+// command is git run with args in g's repository and environment.
+func (g git) command(args ...string) *exec.Cmd { return g.program("git", args...) }
+
+// program is the program name run with args in g's repository directory
+// and environment, the current directory's when g names none.
+func (g git) program(name string, args ...string) *exec.Cmd {
+	cmd := exec.Command(name, args...)
+	cmd.Env, cmd.Dir = g.env, g.dir
+	return cmd
+}
+
 // output runs git and returns what it printed, less trailing newlines, as
 // a shell's command substitution reads it. A quiet run discards git's
 // diagnostics; any other passes them on.
@@ -252,9 +265,7 @@ func (g git) output(quiet bool, args ...string) (string, error) {
 // input is output with stdin.
 func (g git) input(quiet bool, stdin io.Reader, args ...string) (string, error) {
 	processStarted()
-	cmd := exec.Command("git", args...)
-	cmd.Env = g.env
-	cmd.Dir = g.dir
+	cmd := g.command(args...)
 	cmd.Stdin = stdin
 	if !quiet {
 		cmd.Stderr = g.stderr

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -61,7 +62,7 @@ func TestStackListsLayersBottomFirst(t *testing.T) {
 	run1 := func(args ...string) string {
 		t.Helper()
 		var stdout, stderr bytes.Buffer
-		if code := run(args, &stdout, &stderr); code != 0 {
+		if code := run(args, &stdout, &stderr, os.Exit); code != 0 {
 			t.Fatalf("valley-go %s: %s", strings.Join(args, " "), stderr.String())
 		}
 		return stdout.String()

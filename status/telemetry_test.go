@@ -20,10 +20,14 @@ import (
 )
 
 // TestMain runs the test binary as the fake ssh the telemetry tests put
-// on PATH, when it is invoked under that name.
+// on PATH, when it is invoked under that name, and as the checks read a
+// review starts, which runs this program's checkline (walk_test.go).
 func TestMain(m *testing.M) {
 	if filepath.Base(os.Args[0]) == "ssh" {
 		os.Exit(fakeSSH(os.Args[1:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "checkline" {
+		os.Exit(fakeCheckline())
 	}
 	os.Exit(m.Run())
 }

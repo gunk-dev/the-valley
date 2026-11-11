@@ -486,46 +486,56 @@ still needs you (2): guarded knkn, open popo
 ```
 
 - **Each step:** A header gives the step's place, the project, the handle and active version, the
-  stack the change tops, and its checks as `valley pending` counts them. Then
-  `<valley> review [-v] [--build-here] <change ID>` runs, with the walk's stdin, stdout and stderr,
-  where `<valley>` is `VALLEY_COMMAND` made absolute. It runs in the current checkout's top level,
-  or in the cache clone the project is read through (see
-  [Client state and cache files](#client-state-and-cache-files)), with `GIT_DIR`, `GIT_WORK_TREE`
-  and the other variables that select a repository removed. For a cache clone, the current
+  stack the change tops, and its checks as `valley pending` counts them. Then the review of that one
+  change runs in the same process, with the walk's stdin, stdout and stderr, in the current
+  checkout's top level, or in the cache clone the project is read through (see
+  [Client state and cache files](#client-state-and-cache-files)). Every process the review starts
+  runs there, unless it targets a tree of its own, with `GIT_DIR`, `GIT_WORK_TREE` and the other
+  variables that select a repository removed for a cache clone. For a cache clone, the current
   checkout's `valley.principal`, `user.name` and `user.email` are appended to `GIT_CONFIG_COUNT`,
   `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`, each only when the clone's own configuration does
-  not set it.
-- **The child's variables:** `VALLEY_WALK_QUEUED` is `<change ID> <version> <head>` as the queue
-  held it. `VALLEY_WALK_OUTCOME` names the file the review writes its outcome to: one line of
-  tab-separated fields.
+  not set it. The review verifies transfer statements with the same known-signers file and
+  integrator name as the walk's queue read.
+- **A project that names another valley:** A step in a cache clone whose project's `main` names
+  another valley than the current checkout's, or none, is not reviewed, since the walk trusts its
+  own valley's integrator. It ends in `error`, with a reason that names both valleys' URLs, or says
+  the project names none, and says to review it from a checkout of its own valley. Two URLs name one
+  valley when they are the same, or when both publish the same `refs/the-valley/signers`. When
+  `VALLEY_KNOWN_SIGNERS` or `VALLEY_INTEGRATOR_SIGNER` gives what to trust, every project is
+  reviewed with it.
+- **Outcomes:** Each step ends with one outcome, which the summary shows.
 
-  | Outcome                                          | Summary                                                                    | Glyph |
-  | ------------------------------------------------ | -------------------------------------------------------------------------- | ----- |
-  | `approved <change ID> <handle> <version> <head>` | `approved`, `approved v<n>`, or `approved <handle> v<n>, a layer under it` | `✓`   |
-  | `rejected <branch>`                              | `rejected · branch deleted`                                                | `✓`   |
-  | `kept <branch>`                                  | `kept · rejection not confirmed`                                           | `◇`   |
-  | `skipped`                                        | `skipped`                                                                  | `◇`   |
-  | `refused`                                        | `refused, then skipped`                                                    | `⊘`   |
-  | `moved`                                          | `moved while shown`                                                        | `◇`   |
-  | `not-reviewed <reason>`                          | `not reviewed · <reason>`                                                  | `⊘`   |
-  | `interrupted`                                    | `interrupted`                                                              | `◇`   |
-  | `error`                                          | `error`                                                                    | `✗`   |
+  | Outcome        | Summary                                                                    | Glyph |
+  | -------------- | -------------------------------------------------------------------------- | ----- |
+  | `approved`     | `approved`, `approved v<n>`, or `approved <handle> v<n>, a layer under it` | `✓`   |
+  | `rejected`     | `rejected · branch deleted`                                                | `✓`   |
+  | `kept`         | `kept · rejection not confirmed`                                           | `◇`   |
+  | `skipped`      | `skipped`                                                                  | `◇`   |
+  | `refused`      | `refused, then skipped`                                                    | `⊘`   |
+  | `moved`        | `moved while shown`                                                        | `◇`   |
+  | `not-reviewed` | `not reviewed · <reason>`                                                  | `⊘`   |
+  | `interrupted`  | `interrupted`                                                              | `◇`   |
+  | `error`        | `error`, or `error · <reason>`                                             | `✗`   |
 
-  A step that leaves no outcome the walk reads is `error`.
+  A step that ends in `error` does not end the walk.
 
 - **Before the review shows anything:** It reads the change again. A change that landed, is not
   ready, or has no branch on `origin` prints `<handle> is not reviewed: <reason>` and the step ends.
   A change ready at another version or head prints
   `<handle> moved to v<n> since the queue was read`, and that version is reviewed.
-- **Ctrl-C:** The walk catches `SIGINT` while a step runs. A step that exits `130`, or during which
-  `SIGINT` arrives, ends the walk: it prints the summary so far and exits `130`.
+- **Signals:** `SIGINT` (Ctrl-C) or `SIGTERM` during a step, including one sent to the walk's
+  process alone, ends the step `interrupted`, once a pager or editor it runs has exited. The walk
+  then prints the summary so far and exits `130`. Either signal between steps, or while a step
+  cleans up, ends the walk the same way before the next step, once the step under way has ended as
+  it would. During the queue's second read, either ends the walk with `130` once the read has ended.
+  `SIGHUP` during a step ends the walk at once with `129`.
 - **Summary:** One line per step in walk order, then the queue read again:
   `still needs you (<n>): <project> <handle>, …`, or `nothing needs you` when every project read.
 - **An empty queue:** Prints `nothing needs you`, then `valley pending`'s counts of moving changes,
   drafts and branches no change is on, and exits `0`. When a project did not read, it prints the `✗`
   lines instead and exits `1`.
 - **Exit status:** `0`; `1` when a step ended in `error` or a project did not read; `130` when
-  interrupted.
+  interrupted; `129` when hung up during a step.
 
 ### `valley approve`
 
@@ -1388,7 +1398,6 @@ export VALLEY_ATTEST_NAME=operator
 | `VALLEY_ATTEST_SCHEMA`       | `attest`, `integrator`                                          | Path to `schema/attestation.cue`, set by the Nix wrapper.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `VALLEY_EVENT_SCHEMA`        | `integrator`                                                    | Path to `schema/events.cue`, set by the Nix wrapper.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `VALLEY_IDENTITY_SCHEMA`     | `identity`                                                      | Path to `schema/identity.cue`, set by the Nix wrapper.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `VALLEY_COMMAND`             | `review`                                                        | Executable the walk (`valley review` with no change) runs as `<valley> review <change ID>` for each step (`bin/valley` sets `VALLEY_COMMAND` to its own path; defaults to `"valley"`).                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `VALLEY_NOW`                 | `knot`, `plan`, `valley-worker`                                 | Optional UTC timestamp in `RFC 3339` format (`YYYY-MM-DDTHH:MM:SSZ`) overriding the system clock for knot `created` dates, comment stamps, comment edit times, claim timestamps, claim age calculations, and the check worker's waits after a failed batch. Invalid values exit `2`.                                                                                                                                                                                                                                                                                                                           |
 | `VALLEY_TELEMETRY_DIR`       | `valley-worker`, `integrator`                                   | Host-side: the directory a producer exports its telemetry to, set by the NixOS module ([Telemetry](architecture.md#telemetry)). Unset, the producer records nothing.                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `VALLEY_REVIEW_CHECKS_WAIT`  | `review`                                                        | Whole seconds `valley review` waits, at most, for a change's checks line before the prompt (default `0`: it does not wait). The line takes about as long to read as `valley pending --checks` takes for one project, so a prompt that follows a short diff right away shows it only with a wait of a few seconds.                                                                                                                                                                                                                                                                                              |
@@ -1515,8 +1524,10 @@ stacks), `steps` (the reviews a walk runs), and `other`. With telemetry off, `va
 no extra process and write no file: `valley-go` reads the git configuration files directly and runs
 `git` only when one mentions telemetry or includes another file. With telemetry on, the command runs
 one `git config` and starts the background flusher. `review` of one change records no phases: its
-time is the operator's reading. `tail` and `replay`, which the script runs itself, pass their record
-on exit to `valley-go telemetry command`, which checks configuration the same way.
+time is the operator's reading. A walk records each step's review the same way, as a `review` of one
+change from the step's repository, so a step read through a cache clone is its project's. `tail` and
+`replay`, which the script runs itself, pass their record on exit to `valley-go telemetry command`,
+which checks configuration the same way.
 
 Every approval attempt also records its steps: `valley approve`, and each `[a]pprove` answer in
 `valley review`, a stack's layers included. An attempt records its start, the policy it derived,

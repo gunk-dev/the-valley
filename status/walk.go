@@ -12,55 +12,60 @@ package main
 // says that nothing needs the operator while either stands.
 //
 // Each step prints a header naming the row's project, handle, version,
-// stack and checks, then runs the single-change review as a child:
+// stack and checks, then calls the single-change review (review.go) with
+// a reviewStep for the row: the git handle on the row's repository root,
+// the current checkout's top level or the cache clone a project other
+// than the current one is read through (cacheRepo, list.go), with
+// cacheEnvironment's environment; the change as the queue held it, its ID,
+// version and head; the walk's -v and --build-here; the walk's terminal
+// and streams; and the walk's signer source. Every process the step starts
+// runs in that root and environment, unless it targets a tree of its own,
+// and nothing is set in the walk's own environment or directory. A cache
+// clone's configuration is its own, so the step's environment gives it
+// the current checkout's valley.principal, user.name and user.email
+// through GIT_CONFIG_COUNT, for each key the clone's own configuration
+// does not set, and nothing is written into the clone.
 //
-//	$VALLEY_COMMAND review [-v] [--build-here] <change ID>
+// The walk's signer source trusts the integrator of the valley the
+// current checkout's main names. A step in a cache clone whose project's
+// main names another valley, or none, is not reviewed with it
+// (walkValley): the step ends in error, saying which valley each names,
+// unless a flag or the environment gives what the walk trusts.
 //
-// in the row's repository root: the current checkout's top level, or the
-// cache clone a project other than the current one is read through
-// (cacheRepo, list.go), with cacheEnvironment's environment. The child has
-// the walker's stdin, stdout and stderr. A cache clone's configuration is
-// its own, so the child is given the current checkout's valley.principal,
-// user.name and user.email through GIT_CONFIG_COUNT, for each key the
-// clone's own configuration does not set, and nothing is written into the
-// clone. Two variables tell the child it is a step of a walk:
+// The review returns how the step ended (stepOutcome), and the walk goes
+// on to the next row whatever it was, an error included. Each review a
+// step runs is recorded as an untimed review command of its own, from the
+// step's repository and environment, so a step in a cache clone is its
+// project's.
 //
-//	VALLEY_WALK_QUEUED   <change ID> <version> <head>, as the queue held it
-//	VALLEY_WALK_OUTCOME  the file the child writes how the step ended to
-//
-// The outcome is one line of tab-separated fields, its first field one of:
-//
-//	approved <change ID> <handle> <version> <head>   what the step approved
-//	rejected <branch>        the branch was deleted from origin
-//	kept <branch>            the rejection was not confirmed
-//	skipped
-//	refused                  an answer was refused, then the change skipped
-//	moved                    it moved while it was shown
-//	not-reviewed <reason>    it landed, is not ready, or has no branch now
-//	interrupted
-//	error
-//
-// A child that leaves no outcome the walker reads ended in error. While a
-// child runs, the walker catches SIGINT rather than ignoring it, so the
-// child, which a terminal's Ctrl-C reaches too, keeps its own handling.
-// A step interrupted, by the child exiting 130 or by SIGINT reaching the
-// walker, ends the walk: the summary so far is printed and the walk exits
-// 130.
+// Once the queue is first read, until the process exits, the walk
+// catches SIGINT and SIGTERM, and each step's review takes them from the
+// walk's catch while it listens (review.go): SIGINT and SIGTERM end the
+// step interrupted, SIGTERM sent to the walk alone included, and SIGHUP
+// ends it with 129. The review ends the walk through the step's end path:
+// once the step has cleaned up, the summary so far is printed (not for
+// SIGHUP), the step and the walk are recorded, and the process exits with
+// the review's status. One that arrives while no review listens, between
+// steps or while a step cleans up, ends the walk before the next step:
+// the step under way ends as it would and is recorded, the summary so far
+// is printed, and the walk exits 130. One that arrives while the queue is
+// read again ends the walk with 130 once the read has ended.
 //
 // The summary is one line per row walked, then what still needs the
 // operator, read again from every project, and what either read did not
 // cover.
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"the-valley/change"
 )
@@ -78,25 +83,23 @@ type walkQueue struct {
 	drafts, branches int
 }
 
-// stepOutcome is how one step ended, as its outcome file says.
-type stepOutcome struct {
-	kind   string
-	fields []string
-}
-
 // walkStep is one row walked and how its step ended.
 type walkStep struct {
 	row     *entry
 	outcome stepOutcome
 }
 
-func runWalk(g git, args []string, stdout, stderr io.Writer) int {
+// runWalk walks the queue. end ends the process when a signal ends a step,
+// after the walk has said what it walked; it does not return.
+func runWalk(g git, args []string, stdout, stderr io.Writer, end func(int)) int {
 	l := listing{all: true}
-	var child []string // the flags each step's review is given
+	var flags []string // the flags each step's review is recorded with
+	var verbose, buildHere bool
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; {
 		case a == "-v" || a == "--build-here":
-			child = append(child, a)
+			flags = append(flags, a)
+			verbose, buildHere = verbose || a == "-v", buildHere || a == "--build-here"
 		case a == "--repo" && i+1 < len(args):
 			i++
 			l.repo = args[i]
@@ -111,16 +114,12 @@ func runWalk(g git, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "valley: --repo %s: not a project name\n", l.repo)
 		return 1
 	}
-	valley, err := walkCommand()
-	if err != nil {
-		fmt.Fprintf(stderr, "valley: %s\n", err)
-		return 1
-	}
 	q, err := readWalkQueue(g, l, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "valley: %s\n", err)
 		return 1
 	}
+	defer closeSources(q.repos)
 	warnUnverified(q.repos, stderr)
 	t := terminalOf(stdout)
 	p := func(format string, args ...any) { fmt.Fprintf(stdout, format, args...) }
@@ -139,86 +138,82 @@ func runWalk(g git, args []string, stdout, stderr io.Writer) int {
 		p("%s\n", line)
 	}
 
-	scratch, err := os.MkdirTemp("", "valley-walk-")
-	if err != nil {
-		fmt.Fprintf(stderr, "valley: no scratch directory for the walk's outcomes: %v\n", err)
-		return 1
-	}
-	defer os.RemoveAll(scratch)
 	top, _ := g.output(true, "rev-parse", "--show-toplevel")
 	repos := map[string]listed{}
 	for _, r := range q.repos {
 		repos[r.name] = r
 	}
-	interrupts := make(chan os.Signal, 1)
-	signal.Notify(interrupts, os.Interrupt)
+	own := &walkValley{g: g, given: verification.given(), published: map[string]publication{}}
 	var walked []walkStep
-	interrupted, broken := false, false
+	summary := func() int {
+		status := 0
+		p("\nwalked (%d of %d)\n", len(walked), len(q.rows))
+		for _, s := range walked {
+			p("%s\n", s.line(t, q.h))
+			if s.outcome.kind == "error" {
+				status = 1
+			}
+		}
+		return status
+	}
+	// Never stopped: the process exits holding it.
+	interrupts := make(chan os.Signal, 1)
+	signal.Notify(interrupts, os.Interrupt, syscall.SIGTERM)
+	interrupted := false
 	for i, e := range q.rows {
-		if interrupted = interrupted || caught(interrupts); interrupted || broken {
+		if interrupted = interrupted || caught(interrupts); interrupted {
 			break
 		}
 		p("\n%s\n", stepHeader(t, i+1, len(q.rows), e))
-		step := walkStep{row: e}
 		r := repos[e.repo]
-		dir := r.g.dir
-		if dir == "" {
-			dir = top
-		}
-		if dir == "" {
-			step.outcome = stepOutcome{kind: "error", fields: []string{"no work tree here to review it in"}}
-			walked = append(walked, step)
-			continue
-		}
-		outcome := filepath.Join(scratch, fmt.Sprintf("step-%d", i+1))
-		cmd := exec.Command(valley, append(append([]string{"review"}, child...), e.id)...)
-		cmd.Dir = dir
-		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, stdout, stderr
-		env := os.Environ()
+		step := git{env: g.env, stderr: g.stderr, dir: top}
 		if r.g.dir != "" {
-			env = withConfig(cacheEnvironment(env), borrowedConfig(g, r.g))
+			step.dir, step.env = r.g.dir, withConfig(r.g.env, borrowedConfig(g, r.g))
 		}
-		cmd.Env = append(env,
-			fmt.Sprintf("VALLEY_WALK_QUEUED=%s %d %s", e.id, e.version, e.head),
-			"VALLEY_WALK_OUTCOME="+outcome)
-		end := phase("steps")
-		processStarted()
-		if err := cmd.Start(); err != nil {
-			end()
-			step.outcome = stepOutcome{kind: "error", fields: []string{fmt.Sprintf("could not run %s: %v", valley, err)}}
-			walked, broken = append(walked, step), true
+		if step.dir == "" {
+			walked = append(walked, walkStep{row: e, outcome: stepOutcome{kind: "error", reason: "no work tree here to review it in"}})
 			continue
 		}
-		_ = cmd.Wait()
-		end()
-		interrupted = caught(interrupts) || cmd.ProcessState.ExitCode() == 130
-		var ok bool
-		if step.outcome, ok = readOutcome(outcome); !ok {
-			step.outcome = stepOutcome{kind: "error"}
-			if interrupted {
-				step.outcome.kind = "interrupted"
-			}
+		if why := own.elsewhere(r.g); why != "" {
+			fmt.Fprintf(stderr, "valley: %s: %s\n", e.repo, why)
+			walked = append(walked, walkStep{row: e, outcome: stepOutcome{kind: "error", reason: why}})
+			continue
 		}
-		walked = append(walked, step)
+		inv := &invocation{args: append(append([]string{"review"}, flags...), e.id), since: time.Now(), version: producerStamp}
+		left := phase("steps")
+		o := reviewChange(reviewStep{g: step, queued: &queuedChange{id: e.id, version: e.version, head: e.head},
+			verbose: verbose, buildHere: buildHere, stdin: os.Stdin, stdout: stdout, stderr: stderr,
+			signers: verification, interrupts: interrupts,
+			end: func(status int, o stepOutcome) {
+				walked = append(walked, walkStep{row: e, outcome: o})
+				if status == interruptedStatus {
+					summary()
+				}
+				inv.record(step, status, false)
+				closeSources(q.repos)
+				verification.done()
+				end(status)
+			}}, e.id)
+		left()
+		inv.record(step, o.status, false)
+		walked = append(walked, walkStep{row: e, outcome: o})
+		interrupted = caught(interrupts)
 	}
-	signal.Stop(interrupts)
 
-	status := 0
-	p("\nwalked (%d of %d)\n", len(walked), len(q.rows))
-	for _, s := range walked {
-		p("%s\n", s.line(t, q.h))
-		if s.outcome.kind == "error" {
-			status = 1
-		}
-	}
+	status := summary()
 	if interrupted {
-		return 130
+		return interruptedStatus
 	}
 	again, err := readWalkQueue(g, l, io.Discard)
+	if caught(interrupts) {
+		closeSources(again.repos)
+		return interruptedStatus
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "valley: the queue did not read again: %s\n", err)
 		return 1
 	}
+	closeSources(again.repos)
 	// The summary repeats what the first read did not cover, since the walk
 	// left it out, and adds what the second read did not.
 	for _, gap := range again.gaps {
@@ -246,6 +241,74 @@ func runWalk(g git, args []string, stdout, stderr io.Writer) int {
 	return status
 }
 
+// walkValley is the valley the walk's checkout's main names, whose
+// publication the walk's signer source reads, set against the valley each
+// step's cache clone names (instanceOf). A step whose project names
+// another valley, or none, is not verified with the walk's source: the
+// integrator that signs its transfer statements is its own valley's.
+type walkValley struct {
+	g     git  // the walk's checkout
+	given bool // a flag or the environment gives what the walk trusts
+
+	read      bool
+	instance  string
+	err       error
+	published map[string]publication // what each instance URL read publishes
+}
+
+// publication is the signers tree an instance repository publishes, ""
+// for none, or the error of reading it.
+type publication struct {
+	tree string
+	err  error
+}
+
+// elsewhere is why a step in the cache clone c is not reviewed with the
+// walk's signer source, or "" when its project's main names the walk's
+// valley. Two URLs are one valley when they are the same string, or when
+// both read the same signers publication, which holds for two spellings
+// of one repository and makes the trust the same either way. When the
+// operator gave what the walk trusts, every step is reviewed with it.
+func (v *walkValley) elsewhere(c git) string {
+	if v.given || c.dir == "" {
+		return ""
+	}
+	const there = " · review it from a checkout of its own valley"
+	theirs, err := instanceOf(c)
+	var none noInstance
+	switch {
+	case errors.As(err, &none):
+		return "its main names no valley" + there
+	case err != nil:
+		return fmt.Sprintf("could not read which valley its main names: %v", err)
+	}
+	if !v.read {
+		v.read = true
+		v.instance, v.err = instanceOf(v.g)
+	}
+	if v.err != nil {
+		return fmt.Sprintf("could not read which valley this checkout's main names: %v", v.err)
+	}
+	if theirs == v.instance {
+		return ""
+	}
+	if a, b := v.publication(theirs), v.publication(v.instance); a.err == nil && b.err == nil && a.tree == b.tree {
+		return ""
+	}
+	return fmt.Sprintf("its main names the valley %s, not this checkout's %s%s", theirs, v.instance, there)
+}
+
+// publication is what the instance repository at url publishes, read once.
+func (v *walkValley) publication(url string) publication {
+	if p, ok := v.published[url]; ok {
+		return p
+	}
+	tree, err := remoteRef(v.g.restricted(), url, signersRef)
+	p := publication{tree: tree, err: err}
+	v.published[url] = p
+	return p
+}
+
 // caught reports whether a signal is waiting on c, and takes it.
 func caught(c chan os.Signal) bool {
 	select {
@@ -256,26 +319,8 @@ func caught(c chan os.Signal) bool {
 	}
 }
 
-// walkCommand is the valley command each step runs, as an absolute path,
-// since a step runs in another directory: VALLEY_COMMAND, which bin/valley
-// sets to its own path, or valley on PATH.
-func walkCommand() (string, error) {
-	v := os.Getenv("VALLEY_COMMAND")
-	if v == "" {
-		v = "valley"
-	}
-	if !strings.Contains(v, "/") {
-		found, err := exec.LookPath(v)
-		if err != nil {
-			return "", fmt.Errorf("no %s command to review each change with: %v", v, err)
-		}
-		v = found
-	}
-	return filepath.Abs(v)
-}
-
 // readWalkQueue reads the queue across the repositories l covers, and
-// what the read did not cover.
+// what the read did not cover. closeSources removes what it read.
 func readWalkQueue(g git, l listing, stderr io.Writer) (walkQueue, error) {
 	list, _, gap, err := findSources(g, l)
 	if err != nil {
@@ -376,37 +421,15 @@ func withConfig(env []string, kv [][2]string) []string {
 	return append(kept, fmt.Sprintf("GIT_CONFIG_COUNT=%d", n+len(kv)))
 }
 
-// outcomeFields is how many fields each outcome takes after its name.
-var outcomeFields = map[string]int{
-	"approved": 4, "rejected": 1, "kept": 1, "skipped": 0, "refused": 0,
-	"moved": 0, "not-reviewed": 1, "interrupted": 0, "error": 0,
-}
-
-// readOutcome reads a step's outcome file. ok is false when there is none,
-// or it is no outcome.
-func readOutcome(path string) (o stepOutcome, ok bool) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return o, false
-	}
-	line, _, _ := strings.Cut(string(b), "\n")
-	f := strings.Split(line, "\t")
-	n, known := outcomeFields[f[0]]
-	if !known || len(f)-1 != n {
-		return o, false
-	}
-	return stepOutcome{kind: f[0], fields: f[1:]}, true
-}
-
 // line is the summary's line for a step: its glyph, the row's project,
 // handle and version, and what became of it.
 func (s walkStep) line(t terminal, h handleMap) string {
-	e, f := s.row, s.outcome.fields
-	glyph, colour, says := "◇", colourWaiting, s.outcome.kind
-	switch s.outcome.kind {
+	e, o := s.row, s.outcome
+	glyph, colour, says := "◇", colourWaiting, o.kind
+	switch o.kind {
 	case "approved":
 		glyph, colour = "✓", colourDone
-		id, handle, version := f[0], f[1], f[2]
+		id, handle, version := o.id, o.handle, o.version
 		if known := h[handleKey{e.repo, recordTarget, id}]; known != "" {
 			handle = known
 		}
@@ -425,11 +448,11 @@ func (s walkStep) line(t terminal, h handleMap) string {
 	case "moved":
 		says = "moved while shown"
 	case "not-reviewed":
-		glyph, colour, says = "⊘", colourRefused, "not reviewed · "+f[0]
+		glyph, colour, says = "⊘", colourRefused, "not reviewed · "+o.reason
 	case "error":
 		glyph, colour = "✗", colourRefused
-		if len(f) > 0 {
-			says += " · " + f[0]
+		if o.reason != "" {
+			says += " · " + o.reason
 		}
 	}
 	lead := "  " + glyph + " " + e.repo + " "

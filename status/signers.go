@@ -87,13 +87,25 @@ type signerSource struct {
 	temp          string              // the published file, written out for attest
 }
 
-// verification is the current run's source, which run sets up.
+// verification is the current run's source, which run sets up. A walk
+// gives it to each step's review (walk.go).
 var verification = &signerSource{}
 
 // newVerifier is what a snapshot checks a transfer statement with: the
 // values the current run's source finds, once one is needed.
-func newVerifier() verifier {
-	return verifier{Attest: "attest", Resolve: verification.resolve}
+func newVerifier() verifier { return verification.verifier() }
+
+// verifier is what a snapshot checks a transfer statement with: the
+// values s finds, once one is needed.
+func (s *signerSource) verifier() verifier {
+	return verifier{Attest: "attest", Resolve: s.resolve}
+}
+
+// given reports whether a flag or the environment gives either value:
+// the operator has said what to trust, rather than a publication.
+func (s *signerSource) given() bool {
+	return s.keys.value != "" || s.name.value != "" ||
+		os.Getenv("VALLEY_KNOWN_SIGNERS") != "" || os.Getenv("VALLEY_INTEGRATOR_SIGNER") != ""
 }
 
 // takeSignerFlags removes --known-signers and --integrator-name from args,

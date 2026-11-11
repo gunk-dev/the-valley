@@ -72,7 +72,14 @@ var changeRequest = regexp.MustCompile(`^c-[k-z]{32}$`)
 // approval is one approval attempt and what it was told.
 type approval struct {
 	g              git
+	stdin          *os.File // the terminal: the confirmation, and the checks' stdin
 	stdout, stderr io.Writer
+	v              verifier // what reading what the head would bring verifies a transfer statement with
+
+	// exit ends the process once a signal has interrupted the attempt: the
+	// approve verb's records the command, and review's ends the review
+	// first (review.go). It does not return.
+	exit func(int)
 
 	verbose, buildHere bool
 	reviewing          bool
@@ -100,6 +107,7 @@ type approval struct {
 	childDone                          chan struct{}
 	worktree                           string
 	signals                            chan os.Signal
+	unwatched                          chan struct{}
 }
 
 // errRefused is an attempt that ended without filing, having said why.
@@ -109,8 +117,12 @@ var errRefused = errors.New("refused")
 // push, having said so.
 var errUnknown = errors.New("unknown")
 
-func runApprove(g git, args []string, stdout, stderr io.Writer) int {
-	a := &approval{g: g, stdout: stdout, stderr: stderr}
+func runApprove(g git, args []string, stdout, stderr io.Writer, end func(int)) int {
+	a := &approval{g: g, stdin: os.Stdin, stdout: stdout, stderr: stderr, v: newVerifier(),
+		exit: func(status int) {
+			verification.done()
+			end(status)
+		}}
 	want, err := a.verbFlags(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "valley: %s\n", err)
@@ -130,8 +142,8 @@ func runApprove(g git, args []string, stdout, stderr io.Writer) int {
 	if r.id != "" {
 		a.version = strconv.Itoa(r.version)
 	}
-	fetch := exec.Command("git", "fetch", "--prune", "--quiet", "origin")
-	fetch.Env, fetch.Stdout, fetch.Stderr = g.env, stderr, stderr
+	fetch := g.command("fetch", "--prune", "--quiet", "origin")
+	fetch.Stdout, fetch.Stderr = stderr, stderr
 	processStarted()
 	if err := fetch.Run(); err != nil {
 		return exitCode(err)
@@ -184,16 +196,19 @@ func (a *approval) verbFlags(args []string) (want string, err error) {
 	return want, nil
 }
 
-// reviewApproval is review's [a]pprove of the change it shows, c, bound
-// to head and, for a change with a record, to version. name is the change
-// as review was given it, read again before filing. A plain branch's
-// attempt is told the branch, and the head review showed when it showed
-// one. carriedVersion and carriedHead are given when review's answer
-// carried to that later version, whose line ended the one review's prompt
-// left open.
-func reviewApproval(g git, stdout, stderr io.Writer, c shownChange, head, version string, verbose, buildHere bool, carriedVersion, carriedHead string) *approval {
-	a := &approval{g: g, stdout: stdout, stderr: stderr, reviewing: true, carriedVersion: carriedVersion, carriedHead: carriedHead,
-		verbose: verbose, buildHere: buildHere, name: c.name, bound: head}
+// reviewApproval is review r's [a]pprove of the change it shows, c, bound
+// to the head r bound and, for a change with a record, to its version.
+// c's name is the change as review was given it, read again before
+// filing. A plain branch's attempt is told the branch, and the head review
+// showed when it showed one. r's carried version and head are given when
+// review's answer carried to that later version, whose line ended the one
+// review's prompt left open. The attempt runs in r's repository, on its
+// terminal, and an interrupt ends it through r's exit.
+func reviewApproval(r *review, c shownChange) *approval {
+	head, version := r.approveHead, r.approveVersion
+	a := &approval{g: r.g, stdin: r.stdin, stdout: r.stdout, stderr: r.stderr, v: r.verifier(), exit: r.exit,
+		reviewing: true, carriedVersion: r.carriedVersion, carriedHead: r.carriedHead,
+		verbose: r.verbose, buildHere: r.buildHere, name: c.name, bound: head}
 	if c.id == "" {
 		a.branch = c.branch
 		return a
@@ -210,7 +225,7 @@ func (a *approval) run() int {
 	// Off a terminal, the answer to review's prompt ends no line, so the
 	// verdict starts its own, unless the carry line has ended it.
 	if a.reviewing && a.carriedHead == "" {
-		if _, tty := windowColumns(os.Stdin); !tty {
+		if _, tty := windowColumns(a.stdin); !tty {
 			fmt.Fprintln(a.stdout)
 		}
 	}
@@ -218,7 +233,12 @@ func (a *approval) run() int {
 	a.mu.Lock()
 	a.tel = t
 	a.mu.Unlock()
-	err := a.attempt()
+	return a.ended(a.attempt())
+}
+
+// ended records how the attempt ended, err being what it returned, and
+// keeps that result: 0 when it filed, 1 when it did not.
+func (a *approval) ended(err error) int {
 	if !a.finish() {
 		select {} // the signal handler ends the process
 	}
@@ -253,28 +273,36 @@ func (a *approval) writeOutcome(fields ...string) {
 // to the checks as well, and review acts on a SIGTERM once the attempt has
 // ended (review.go).
 func (a *approval) watch(signals ...os.Signal) {
-	a.signals = make(chan os.Signal, 2)
+	a.signals, a.unwatched = make(chan os.Signal, 2), make(chan struct{})
 	signal.Notify(a.signals, signals...)
 	go func() {
-		<-a.signals
-		a.interrupt()
+		select {
+		case <-a.signals:
+			a.interrupt()
+		case <-a.unwatched:
+		}
 	}()
 }
 
-// unwatch gives the signals back once the attempt has ended.
-func (a *approval) unwatch() { signal.Stop(a.signals) }
+// unwatch gives the signals back once the attempt has ended. Review holds
+// every signal while the attempt runs, so one the attempt took and did not
+// act on is review's to act on.
+func (a *approval) unwatch() {
+	signal.Stop(a.signals)
+	close(a.unwatched)
+}
 
 // interrupt ends an attempt a signal cut short: it stops the checks
 // running, if any, waits for them to end, removes their worktree, records
-// the attempt's end as interrupted, keeps that result, and exits 130
-// through exitWith, which review sets to end its review first. A second signal while the checks are ending kills them. A
+// the attempt's end as interrupted, keeps that result, and ends with 130
+// through exit. A second signal while the checks are ending kills them. A
 // signal that reaches the checks first ends them, and checking's caller
 // interrupts the attempt itself; whichever comes first ends it.
 func (a *approval) interrupt() {
 	a.mu.Lock()
 	if a.finished {
 		a.mu.Unlock()
-		exitWith(interruptedStatus)
+		a.exit(interruptedStatus)
 	}
 	if a.interrupted {
 		a.mu.Unlock()
@@ -295,7 +323,7 @@ func (a *approval) interrupt() {
 	a.removeWorktree()
 	t.end("interrupted")
 	a.writeOutcome("interrupted")
-	exitWith(interruptedStatus)
+	a.exit(interruptedStatus)
 }
 
 // finish marks the attempt ended, unless a signal has interrupted it,
@@ -312,10 +340,6 @@ func (a *approval) stopped() bool {
 	defer a.mu.Unlock()
 	return a.interrupted
 }
-
-// exitWith ends the process with status, recording the command first for
-// a verb bin/valley execs this program for. main sets it.
-var exitWith = os.Exit
 
 // act is what a refusal tells the person to do next: a command to run,
 // one to read, or what to do when it is no command.
@@ -425,12 +449,12 @@ func (a *approval) bindHead(want string) error {
 	if err := a.checkVersion(a.head); err != nil {
 		return err
 	}
-	if _, tty := windowColumns(os.Stdin); !tty {
+	if _, tty := windowColumns(a.stdin); !tty {
 		return a.declined("no terminal to confirm the head, "+a.title,
 			act{run: "valley approve --head " + a.head + " " + a.handle})
 	}
 	fmt.Fprintf(a.stdout, "approve change %s v%s at %s, %s? [y/N] ", a.handle, a.boundVersion, a.head, a.title)
-	switch readLine(os.Stdin) {
+	switch readLine(a.stdin) {
 	case "y", "Y", "yes":
 		a.bound = a.head
 		return nil
@@ -729,7 +753,7 @@ func (a *approval) attempt() error {
 	// integrator needs: a stale head with no change under it is approved
 	// as it is, and the integrator merges it onto main.
 	if !g.succeeds(true, "merge-base", "--is-ancestor", tip, head) {
-		under, err := bringsOf(g, a.id, head)
+		under, err := bringsOf(g, a.v, a.id, head)
 		if err != nil {
 			fmt.Fprintf(a.stderr, "valley: %s\n", err)
 			return a.declined("could not read which changes it would bring to main", act{})
@@ -933,8 +957,8 @@ func (a *approval) attempt() error {
 	if len(push) > 0 {
 		pushed = true
 		args := append(append([]string{"push", "--atomic", "--quiet"}, lease...), "origin")
-		cmd := exec.Command("git", append(args, push...)...)
-		cmd.Env, cmd.Stdout, cmd.Stderr = g.env, a.stderr, a.stderr
+		cmd := g.command(append(args, push...)...)
+		cmd.Stdout, cmd.Stderr = a.stderr, a.stderr
 		processStarted()
 		if err := cmd.Run(); err != nil {
 			a.tel.emit("approve.request", map[string]any{"ref": ref, "result": "refused"})
@@ -1169,7 +1193,7 @@ func (a *approval) check(head string, e evidence, required []derive.Required, re
 	// signer's key hash, and approve pushes it holding this run's notes
 	// alone, which origin refuses once it holds the ref. So origin
 	// holding it is refused before anything is built.
-	keyCmd := exec.Command("attest", append([]string{"key"}, signer...)...)
+	keyCmd := a.g.program("attest", append([]string{"key"}, signer...)...)
 	keyCmd.Stderr = a.stderr
 	processStarted()
 	verifier, err := keyCmd.Output()
@@ -1217,8 +1241,8 @@ func (a *approval) check(head string, e evidence, required []derive.Required, re
 	a.worktree = wt
 	a.mu.Unlock()
 	defer a.removeWorktree()
-	add := exec.Command("git", "worktree", "add", "--quiet", "--detach", wt, head)
-	add.Env, add.Stdout, add.Stderr = a.g.env, a.stderr, a.stderr
+	add := a.g.command("worktree", "add", "--quiet", "--detach", wt, head)
+	add.Stdout, add.Stderr = a.stderr, a.stderr
 	processStarted()
 	if add.Run() != nil {
 		a.removeWorktree()
@@ -1234,8 +1258,10 @@ func (a *approval) check(head string, e evidence, required []derive.Required, re
 		v.version = a.boundVersion
 	}
 	args := append(append(append([]string{"run", "--repo", wt}, signer...), timing...), run...)
-	cmd := exec.Command("attest", args...)
-	cmd.Stdin = os.Stdin
+	// attest runs the checks in the worktree --repo names; its directory
+	// and environment are the repository's, as for every program here.
+	cmd := a.g.program("attest", args...)
+	cmd.Stdin = a.stdin
 	began := time.Now()
 	done := make(chan struct{})
 	a.mu.Lock()
@@ -1286,8 +1312,7 @@ func (a *approval) removeWorktree() {
 	if wt == "" {
 		return
 	}
-	remove := exec.Command("git", "worktree", "remove", "--force", wt)
-	remove.Env = a.g.env
+	remove := a.g.command("worktree", "remove", "--force", wt)
 	_ = remove.Run()
 	_ = os.RemoveAll(wt)
 }

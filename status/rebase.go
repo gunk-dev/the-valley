@@ -129,12 +129,13 @@ func parseRebaseArgs(args []string) (name, want string, err error) {
 // the caller showed as the change's: the rebase refuses when the change
 // is at another head by now.
 func runRebase(g git, args []string, stdout, stderr io.Writer) int {
-	return rebaseCancelledBy(g, args, stdout, stderr, os.Interrupt, syscall.SIGTERM)
+	return rebaseCancelledBy(g, newVerifier(), args, stdout, stderr, os.Interrupt, syscall.SIGTERM)
 }
 
-// rebaseCancelledBy is runRebase, cancelled by the signals given.
-func rebaseCancelledBy(g git, args []string, stdout, stderr io.Writer, signals ...os.Signal) int {
-	err := rebaseStack(g, args, stdout, stderr, signals)
+// rebaseCancelledBy is runRebase, its reads verifying transfer statements
+// with v, cancelled by the signals given.
+func rebaseCancelledBy(g git, v verifier, args []string, stdout, stderr io.Writer, signals ...os.Signal) int {
+	err := rebaseStack(g, v, args, stdout, stderr, signals)
 	switch {
 	case err == nil:
 		return 0
@@ -146,7 +147,7 @@ func rebaseCancelledBy(g git, args []string, stdout, stderr io.Writer, signals .
 	return 1
 }
 
-func rebaseStack(g git, args []string, stdout, stderr io.Writer, signals []os.Signal) error {
+func rebaseStack(g git, v verifier, args []string, stdout, stderr io.Writer, signals []os.Signal) error {
 	name, want, err := parseRebaseArgs(args)
 	if err != nil {
 		return err
@@ -162,7 +163,7 @@ func rebaseStack(g git, args []string, stdout, stderr io.Writer, signals []os.Si
 		return failure(fmt.Sprintf("change %s v%d records no branch, and rebase acts on a change's branch. Approve its head alone: valley approve --head %s %s",
 			res.handle, res.version, res.head, res.handle))
 	}
-	s, err := readSnapshot(g, newVerifier())
+	s, err := readSnapshot(g, v)
 	if err != nil {
 		return err
 	}
@@ -552,11 +553,11 @@ func readyCommand(head, id, branch string) string {
 // IDs. approve refuses a head that does not fast-forward from main and
 // would bring one, since it is a layer of a stack that has to be rebased
 // first.
-func bringsOf(g git, except, head string) ([]string, error) {
+func bringsOf(g git, v verifier, except, head string) ([]string, error) {
 	if !g.succeeds(true, "cat-file", "-e", head+"^{commit}") {
 		return nil, failure("no commit " + head + " here")
 	}
-	s, err := readSnapshot(g, newVerifier())
+	s, err := readSnapshot(g, v)
 	if err != nil {
 		return nil, err
 	}

@@ -105,17 +105,18 @@ func invocationOf(args []string, since, version string) *invocation {
 }
 
 // record stores the invocation's command record in the spool, when the
-// checkout has valley.telemetry on, and starts a flusher to send it.
-// Telemetry off costs no process and writes nothing. Like every
-// workstation record it is best effort: whatever goes wrong costs this
-// record, and never the command's output or exit status.
-func (inv *invocation) record(status int, timed bool) {
-	if inv == nil || !telemetryMentioned() {
+// repository g names has valley.telemetry on in g's environment, and
+// starts a flusher to send it. The record is the project's g's
+// configuration names. Telemetry off costs no process and writes nothing.
+// Like every workstation record it is best effort: whatever goes wrong
+// costs this record, and never the command's output or exit status.
+func (inv *invocation) record(g git, status int, timed bool) {
+	if inv == nil || !telemetryMentioned(g) {
 		return
 	}
 	elapsed := time.Since(inv.since)
 	data := inv.data(status, elapsed, timed)
-	g := git{env: gitEnvironment(os.Environ()), stderr: io.Discard}
+	g.stderr = io.Discard
 	listed, err := g.output(true, "config", "--get-regexp", `^(valley\.telemetry(\.remote)?|remote\..*\.url)$`)
 	if err != nil {
 		return
@@ -243,25 +244,26 @@ var knownVerbs = map[string]bool{"pending": true, "changes": true, "review": tru
 	"rebase": true, "status": true, "ready": true, "unready": true, "withdraw": true, "knot": true,
 	"plan": true, "checks": true, "tail": true, "replay": true, "self-update": true, "telemetry": true}
 
-// telemetryMentioned reports whether a configuration file git reads here
-// may set valley.telemetry, without starting git: it is false only when
-// none of them mentions telemetry or includes another file. So a
-// checkout with telemetry off starts no process to find that out, and git
-// itself answers whenever the files could say yes.
-func telemetryMentioned() bool {
+// telemetryMentioned reports whether a configuration file git reads in
+// g's repository and environment may set valley.telemetry, without
+// starting git: it is false only when none of them mentions telemetry or
+// includes another file. So a checkout with telemetry off starts no
+// process to find that out, and git itself answers whenever the files
+// could say yes.
+func telemetryMentioned(g git) bool {
 	for _, v := range []string{"GIT_DIR", "GIT_COMMON_DIR", "GIT_CONFIG", "GIT_CONFIG_GLOBAL",
 		"GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"} {
-		if os.Getenv(v) != "" {
+		if envValue(g.env, v) != "" {
 			return true
 		}
 	}
-	home := os.Getenv("HOME")
-	xdg := os.Getenv("XDG_CONFIG_HOME")
+	home := envValue(g.env, "HOME")
+	xdg := envValue(g.env, "XDG_CONFIG_HOME")
 	if xdg == "" {
 		xdg = filepath.Join(home, ".config")
 	}
 	files := []string{"/etc/gitconfig", filepath.Join(home, ".gitconfig"), filepath.Join(xdg, "git", "config")}
-	dirs, found := gitDirs()
+	dirs, found := gitDirs(g.dir)
 	if !found {
 		return true
 	}
@@ -281,10 +283,23 @@ func telemetryMentioned() bool {
 	return false
 }
 
-// gitDirs is the repository's git directory above the working directory
-// and, for a linked worktree, its common directory.
-func gitDirs() ([]string, bool) {
-	dir, err := os.Getwd()
+// envValue is the value env gives name, the last one given winning as it
+// does for a process started with env, or "".
+func envValue(env []string, name string) string {
+	value := ""
+	for _, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == name {
+			value = v
+		}
+	}
+	return value
+}
+
+// gitDirs is the repository's git directory at or above from, the working
+// directory when from is "", and, for a linked worktree, its common
+// directory.
+func gitDirs(from string) ([]string, bool) {
+	dir, err := filepath.Abs(from)
 	if err != nil {
 		return nil, false
 	}

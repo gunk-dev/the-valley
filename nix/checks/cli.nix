@@ -122,8 +122,8 @@ in
   # its approval keeps its file and line, through a structure-preserving
   # renderer and through less, whose views are styled while the buffer the
   # editor opens is plain. Ctrl-C with the pager open, and SIGTERM at the
-  # prompt, end the review with status 130, its walk outcome interrupted,
-  # and nothing of its own left in its TMPDIR.
+  # prompt, end the review with status 130 and nothing of its own left in
+  # its TMPDIR.
   review-notes = pkgs.runCommand "valley-review-notes" {
     nativeBuildInputs = [
       pkgs.git
@@ -430,11 +430,17 @@ in
   # clone, approved, rejected and skipped there; a stale stack in that
   # clone based with [b]ase; changes unreadied and readied at a new version
   # while the walk is under way; Ctrl-C at a prompt on a terminal; a
-  # project that does not read; and an empty queue. It runs the packaged
-  # CLI, so the verification schema is the package's.
+  # project that does not read; and an empty queue. Then two steps in the
+  # two repositories with their answers from one file, each step's pager
+  # run in its own repository and environment; a step that fails, after
+  # which the walk goes on; SIGTERM to the walk at a step's prompt; Ctrl-C
+  # in a step's pager; and Ctrl-C during a step's approval checks. It runs
+  # the packaged CLI, so the verification schema is the package's.
   valley-walk = pkgs.runCommand "valley-walk" {
     nativeBuildInputs = [
       pkgs.git
+      pkgs.less
+      pkgs.openssh # ssh-keygen, for the key an approval's checks sign with
       pkgs.util-linux # script(1), for Ctrl-C on a terminal
       packages.valley-script
       packages.valley-go

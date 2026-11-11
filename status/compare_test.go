@@ -68,7 +68,7 @@ func (r *compareRepo) file(name, content string) {
 func (r *compareRepo) valley(args ...string) string {
 	r.t.Helper()
 	var stdout, stderr bytes.Buffer
-	if code := run(args, &stdout, &stderr); code != 0 {
+	if code := run(args, &stdout, &stderr, os.Exit); code != 0 {
 		r.t.Fatalf("valley-go %s: %s", strings.Join(args, " "), stderr.String())
 	}
 	return stdout.String()
@@ -378,7 +378,7 @@ func TestCompareSaysWhatChanged(t *testing.T) {
 
 	// The version given must have the head given.
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"compare", "--tip", two, id, "3", v4}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "v3 of change zzzz records the head") {
+	if code := run([]string{"compare", "--tip", two, id, "3", v4}, &stdout, &stderr, os.Exit); code == 0 || !strings.Contains(stderr.String(), "v3 of change zzzz records the head") {
 		t.Fatalf("compare took a head its version does not record: %d %s", code, stderr.String())
 	}
 }

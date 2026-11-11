@@ -339,8 +339,11 @@ usage: valley review [-v] [--build-here] <change>
                    not ready or has no branch since is not reviewed; one
                    at a new version is reviewed at it. the walk ends with
                    each change's outcome and what still needs you. a
-                   project that did not read is said first and last.
-                   ctrl-c ends the walk with what it walked, exit 130.
+                   project that did not read is said first and last. a
+                   change in a project whose main names another valley
+                   ends in error: review it from that valley's checkout.
+                   ctrl-c or SIGTERM ends the walk with what it walked,
+                   exit 130.
 
   review [-v] [--build-here] <change>
                    page through the change's branch: its log, with each
@@ -1253,12 +1256,12 @@ cmd_go() {
 }
 
 # review is valley-go's (status/review.go). With no change it walks what
-# needs the operator, and runs this script's review for each change, so it
-# is told this script's path.
+# needs the operator, reviewing each change in the same process
+# (status/walk.go).
 cmd_review() {
   command -v valley-go > /dev/null 2>&1 \
     || die "review needs the valley-go helper; nix run .#valley bundles it"
-  VALLEY_COMMAND="$0" VALLEY_TELEMETRY_SINCE="$TEL_T0" VALLEY_TELEMETRY_VERSION="$VALLEY_STAMP" \
+  VALLEY_TELEMETRY_SINCE="$TEL_T0" VALLEY_TELEMETRY_VERSION="$VALLEY_STAMP" \
     exec valley-go review "$@"
 }
 

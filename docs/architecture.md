@@ -2642,14 +2642,22 @@ outcome failed. An outcome record it does not recognise is `unknown`, never a su
 every project the serving host publishes, or the one `--repo` names, in landing order
 (`status/walk.go`, `implemented`). It reads the queue once, through the function `valley pending`
 reads it with, so the two agree on what needs the operator and in what order. For each change it
-prints a header, `[1/3] <project> · <handle> v<N> · stack of N · checks 18/18`, and then runs
-`valley review <change ID>` as a child in the change's repository: the current checkout's top level,
-or the cache clone the listing reads another project through. The child has the walker's terminal,
-so it pages and prompts as a review run by hand does.
+prints a header, `[1/3] <project> · <handle> v<N> · stack of N · checks 18/18`, and then calls the
+review of that one change in the same process, given the change's repository: the current checkout's
+top level, or the cache clone the listing reads another project through. Every process the review
+starts runs in that repository and its environment, and the review has the walker's terminal, so it
+pages and prompts as a review run by hand does. Its reads verify transfer statements with the walk's
+signer source, the publication of the valley the current checkout's `main` names. A project's
+transfer statements are signed by the integrator of the valley its own `main` names, so a step in a
+project that names another valley, or none, is not reviewed: it ends in error, naming both valleys,
+and the operator reviews it from a checkout of its own valley. Two URLs name one valley when they
+are the same, or when both publish the same signers tree, which holds for two spellings of one
+repository and leaves the trust the same either way. When the environment gives what to trust, the
+operator has chosen it, and every step is reviewed with it.
 
-A cache clone has no configuration of its own. The child gets the current checkout's
-`valley.principal`, `user.name` and `user.email` through `GIT_CONFIG_COUNT`, for each key the
-clone's own configuration does not set, and nothing is written into the clone. With them,
+A cache clone has no configuration of its own. The step's environment gives it the current
+checkout's `valley.principal`, `user.name` and `user.email` through `GIT_CONFIG_COUNT`, for each key
+the clone's own configuration does not set, and nothing is written into the clone. With them,
 `[a]pprove` and `[r]eject` push to the clone's `origin`, and `[b]ase onto main` rebases and commits
 there as the operator.
 
@@ -2657,9 +2665,12 @@ The walk grants nothing. Each step is the review the operator would run by hand,
 gates, and the queue only chooses what comes next. Before a step shows anything, the review compares
 the change with what the queue held. A change that landed, is not ready, or has no branch on origin
 is not reviewed, and the walk goes on. A change ready at another version is said to have moved, and
-that version is reviewed. The review writes how the step ended to a file the walker names. A step
-that leaves no outcome the walker can read counts as an error, never as a success. Ctrl-C ends the
-step and the walk: the walker prints what it walked and exits 130.
+that version is reviewed. The review returns how the step ended, and a step that fails counts as an
+error, never as a success, and the walk goes on. Ctrl-C ends the step and the walk: the step's
+review cleans up, the walker prints what it walked and exits 130. The walker catches SIGINT and
+SIGTERM until the process exits, and the review takes them from the walker's catch while it listens,
+so exactly one of them acts on each signal and none gets the default handling. The review stops
+listening before it cleans up, and a signal during the cleanup is the walker's.
 
 The walk says what it could not read. A project that did not read, and a failed discovery that left
 the walk with the current project alone, are said before the first step and again in the summary.

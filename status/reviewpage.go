@@ -44,28 +44,40 @@ import (
 // showReview shows a change alone. A change that is not ready says so
 // first, before anything else shown of it, and that notice becomes the
 // heading, so the change's knots follow it.
-func (r *review) showReview(branch string) {
+func (r *review) showReview(branch string) error {
 	head := r.changeHead(branch)
 	// [a]pprove approves exactly the head shown here (bind).
 	if r.c.id == "" {
 		r.approveHead = head
 	}
 	held := notReady(r.c.handle, r.c.version, r.c.state, r.c.owner)
-	r.newScratch()
+	if _, err := r.newScratch(); err != nil {
+		return err
+	}
 	kind, compared := r.compareShown(r.c.id, r.c.version, head)
-	r.showCompared(branch, head, held, r.doesOf(r.c.id), kind, compared, func(w io.Writer) { r.fullDiff(w, branch, head) })
+	if err := r.showCompared(branch, head, held, r.doesOf(r.c.id), kind, compared, func(w io.Writer) error { return r.fullDiff(w, branch, head) }); err != nil {
+		return err
+	}
 	r.checksClause = r.checksLine(r.c.id, false)
+	return nil
 }
 
 // viewFull is [v]iew full diff for a change alone: its whole diff paged,
 // and the notes taken in it kept.
-func (r *review) viewFull(branch string) {
+func (r *review) viewFull(branch string) error {
 	head := r.changeHead(branch)
-	dir := r.newScratch()
+	dir, err := r.newScratch()
+	if err != nil {
+		return err
+	}
 	var b bytes.Buffer
-	r.fullDiff(&b, branch, head)
-	r.writePage(dir, b.Bytes())
-	r.pageBuffer(branch, r.short(head))
+	if err := r.fullDiff(&b, branch, head); err != nil {
+		return err
+	}
+	if err := r.writePage(dir, b.Bytes()); err != nil {
+		return err
+	}
+	return r.pageBuffer(branch, r.short(head))
 }
 
 // compareShown sets the version shown against the change's approved
@@ -105,12 +117,14 @@ func (r *review) compareShown(id, version, head string) (kind, text string) {
 //
 // Knots follow the heading when there is one. Otherwise they follow the
 // first line of the comparison or the whole diff, which names the change.
-func (r *review) showCompared(key, head, heading, knots, kind, compared string, writer func(io.Writer)) {
+func (r *review) showCompared(key, head, heading, knots, kind, compared string, writer func(io.Writer) error) error {
 	sha := r.short(head)
 	var body bytes.Buffer
 	body.WriteString(compared)
 	if kind == compareNone {
-		writer(&body)
+		if err := writer(&body); err != nil {
+			return err
+		}
 	}
 	var page bytes.Buffer
 	if heading != "" {
@@ -130,7 +144,9 @@ func (r *review) showCompared(key, head, heading, knots, kind, compared string, 
 	r.mu.Lock()
 	dir := r.scratch
 	r.mu.Unlock()
-	r.writePage(dir, page.Bytes())
+	if err := r.writePage(dir, page.Bytes()); err != nil {
+		return err
+	}
 	if kind == compareClean {
 		f, err := os.Open(filepath.Join(dir, "review.diff"))
 		if err == nil {
@@ -138,35 +154,38 @@ func (r *review) showCompared(key, head, heading, knots, kind, compared string, 
 			f.Close()
 		}
 		r.dropScratch()
-		return
+		return nil
 	}
-	r.pageBuffer(key, sha)
+	return r.pageBuffer(key, sha)
 }
 
 // writePage writes the page to review.diff in dir.
-func (r *review) writePage(dir string, page []byte) {
+func (r *review) writePage(dir string, page []byte) error {
 	if err := os.WriteFile(filepath.Join(dir, "review.diff"), page, 0o600); err != nil {
-		r.die(fmt.Sprintf("could not write the page: %v", err))
+		return r.die(fmt.Sprintf("could not write the page: %v", err))
 	}
+	return nil
 }
 
 // fullDiff writes the whole diff of a change alone: its log and its diff
 // against origin/main. main is read by its exact name, since git would
 // take a tag named origin/main for it. A main that cannot be read ends the
 // review, as a page it cannot write does (gitTo).
-func (r *review) fullDiff(w io.Writer, branch, head string) {
+func (r *review) fullDiff(w io.Writer, branch, head string) error {
 	sha := r.short(head)
 	tip := r.ref("refs/remotes/origin/main")
 	if tip == "" {
-		r.exit(1)
+		return reviewEnded{1}
 	}
 	if r.c.head != "" {
 		fmt.Fprintf(w, "change %s v%s at %s, on branch %s, log against origin/main:\n\n", r.c.handle, r.c.version, sha, branch)
 	} else {
 		fmt.Fprintf(w, "branch %s, log against origin/main:\n\n", branch)
 	}
-	r.commitLog(w, tip+".."+head)
-	r.gitTo(w, "--no-pager", "diff", tip+"..."+head)
+	if err := r.commitLog(w, tip+".."+head); err != nil {
+		return err
+	}
+	return r.gitTo(w, "--no-pager", "diff", tip+"..."+head)
 }
 
 // commitLog writes each commit in the range, newest first: its short hash
@@ -174,25 +193,26 @@ func (r *review) fullDiff(w io.Writer, branch, head string) {
 // message is shown because a change lands with its head commit's. The
 // indent keeps a body line from reading as a diff header, to the notes'
 // anchors and to the diff pager alike.
-func (r *review) commitLog(w io.Writer, revs string) {
-	r.gitTo(w, "--no-pager", "log", "--format=%h %s%n%w(0,4,4)%b", revs)
+func (r *review) commitLog(w io.Writer, revs string) error {
+	return r.gitTo(w, "--no-pager", "log", "--format=%h %s%n%w(0,4,4)%b", revs)
 }
 
 // gitTo runs git with its output written to w. A git that fails ends the
 // review with git's status, having said why: the page would be incomplete,
 // and no answer is asked about a page the operator could not read whole.
-func (r *review) gitTo(w io.Writer, args ...string) {
-	cmd := exec.Command("git", args...)
-	cmd.Env, cmd.Stdout, cmd.Stderr = r.g.env, w, r.stderr
+func (r *review) gitTo(w io.Writer, args ...string) error {
+	cmd := r.g.command(args...)
+	cmd.Stdout, cmd.Stderr = w, r.stderr
 	processStarted()
 	if err := cmd.Run(); err != nil {
-		r.exit(exitCode(err))
+		return reviewEnded{exitCode(err)}
 	}
+	return nil
 }
 
 // pageBuffer pages the page written to the scratch directory, keeps the
 // notes taken in it under key, against the commit shown, and removes it.
-func (r *review) pageBuffer(key, sha string) {
+func (r *review) pageBuffer(key, sha string) error {
 	r.mu.Lock()
 	dir := r.scratch
 	r.mu.Unlock()
@@ -200,12 +220,13 @@ func (r *review) pageBuffer(key, sha string) {
 	orig := filepath.Join(dir, "review.orig")
 	if data, err := os.ReadFile(page); err == nil {
 		if err := os.WriteFile(orig, data, 0o600); err != nil {
-			r.die(fmt.Sprintf("could not keep the page: %v", err))
+			return r.die(fmt.Sprintf("could not keep the page: %v", err))
 		}
 	}
 	r.page(page)
 	r.collectNotes(key, sha, orig, page)
 	r.dropScratch()
+	return nil
 }
 
 // diffPager is the pager git would use for a diff: pager.diff first, as
@@ -246,7 +267,7 @@ const pageEdit = `eval "${VISUAL:-${EDITOR:-vi}} \"\$@\" \"\$VALLEY_PAGE_RAW\""
 // Without less there is no editor key, and the pager reads the page
 // through a pipe.
 func (r *review) page(file string) {
-	if _, tty := windowColumns(os.Stdout); !tty {
+	if !terminalOf(r.stdout).live {
 		if data, err := os.ReadFile(file); err == nil {
 			r.stdout.Write(data)
 		}
@@ -292,7 +313,7 @@ func (r *review) page(file string) {
 	// through one with a warning, then runs the editor on whatever key comes
 	// next, q included; and so no LESSCLOSE.
 	env := []string{}
-	for _, kv := range os.Environ() {
+	for _, kv := range r.g.env {
 		name, _, _ := strings.Cut(kv, "=")
 		switch name {
 		case "LESSOPEN", "LESSCLOSE", "LESSEDIT", "VALLEY_PAGE_RAW", "VALLEY_PAGE_SHOWN", "VALLEY_PAGE_RENDER", "VALLEY_PAGE_EDIT":
@@ -306,17 +327,20 @@ func (r *review) page(file string) {
 }
 
 // shell runs a shell command line in the foreground, with the arguments
-// given as $1 and on, stdin and stdout the terminal's unless given.
+// given as $1 and on, stdin and stdout the terminal's unless given, in the
+// repository and the environment of the review's, or env.
 func (r *review) shell(line string, stdin io.Reader, stdout io.Writer, env []string, args ...string) {
-	cmd := exec.Command("sh", append([]string{"-c", line, "sh"}, args...)...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, r.stdout, r.stderr
+	cmd := r.g.program("sh", append([]string{"-c", line, "sh"}, args...)...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = r.stdin, r.stdout, r.stderr
 	if stdin != nil {
 		cmd.Stdin = stdin
 	}
 	if stdout != nil {
 		cmd.Stdout = stdout
 	}
-	cmd.Env = env
+	if env != nil {
+		cmd.Env = env
+	}
 	r.inForeground(func() { _ = cmd.Run() })
 }
 
@@ -411,8 +435,8 @@ func anchorOf(all []anchor, n int) string {
 func (r *review) notesIn(orig, edited string) []string {
 	page, _ := os.ReadFile(orig)
 	all := anchors(page)
-	cmd := exec.Command("git", "--no-pager", "diff", "--no-ext-diff", "--no-index", "-U0", "--", orig, edited)
-	cmd.Env, cmd.Stderr = r.g.env, r.stderr
+	cmd := r.g.command("--no-pager", "diff", "--no-ext-diff", "--no-index", "-U0", "--", orig, edited)
+	cmd.Stderr = r.stderr
 	processStarted()
 	out, _ := cmd.Output()
 	var notes []string
@@ -533,13 +557,15 @@ func (r *review) doesOf(id string) string {
 // group of its own, so that a Ctrl-C the operator gives the pager does not
 // reach it, while the page is shown, and the line is printed just before
 // the prompt when the read has finished. It never waits for the read,
-// unless VALLEY_REVIEW_CHECKS_WAIT gives the seconds to wait for it.
+// unless VALLEY_REVIEW_CHECKS_WAIT gives the seconds to wait for it. The
+// read has a TMPDIR of its own, removed once it has ended, so a read
+// stopped part way leaves nothing behind.
 type checksRead struct {
 	ids      []string
 	verbose  bool // pass on what the read said on stderr
 	cmd      *exec.Cmd
 	out, err bytes.Buffer
-	done     chan struct{}
+	done     chan struct{}   // closed once the read has ended and its TMPDIR is removed
 	shown    map[string]bool // the changes whose line is not shown again
 }
 
@@ -552,19 +578,26 @@ func (r *review) startChecksRead(c *checksRead) {
 	old.stop()
 	c = &checksRead{ids: c.ids, verbose: c.verbose, done: make(chan struct{}), shown: map[string]bool{}}
 	exe, err := os.Executable()
+	var tmp string
+	if err == nil {
+		tmp, err = os.MkdirTemp("", "valley-review-checks-")
+	}
 	if err != nil {
 		close(c.done)
 	} else {
-		c.cmd = exec.Command(exe, append([]string{"checkline"}, c.ids...)...)
+		c.cmd = r.g.program(exe, append([]string{"checkline"}, c.ids...)...)
+		c.cmd.Env = append(c.cmd.Env, "TMPDIR="+tmp)
 		c.cmd.Stdout, c.cmd.Stderr = &c.out, &c.err
 		c.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		processStarted()
 		if c.cmd.Start() != nil {
 			c.cmd = nil
+			os.RemoveAll(tmp)
 			close(c.done)
 		} else {
 			go func() {
 				_ = c.cmd.Wait()
+				os.RemoveAll(tmp)
 				close(c.done)
 			}()
 		}
@@ -591,7 +624,8 @@ func (r *review) restartChecksRead() {
 	}
 }
 
-// stop stops the read, if it still runs, with everything it started.
+// stop stops the read, if it still runs, with everything it started, and
+// returns once it has ended and its TMPDIR is removed.
 func (c *checksRead) stop() {
 	if c == nil || c.cmd == nil {
 		return
@@ -600,6 +634,7 @@ func (c *checksRead) stop() {
 	case <-c.done:
 	default:
 		_ = syscall.Kill(-c.cmd.Process.Pid, syscall.SIGTERM)
+		<-c.done
 	}
 }
 

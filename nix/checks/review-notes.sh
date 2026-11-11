@@ -140,22 +140,21 @@ notes="$(grep -n '6 note(s) on scratch' plain.log | cut -d: -f1)"
 [ "$verdict" -lt "$notes" ]
 
 # Ctrl-C with the pager open, and SIGTERM at the prompt, each end the
-# review with status 130, its walk outcome interrupted, and nothing of
-# its own left in its TMPDIR. less takes the Ctrl-C itself, and the
-# review ends once less quits, before any prompt.
+# review with status 130 and nothing of its own left in its TMPDIR. less
+# takes the Ctrl-C itself, and the review ends once less quits, before
+# any prompt.
 # signalled <case> <driver>: review scratch on a terminal, with a TMPDIR
-# and a walk outcome of its own, its keys and signals sent by the driver,
-# which is given the session log and the review's pid file.
+# of its own, its keys and signals sent by the driver, which is given the
+# session log and the review's pid file.
 signalled() {
-  local case="$1" status=0 tmp="$TMPDIR/$1-tmp" pid="$TMPDIR/$1.pid" outcome="$TMPDIR/$1.outcome"
+  local case="$1" status=0 tmp="$TMPDIR/$1-tmp" pid="$TMPDIR/$1.pid"
   mkdir "$tmp"
   # shellcheck disable=SC2094 # the driver waits on the review's own output
   "$2" "$case.log" "$pid" \
-    | TMPDIR="$tmp" VALLEY_WALK_OUTCOME="$outcome" \
+    | TMPDIR="$tmp" \
       script -qec "sh -c 'echo \$\$ > $pid; exec valley review scratch'" /dev/null \
       > "$case.log" 2>&1 || status=$?
   [ "$status" = 130 ]
-  [ "$(cat "$outcome")" = interrupted ]
   [ -z "$(ls -A "$tmp")" ]
 }
 # ended <pid file> [<key>]: wait for the review to end, for a minute at

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -59,11 +60,11 @@ func TestPendingFitsEightyColumnsAndKeepsNamesWhole(t *testing.T) {
 
 	t.Chdir(work)
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"ready", "--change", strings.Repeat("q", 32), "short"}, &stdout, &stderr); code != 0 {
+	if code := run([]string{"ready", "--change", strings.Repeat("q", 32), "short"}, &stdout, &stderr, os.Exit); code != 0 {
 		t.Fatalf("ready: %s", stderr.String())
 	}
 	stdout.Reset()
-	if code := run([]string{"pending", "--branches"}, &stdout, &stderr); code != 0 {
+	if code := run([]string{"pending", "--branches"}, &stdout, &stderr, os.Exit); code != 0 {
 		t.Fatalf("pending: %s", stderr.String())
 	}
 	out := stdout.String()

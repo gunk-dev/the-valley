@@ -278,4 +278,170 @@ ok valley withdraw "$M3"
 walk 0 '' --repo open
 line '^nothing needs you · 1 moving · 1 draft'
 
+# ----------------------------------------------------------------------
+# Two steps in different repositories, on a terminal, their answers read
+# from one file: an approval in guarded's cache clone, then a rejection
+# confirmed in the open checkout. Each step's pager runs in the step's
+# repository root and environment: the clone's is lent the checkout's
+# principal through GIT_CONFIG_COUNT, and the checkout's step carries
+# nothing of the clone's. A review that read ahead of its answer would
+# take the next step's.
+G3="$(id kvkv)" O2="$(id pqpq)" O3="$(id pxpx)" G4="$(id kxkx)" O4="$(id pzpz)" O5="$(id pwpw)"
+cd "$w/guarded"
+ok valley withdraw "$S2"
+ok valley withdraw "$S1"
+git checkout --quiet main
+branch v-one main v-one
+ready "$G3" v-one
+cd "$w/open"
+git checkout --quiet main
+branch q-one main q-one
+ready "$O2" q-one
+git checkout --quiet main
+printf '%s\n' '#!/bin/sh' \
+  'printf "%s %s %s\n" "$(pwd -P)" "$(git config --show-origin --get valley.principal | cut -f1)" "${GIT_CONFIG_COUNT:-none}" >> "$PAGER_LOG"' \
+  'exec cat' > "$w/pager.sh"
+chmod +x "$w/pager.sh"
+git config --global pager.diff "$w/pager.sh"
+printf 'a\nr\nyes\n' > "$w/answers"
+status=0
+{
+  wait_for "$w/session.log" 'nothing needs you|still needs you'
+} | PAGER_LOG="$w/pager.log" LESS=-FX timeout 300 \
+  script -qec "stty rows 200 cols 200; valley review < $w/answers" /dev/null > "$w/session.log" 2>&1 || status=$?
+sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r//g' "$w/session.log" > "$w/out"
+git config --global --unset pager.diff
+[ "$status" = 0 ] || fail "the walk from one answers file exited $status"
+line '^  ✓ guarded kvkv v1  approved$'
+line '^  ✓ open pqpq v1  rejected · branch deleted$'
+[ "$(git -C "$data/guarded.git" rev-parse "refs/the-valley/integration-requests/main/c-$G3")" = \
+  "$(git -C "$w/guarded" rev-parse v-one)" ] || fail "the approval in the clone filed no request at kvkv's head"
+if git -C "$data/open.git" rev-parse --verify --quiet refs/heads/q-one > /dev/null; then
+  fail "the rejection left q-one on origin"
+fi
+printf '%s command line: 3\n%s file:.git/config none\n' "$(cd "$clone" && pwd -P)" "$(pwd -P)" > "$w/pager.want"
+cmp -s "$w/pager.log" "$w/pager.want" || fail "the steps' pagers ran as $(cat "$w/pager.log")"
+
+# ----------------------------------------------------------------------
+# A step that fails does not end the walk. While the first step's prompt
+# waits, the second step's branch is moved on guarded's origin and a stale
+# lock is left on the cache clone's remote-tracking ref for it. The step
+# passes the walk's valley check, and its review's fetch, the first thing
+# the review does, cannot update the ref and fails. The step ends in error
+# with git's message, and the third is reviewed.
+branch x-one main x-one
+ready "$O3" x-one
+cd "$w/guarded"
+git checkout --quiet main
+branch x-two main x-two
+ready "$G4" x-two
+cd "$w/open"
+branch z-one main z-one
+ready "$O4" z-one
+git checkout --quiet main
+rm -f "$w/fifo"
+mkfifo "$w/fifo"
+valley review < "$w/fifo" > "$w/walk.out" 2> "$w/walk.err" &
+walker=$!
+exec 3> "$w/fifo"
+wait_for "$w/walk.out" '\[s\]kip'
+git -C "$data/guarded.git" update-ref refs/heads/x-two refs/heads/main
+mkdir -p "$clone/.git/refs/remotes/origin"
+touch "$clone/.git/refs/remotes/origin/x-two.lock"
+printf 's\ns\n' >&3
+exec 3>&-
+status=0
+wait "$walker" || status=$?
+rm -f "$clone/.git/refs/remotes/origin/x-two.lock"
+mv "$w/walk.out" "$w/out"
+mv "$w/walk.err" "$w/err"
+[ "$status" = 1 ] || fail "the walk with a failing step exited $status, not 1"
+before '^\[2/3\] guarded · kxkx v1' '^\[3/3\] open · pzpz v1'
+line '^  ◇ open pxpx v1  skipped$'
+line '^  ✗ guarded kxkx v1  error'
+no_line 'could not read which valley'
+grep -q 'fetching ref refs/remotes/origin/x-two failed' "$w/err" || fail "the walk's stderr does not carry the review's fetch failure: $(cat "$w/err")"
+line '^  ◇ open pzpz v1  skipped$'
+
+# ----------------------------------------------------------------------
+# SIGTERM sent to the walk alone while a step's prompt waits ends the step
+# interrupted, and the walk as Ctrl-C does: the summary so far, exit 130,
+# and nothing of its own left in its TMPDIR.
+mkdir "$w/term-tmp"
+rm -f "$w/fifo"
+mkfifo "$w/fifo"
+TMPDIR="$w/term-tmp" valley review --repo open < "$w/fifo" > "$w/walk.out" 2> "$w/walk.err" &
+walker=$!
+exec 3> "$w/fifo"
+wait_for "$w/walk.out" '\[s\]kip'
+kill -TERM "$walker"
+status=0
+wait "$walker" || status=$?
+exec 3>&-
+mv "$w/walk.out" "$w/out"
+mv "$w/walk.err" "$w/err"
+[ "$status" = 130 ] || fail "the walk sent SIGTERM exited $status, not 130"
+line '^walked \(1 of 2\)$'
+line '^  ◇ open pxpx v1  interrupted$'
+no_line 'still needs you|nothing needs you'
+[ -z "$(ls -A "$w/term-tmp")" ] || fail "the walk left $(ls -A "$w/term-tmp") in its TMPDIR"
+
+# ----------------------------------------------------------------------
+# Ctrl-C while less pages a step's diff, on a terminal: less takes it and
+# quits (-K), and once it has, the step ends interrupted, the summary so
+# far is printed, the walk exits 130, and nothing of its own is left in
+# its TMPDIR.
+mkdir "$w/pager-tmp"
+status=0
+{
+  wait_for "$w/session.log" '\(END\)'
+  printf '\003'
+  wait_for "$w/session.log" 'walked'
+} | TMPDIR="$w/pager-tmp" LESS=-K timeout 300 script -qec "valley review --repo open" /dev/null > "$w/session.log" 2>&1 || status=$?
+sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r//g' "$w/session.log" > "$w/out"
+[ "$status" = 130 ] || fail "the walk interrupted in its pager exited $status, not 130"
+line '^walked \(1 of 2\)$'
+line '^  ◇ open pxpx v1  interrupted$'
+no_line '\]kip: '
+[ -z "$(ls -A "$w/pager-tmp")" ] || fail "the walk left $(ls -A "$w/pager-tmp") in its TMPDIR"
+
+# ----------------------------------------------------------------------
+# Ctrl-C during a step's approval checks, sent to the walk's process group
+# as a terminal sends it: the checks stop, the step ends interrupted, the
+# walk exits 130, and nothing is left behind: no worktree, nothing in its
+# TMPDIR, no request. open's policy gates held/ on a check that holds until
+# it is stopped.
+ssh-keygen -q -t ed25519 -N "" -C valley-walk -f "$w/attest-key"
+mkdir -p policy/project
+printf '%s\n' 'package verification' '' 'project: {' '	checks: hold: {' '		runner:  "command"' \
+  "		command: \"echo started > $w/held && sleep 600\"" '	}' '	classes: held: {' \
+  '		paths: "held/**":  true' '		requires: hold: true' '	}' '}' > policy/project/policy.cue
+git add policy/project/policy.cue
+git commit --quiet -m "a check that holds until it is stopped"
+VALLEY_PRINCIPAL=integrator git push --quiet origin main
+git checkout --quiet -b w-held main
+mkdir held
+echo held > held/readme.md
+git add held
+git commit --quiet -m "a change the held check gates"
+git push --quiet origin w-held
+ready "$O5" w-held
+git checkout --quiet main
+printf 's\ns\na\n' > "$w/answers"
+mkdir "$w/held-tmp"
+TMPDIR="$w/held-tmp" VALLEY_ATTEST_KEY="$w/attest-key" setsid valley review --repo open < "$w/answers" > "$w/out" 2> "$w/err" &
+walker=$!
+wait_for "$w/held" started
+kill -INT -- "-$walker"
+status=0
+wait "$walker" || status=$?
+[ "$status" = 130 ] || fail "the walk interrupted in its checks exited $status, not 130"
+line '^walked \(3 of 3\)$'
+line '^  ◇ open pwpw v1  interrupted$'
+[ -z "$(ls -A "$w/held-tmp")" ] || fail "the walk left $(ls -A "$w/held-tmp") in its TMPDIR"
+[ "$(git worktree list --porcelain | grep -c '^worktree ')" = 1 ] || fail "the checks' worktree outlived the walk"
+if git -C "$data/open.git" rev-parse --verify --quiet "refs/the-valley/integration-requests/main/c-$O5" > /dev/null; then
+  fail "an approval interrupted during its checks filed a request"
+fi
+
 touch "$out"

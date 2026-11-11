@@ -126,7 +126,7 @@ func openWorkerTelemetry(dir string) *workerTelemetry {
 	if data, err := os.ReadFile(t.statePath()); err == nil {
 		json.Unmarshal(data, &t.state)
 	}
-	self := telemetry.Self("valley-worker", os.Getenv("VALLEY_VERSION"))
+	self := telemetry.Self("valley-worker", versionStamp)
 	t.tel = telemetry.NewEmitter(filepath.Join(dir, "stream"), self, "")
 	if prev := t.state.Pass; prev != nil {
 		reason := fmt.Sprintf("pass %s (pid %d) recorded no end: it was killed, or the host stopped, during its %s", prev.Run, prev.PID, prev.Phase)

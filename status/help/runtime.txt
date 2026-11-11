@@ -1,0 +1,13 @@
+
+Runs from any checkout of the project; needs only git and coreutils,
+except tail and replay, which also need the nats CLI (natscli), checks,
+which also needs the cue CLI, review's notes, which need less, and approve
+and review's [a]pprove, which need both the cue CLI and the attest
+helper. nix run .#valley bundles all of them. self-update also
+needs nix. Deriving a policy fetches the owning valley's repository, so
+checks and approving also need whatever reaching it takes.
+No config but valley.principal, which ready, rebase, knot and plan read,
+and valley.selfUpdate.repo and .branch, which self-update reads; no batch
+mode; and no state but the notes file, the handle cache pending and
+changes write for completion, and self-update's record of what it
+installed — the judgment stays with the human.

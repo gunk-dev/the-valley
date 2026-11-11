@@ -1,0 +1,5 @@
+usage: valley replay [dir]
+
+  replay [dir]     publish one ref-updated event per current ref of the
+                   repo at dir (default: .) — rebuilds the stream's
+                   projection, e.g. after nats stream purge valley

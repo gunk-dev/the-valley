@@ -1,0 +1,75 @@
+usage: valley knot <verb> [args]
+
+  knot <verb> [args]
+                   read and write the project's plan graph: knots, at
+                   refs/the-valley/knots on origin. a knot is an outcome,
+                   a bug, an idea or a question; `knot schema` prints the
+                   types, their statuses, active and terminal, the fields
+                   and the edges. a write is one commit on the ref, made
+                   without a checkout and pushed with a lease on the tip
+                   it was made on; no review is involved. a write that
+                   loses the lease is made again on the new tip, up to 5
+                   tries. every verb takes --project NAME, another
+                   project on the same host, and --json. exit status 3
+                   is a conflict. needs git config valley.principal for
+                   every write.
+                     new <type> <title> [--parent ID] [--blocked-by ID]...
+                         [--owner P] [--target PROJECT] [--body -]
+                                  make a knot. its id is the type's prefix
+                                  and 7 hex digits of the sha-256 of the
+                                  title's slug.
+                     show <id> [--at COMMIT] [--json]
+                                  its fields, body and comments, each
+                                  comment with its id, and the edges both
+                                  ways. --at shows the knot at a commit of
+                                  the graph; claim age uses the current
+                                  clock, and other projects' knots use
+                                  their current tips.
+                     log <id> [--json]
+                                  every commit of the graph that touched
+                                  the knot or its comments, newest first:
+                                  time, committer, operation, and the
+                                  files it added, changed or deleted
+                     list [--type T] [--status S] [--owner P] [--ready]
+                                  every knot. --status takes a status,
+                                  active or terminal. --ready lists the
+                                  active, unclaimed knots whose blockers
+                                  are all terminal.
+                     set <id> <field>=<value>... [--if <field>=<value>]...
+                         [--force]
+                                  change status, title, source, owner,
+                                  target or graduated_into. a field that
+                                  another write changed meanwhile is a
+                                  conflict unless --force. --if requires
+                                  a field to hold a value first.
+                     link <id> (--blocked-by ID | --parent ID | --change X)...
+                     unlink <id> (--blocked-by ID | --parent ID | --change X)...
+                                  add or drop an edge. a change is
+                                  valley:<project>/<change id> or a github
+                                  pull request url. outcomes and bugs link
+                                  the changes that do the work, and a
+                                  question links the change that records
+                                  its answer in the source.
+                     edit <id> --body -
+                                  replace the body with stdin
+                     comment <id> (-m TEXT | --body -) [--edit COMMENT-ID]
+                                  add a comment. --edit replaces the body
+                                  of the comment with that id; its author
+                                  and file stay, and it records who edited
+                                  it and when. only the comment's author
+                                  or a holder of the approve grant may
+                                  edit it. a comment that another edit
+                                  changed meanwhile is a conflict.
+                                  comments are never deleted; log and
+                                  show --at read every earlier text.
+                     claim <id> --run RUN
+                                  claim an active outcome or bug for a
+                                  run; an open outcome becomes
+                                  in-progress. a knot claimed already is
+                                  a conflict.
+                     unclaim <id>
+                                  release the claim. a claim that
+                                  changes before the release lands is
+                                  a conflict.
+                     schema [--json]
+                                  print the model

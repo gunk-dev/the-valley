@@ -1,7 +1,7 @@
 package main
 
 // coverage says which of a head's required nix checks already have evidence
-// on origin that approval can reuse, so that approve (bin/valley) runs only
+// on origin that approval can reuse, so that approve (approve.go) runs only
 // the rest. A check worker publishes such evidence, and so does an earlier
 // approval.
 //

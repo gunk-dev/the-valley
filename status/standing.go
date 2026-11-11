@@ -18,43 +18,21 @@ import (
 	"the-valley/change"
 )
 
-// runStanding prints where a change stands now: one line of fields
-// separated by tabs,
-//
-//	<state> <version> <head> <since> <landed> <restack>
-//
-// with the state as the record says it: ready, draft or withdrawn; the
-// active version and its head as a full object ID; since, the time the
-// record last changed, read from the record commit's committer date, in
-// UTC, as hours and minutes on the current day and with the date before
-// them otherwise; landed, v<n> when the change landed as version n
-// (rebase.Snapshot.LandedAs), by its head on main or a verified landing
-// record, and empty otherwise; and restack, "conflict" when the change's
-// restack report is current and says rebasing it onto main conflicted,
-// and empty otherwise. It fails when origin holds no record of the
-// change.
-func runStanding(g git, args []string, w io.Writer) error {
-	if len(args) != 1 || !change.ValidID(args[0]) {
-		return failure("usage: valley-go standing <change ID>")
-	}
-	if !g.succeeds(true, "rev-parse", "--git-dir") {
-		return failure("not a git repository")
-	}
-	s, err := standingOf(g, args[0])
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", s.state, s.version, s.head, s.since, s.landed, s.conflict)
-	return err
-}
-
-// standing is the line runStanding prints, one field each.
+// standing is where a change stands now: its state as the record says
+// it, ready, draft or withdrawn; the active version and its head as a
+// full object ID; since, the time the record last changed, read from the
+// record commit's committer date, in UTC, as hours and minutes on the
+// current day and with the date before them otherwise; landed, v<n> when
+// the change landed as version n (rebase.Snapshot.LandedAs), by its head
+// on main or a verified landing record, and empty otherwise; and
+// conflict, "conflict" when the change's restack report is current and
+// says rebasing it onto main conflicted, and empty otherwise.
 type standing struct {
 	state, version, head, since, landed, conflict string
 }
 
-// standingOf reads where the change id stands now, as runStanding prints
-// it.
+// standingOf reads where the change id stands now. It fails when origin
+// holds no record of the change.
 func standingOf(g git, id string) (standing, error) {
 	o, n, found, err := lookupRecorded(g, id)
 	if err != nil {

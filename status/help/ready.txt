@@ -1,0 +1,46 @@
+usage: valley ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp] [<branch>]
+
+  ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp] [<branch>]
+                   mark a head of the branch ready, as a new version of its
+                   change, in the change's record on origin:
+                   refs/the-valley/changes/main/<change id>. the branch
+                   defaults to the current one. the head is --head, or else
+                   origin/<branch>, and it must be on origin already. the
+                   first ready of a change makes v1; each later one adds
+                   the next version, at a head other than the active
+                   version's. a draft or a withdrawn change comes back this
+                   way: at the active version's head, it is ready again at
+                   that version, and at another head it gains the next
+                   version. prints the handle and version, e.g.
+                   `app nxvp v2 ready`.
+                   the change id is --change, else the head commit's jj
+                   change-id header, else a Change-Id: trailer in its
+                   message, else a new one, which is printed. a header and
+                   a trailer that disagree are refused. so is a change
+                   whose commits from its merge base with origin/main hold
+                   a merge, or that has more than one merge base.
+                     --if-active SHA
+                                  add the version only while the change
+                                  is ready at an active version whose head
+                                  is SHA. the record ref is leased on the
+                                  record read, so nothing comes between
+                                  that check and the write. rebase readies
+                                  the head it rebased this way.
+                     --stamp      amend the head of your local branch to
+                                  carry the id as a Change-Id: trailer and
+                                  push the branch, leased, before marking it
+                                  ready. it only starts a new change: it
+                                  is refused for a change that has a
+                                  record on origin already, and for a head
+                                  already on origin.
+                   the record names the principal your key pushes as, read
+                   from git config valley.principal; the host refuses one
+                   naming anyone else. the record ref is pushed leased on
+                   the value read. a new change is owned by the principal
+                   that readies it, and a later version may come from its
+                   owner, the operator, or a restack holder while the
+                   change is ready.
+                   a record never makes anything land, and approve is
+                   still the only way to main. the integrator reads
+                   records only to refuse: it lands no request that would
+                   bring a version of a change that is not ready.

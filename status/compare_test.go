@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,14 +65,21 @@ func (r *compareRepo) file(name, content string) {
 	r.git("add", name)
 }
 
-// valley runs a verb of valley-go and returns what it printed.
+// valley runs a verb of valley and returns what it printed.
 func (r *compareRepo) valley(args ...string) string {
 	r.t.Helper()
 	var stdout, stderr bytes.Buffer
 	if code := run(args, &stdout, &stderr, os.Exit); code != 0 {
-		r.t.Fatalf("valley-go %s: %s", strings.Join(args, " "), stderr.String())
+		r.t.Fatalf("valley %s: %s", strings.Join(args, " "), stderr.String())
 	}
 	return stdout.String()
+}
+
+// runCompare sets a version against its approved one, as review does.
+func (r *compareRepo) runCompare(args ...string) (string, error) {
+	var out bytes.Buffer
+	err := runCompare(git{env: gitEnvironment(os.Environ()), stderr: io.Discard}, args, &out)
+	return out.String(), err
 }
 
 // moveMain adds a commit to main on origin, as a landing would, and
@@ -128,8 +136,11 @@ func (r *compareRepo) compareVerbose(id string, version int, head string) (kind,
 
 func (r *compareRepo) compareWith(id string, version int, head string, flags ...string) (kind, text string) {
 	r.t.Helper()
-	args := append(append([]string{"compare"}, flags...), "--tip", r.git("rev-parse", "origin/main"), id, strconv.Itoa(version), head)
-	out := r.valley(args...)
+	args := append(append([]string{}, flags...), "--tip", r.git("rev-parse", "origin/main"), id, strconv.Itoa(version), head)
+	out, err := r.runCompare(args...)
+	if err != nil {
+		r.t.Fatalf("compare %s: %s", strings.Join(args, " "), err)
+	}
 	kind, text, _ = strings.Cut(out, "\n")
 	return kind, text
 }
@@ -377,9 +388,8 @@ func TestCompareSaysWhatChanged(t *testing.T) {
 	}
 
 	// The version given must have the head given.
-	var stdout, stderr bytes.Buffer
-	if code := run([]string{"compare", "--tip", two, id, "3", v4}, &stdout, &stderr, os.Exit); code == 0 || !strings.Contains(stderr.String(), "v3 of change zzzz records the head") {
-		t.Fatalf("compare took a head its version does not record: %d %s", code, stderr.String())
+	if _, err := r.runCompare("--tip", two, id, "3", v4); err == nil || !strings.Contains(err.Error(), "v3 of change zzzz records the head") {
+		t.Fatalf("compare took a head its version does not record: %v", err)
 	}
 }
 

@@ -1,0 +1,5 @@
+usage: valley tail [subject]
+
+  tail [subject]   watch bus events scroll by (default subject: valley.>);
+                   the server comes from the nats CLI's own config
+                   (NATS_URL or a nats context; default localhost)

@@ -1,8 +1,8 @@
 // The rebase engine: a family of stacked changes, read from one snapshot
 // of origin, rebased onto main in a throwaway worktree, and published as
-// one atomic branch push and one record append per change. valley-go
-// (../status) runs it for valley rebase and review's [b]ase, and it reads
-// how far each version has landed for valley-go's listings too.
+// one atomic branch push and one record append per change. The valley
+// command (../status) runs it for valley rebase and review's [b]ase, and it
+// reads how far each version has landed for valley's listings too.
 module the-valley/rebase
 
 go 1.24

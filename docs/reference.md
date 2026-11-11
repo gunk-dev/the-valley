@@ -91,13 +91,13 @@ export GIT_NO_REPLACE_OBJECTS=1
 unset GIT_REPLACE_REF_BASE GIT_GRAFT_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 ```
 
-| Exit code | Meaning                                                                                                                                                                                                                               |
-| :-------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `0`       | Command succeeded (`self-update` also exits `0` when already up to date, when another run holds the lock, when pinned, or when the current branch tip already failed and `--retry` is not given).                                     |
-| `1`       | Command refused or failed (invalid state, failed check, rejected push, missing git config, runtime error, or invalid CLI flags in `status`, `ready`, `unready`, `withdraw`, `changes`, `pending`, `rebase`, `plan`, or `bin/valley`). |
-| `2`       | Invalid `valley knot` or `valley self-update` CLI usage, bad `VALLEY_NOW` timestamp in `knot` or `plan`, or unknown `valley-go` verb.                                                                                                 |
-| `3`       | Plan graph compare-and-set or precondition conflict in `valley knot` (such as concurrent modification of a field without `--force`, a failed `--if <field>=<value>` check, or a claim held by another run).                           |
-| `130`     | Interrupted by `SIGINT` or `SIGTERM` during `valley review`, `valley approve`, `valley rebase`, or `valley self-update`.                                                                                                              |
+| Exit code | Meaning                                                                                                                                                                                                                                                           |
+| :-------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`       | Command succeeded (`self-update` also exits `0` when already up to date, when another run holds the lock, when pinned, or when the current branch tip already failed and `--retry` is not given).                                                                 |
+| `1`       | Command refused or failed (invalid state, failed check, rejected push, missing git config, runtime error, invalid CLI flags in `status`, `ready`, `unready`, `withdraw`, `changes`, `pending`, `rebase`, `plan`, `tail`, `replay` or `help`, or an unknown verb). |
+| `2`       | Invalid `valley knot` or `valley self-update` CLI usage, or bad `VALLEY_NOW` timestamp in `knot` or `plan`.                                                                                                                                                       |
+| `3`       | Plan graph compare-and-set or precondition conflict in `valley knot` (such as concurrent modification of a field without `--force`, a failed `--if <field>=<value>` check, or a claim held by another run).                                                       |
+| `130`     | Interrupted by `SIGINT` or `SIGTERM` during `valley review`, `valley approve`, `valley rebase`, or `valley self-update`.                                                                                                                                          |
 
 ### `valley ready`
 
@@ -227,7 +227,7 @@ moving (3)
   `✗` a current restack report says a conflict, or `◇` that the restack held, with what the report
   says. A change is approved when its active version has an integration request at its head, or when
   the request names an earlier version's head whose approval carries to the active version, under
-  the rules review applies when a change moves while it is shown (`valley-go carry`). A request
+  the rules review applies when a change moves while it is shown (`status/carry.go`). A request
   whose approval does not carry leaves the change under `needs you`.
 - **Counts:** The drafts and the unrecorded branches ahead of `main` that no landed version's head
   reaches, with the flags that list them. Older versions of a change are never listed.
@@ -347,15 +347,14 @@ valley review [-v] [--build-here] [--repo <name>]
   - `-v`: Warns on `stderr` if the plan graph, or the checks and their build times, cannot be read.
   - `--build-here`: Lets `[a]pprove` build, on this machine, the required `nix` checks that `origin`
     holds no evidence for, as `valley approve --build-here` does.
-- **Comparison against the approved version (`valley-go compare`):**
+- **Comparison against the approved version (`status/compare.go`):**
   - Before paging a recorded change, `valley review` identifies the change's **approved version**:
     the greatest version `vM` below the shown version `vN` whose exact `head` commit is named on
     `origin` by a pending integration request or a `land`, `stale`, or `reject` outcome record under
     `c-<change-id>` or an unambiguous branch request name. If the greatest version with evidence is
     ambiguous, no fallback to an older version occurs.
   - If an approved version is found and both versions have a single merge base (`B0` and `B1`) on
-    `origin/main`'s first-parent history with `B0` equal to or an ancestor of `B1`,
-    `valley-go compare` computes
+    `origin/main`'s first-parent history with `B0` equal to or an ancestor of `B1`, review computes
     [`valley-delta-v1`](#canonical-digest-manifests-valley-tree-v1-valley-inputs-v1-valley-delta-v1)
     between each version's merge base and its head:
     - `clean`: Both versions produce the identical `valley-delta-v1` file delta. `valley review`
@@ -368,8 +367,8 @@ valley review [-v] [--build-here] [--repo <name>]
       otherwise; the paths whose delta entries differ, each with the landings between the bases that
       edited it; `git range-diff` when a commit is edited; and the shown version's diff restricted
       to those paths. `valley review -v` adds each path's mode and SHA-256 in each version.
-    - On a terminal, unless `NO_COLOR` is set, `valley-go style` styles the view after the diff
-      pager, line for line; the buffer the editor opens stays plain.
+    - On a terminal, unless `NO_COLOR` is set, `valley style` styles the view after the diff pager,
+      line for line; the buffer the editor opens stays plain.
     - `none`: No approved version can be compared; `valley review` pages the log, each commit with
       its whole message, and the diff against `origin/main` (or the layer below in a stack).
 - **Interactive prompt actions:**
@@ -385,7 +384,7 @@ valley review [-v] [--build-here] [--repo <name>]
     checks fail at that head.
   - `[b]ase onto main`: Offered only before paging a stack whose bottom does not fast-forward from
     `origin/main`, under the header `<top> · stack of <n> · behind main`. Rebases the stack onto
-    `origin/main` via `valley-go rebase`, then re-reads and re-pages the rebased commits. A change
+    `origin/main` as `valley rebase` does, then re-reads and re-pages the rebased commits. A change
     alone is never offered a rebase.
   - `[v]iew diff`: Pages the full log and diff against `origin/main` (or the layer below) regardless
     of approved-version comparison. A layer below the top offers it as `[v]iew full diff`.
@@ -427,11 +426,10 @@ valley review [-v] [--build-here] [--repo <name>]
   `YYYY-MM-DD HH:MMZ` otherwise. Review never suggests `valley ready` for a change that is not
   ready; only `valley approve`, run by the change's owner, does.
 
-  A new version v<n> is set against v<m>, the version shown, by
-  `valley-go carry <change ID> <m> <n>` (`status/carry.go`), as `valley-go compare` sets a version
-  against its approved one, at `main`'s tip on origin. When the two have the same file delta, commit
-  messages and authors, and the change's carry mode allows the landings between their bases, the
-  answer carries: review prints
+  A new version v<n> is set against v<m>, the version shown (`status/carry.go`), as review sets a
+  version against its approved one (`status/compare.go`), at `main`'s tip on origin. When the two
+  have the same file delta, commit messages and authors, and the change's carry mode allows the
+  landings between their bases, the answer carries: review prints
   `<change> moved to v<n> while you were reviewing. v<n> is v<m> rebased onto the new main with no other changes, so your approval covers it.`,
   with `v<n> makes the same changes as v<m> on the same main` as the reason when no landing lies
   between their bases. `[a]pprove` files v<m>'s head, the one shown, whose delta the integrator
@@ -456,8 +454,7 @@ valley review [-v] [--build-here] [--repo <name>]
   With `[a]pprove v<n>` offered after `[v]`, the page ends with `[a]pprove v<n>, [s]kip?`. `[a]`
   files v<n>'s head through the same approval attempt as `[a]pprove`, with that version and head.
   When the change moves again before it files, the approval is refused and review's prompt comes
-  back. `valley-go carry` prints the offer as a third field on its first line: `approve`, `view`, or
-  `none`. A review whose answer is `[r]eject` is offered no approval.
+  back. A review whose answer is `[r]eject` is offered no approval.
 
 - **Inline review notes:** Pressing `v` inside `less` opens the diff buffer in `$EDITOR`. Any lines
   inserted by the reviewer are anchored to their file and new-side line number, appended to
@@ -660,8 +657,8 @@ valley rebase kqxm
 valley rebase [--known-signers <file>] [--integrator-name <name>] <change>
 ```
 
-- **Arguments:** `<change>` (Change ID, handle, or branch name). (`valley-go rebase` also accepts
-  `--head <full-sha>` when invoked by `valley review`'s `[b]ase`).
+- **Arguments:** `<change>` (Change ID, handle, or branch name). Any other argument is refused.
+  `valley` fetches `origin` first, and a fetch that fails exits with git's status.
 - **Flags:** `--known-signers <file>` and `--integrator-name <name>`, as for
   [`valley pending`](#valley-pending).
 - **Behavior:**
@@ -795,12 +792,13 @@ valley tail [subject]
 valley replay [repo-dir]
 ```
 
-- `valley tail [subject]`: Runs `nats sub <subject>` (default subject: `valley.>`). Uses `NATS_URL`
-  or the active `nats` CLI context (default `localhost`).
+- `valley tail [subject]`: Replaces itself with `nats sub <subject>` (default subject: `valley.>`),
+  so signals and the exit status are `nats`'s. Uses `NATS_URL` or the active `nats` CLI context
+  (default `localhost`).
 - `valley replay [repo-dir]`: Iterates `git -C <repo-dir> for-each-ref` (default `<repo-dir>`: `.`)
   and publishes
   `{"event":"ref-updated","repo":"<repo>","ref":"<ref>","old":"0000...","new":"<sha>"}` to
-  `valley.git.<repo>.ref-updated` for each ref.
+  `valley.git.<repo>.ref-updated` for each ref, the payload the host's publisher hook builds.
 
 ### `valley self-update`, `--version`, and `help`
 
@@ -828,8 +826,8 @@ valley help [<verb>]
     `$XDG_STATE_HOME/valley/self-update.json`; while pinned, `valley self-update` exits `0` without
     building or installing.
 - **`valley --version`:** Prints `valley <version>-<short-rev>` (with `-dirty` for a dirty build
-  tree or `-unknown` when Nix had no commit rev) when built by Nix (`nix/packages.nix`), or
-  `valley unstamped (run from a checkout, not built by nix)` when run directly from a checkout.
+  tree or `-unknown` when Nix had no commit rev) for the stamped package (`nix/packages.nix`), or
+  `valley unstamped (built without the package's version stamp)` for any other build.
 - **`valley help [<verb>]`** (also `valley -h`, `valley --help`, or `valley` with no arguments):
   Prints a one-screen command summary when called with no `<verb>`, or detailed usage for `<verb>`
   (`pending`, `changes`, `review`, `approve`, `rebase`, `status`, `ready`, `unready`, `withdraw`,
@@ -899,10 +897,23 @@ The command a session sends is `valley-telemetry <operation> [--flag=value]...`,
 and no quoting. The host's shell parses it whole and refuses anything else, including a path, a unit
 name or a pattern. A refused command reaches nothing, not `git-shell` and not the collector.
 
+### Internal verbs
+
+`valley` has verbs for its own programs and checks, which are in neither the usage nor any help
+topic ([`status/main.go`](../status/main.go)):
+
+- `resolve <change>` prints the record or branch a name resolves to.
+- `stack [--known-signers <file>] [--integrator-name <name>] <change>` lists the layers under a
+  change.
+- `checkline <change-id>...` prints what `valley review` shows of a change's checks; review runs it
+  in the background while the operator reads.
+- `style [--paged]` styles review's page for a terminal; review runs it in its pager.
+- `work` is one pass of the check worker, which `valley-worker` runs.
+
 ### Helper and host commands
 
-The `valley` package, the NixOS host module, and the web publisher's module build seven Go binaries
-that `bin/valley` and `systemd` invoke ([`nix/packages.nix`](../nix/packages.nix)).
+The `valley` package, the NixOS host module, and the web publisher's module build the Go programs
+that `valley` and `systemd` invoke ([`nix/packages.nix`](../nix/packages.nix)).
 
 ```sh
 attest key --key ~/.ssh/valley-attest --name operator
@@ -988,19 +999,8 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     note, or appends a signature line to an existing note on stdin.
   - `attest key --key <path> [--name <name>]` — prints the `<name>+<8-hex-hash>+<base64>` verifier
     key line.
-- **`valley-go`** ([`status/main.go`](../status/main.go)): Internal helper binary invoked by
-  `bin/valley` for `status`, `ready`, `unready`, `withdraw`, `changes`, `pending`,
-  `review [-v] [--build-here] [<change> | --repo <name>]` (with no change, [the walk](#the-walk)),
-  `approve`, `rebase`, `knot`, `plan`, `checks`, `telemetry`, and `self-update`, plus internal
-  plumbing verbs (`walk [--repo <name>] [-v] [--build-here]`, `resolve <change>`, `stack <change>`,
-  `does [-v] <change-id>...`, `brings [--change <id>] <head>`, `versions <change-id>`,
-  `compare --tip <commit> <change-id> <version> <head>`,
-  `coverage --head <sha> [--check <name>=<attribute>]...`, and `checks --json`, which prints the Go
-  deriver's `valley-checks/v1` document in place of the report). `work` is the check worker, which
-  `valley-worker` runs. `status`, `stack`, `rebase`, `brings`, `changes`, `pending`, `walk` and
-  `plan` also take `--known-signers <file>` and `--integrator-name <name>`.
 - **`valley-worker`** ([`status/worker.go`](../status/worker.go)): One pass of the check worker (see
-  [The check worker](architecture.md#the-check-worker)). It is `valley-go work`, wrapped with this
+  [The check worker](architecture.md#the-check-worker)). It is `valley work`, wrapped with this
   flake's git, cue and `attest` and with `VALLEY_VERIFICATION_SCHEMA` set. It runs the machine's own
   `nix`. On a host, `services.valley.worker` runs it on a timer (see
   [NixOS host options](#nixos-host-options)).
@@ -1394,14 +1394,14 @@ export VALLEY_ATTEST_NAME=operator
 | `VALLEY_INTEGRATOR_SIGNER`   | `status`, `changes`, `pending`, `rebase`, `plan`                | The signing name (`<signer-name>`) the host's integrator signs transfer statements under. `--integrator-name` takes precedence over it, and it takes precedence over the `integrator-name` the host publishes. A file that cannot be read, does not read as verifier keys, or holds no key under the name is reported on `stderr`, and no statement is verified.                                                                                                                                                                                                                                               |
 | `VALLEY_ATTEST_KEY`          | `approve`, `review` (`[a]pprove`)                               | Path to the OpenSSH `ssh-ed25519` private key passed to `attest run --key` whenever a required check has to run, because `origin` holds no evidence `approve` can reuse for it.                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `VALLEY_ATTEST_NAME`         | `approve`, `review` (`[a]pprove`)                               | Signer name passed to `attest run --name` (when unset, `attest` defaults to `<hostname>/attestations`, or `localhost/attestations` if `os.Hostname` fails).                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `VALLEY_VERIFICATION_SCHEMA` | `checks`, `approve`, `review`, `integrator`, `valley-restacker` | Path to `schema/verification.cue`. Set automatically by the Nix wrapper, `valley-worker`'s included; falls back to `<repo>/schema/verification.cue` when running `bin/valley` from a checkout.                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `VALLEY_VERIFICATION_SCHEMA` | `checks`, `approve`, `review`, `integrator`, `valley-restacker` | Path to `schema/verification.cue`. Set automatically by the Nix wrapper, `valley-worker`'s included; falls back to `<repo>/schema/verification.cue` for a `valley` run outside its package.                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `VALLEY_ATTEST_SCHEMA`       | `attest`, `integrator`                                          | Path to `schema/attestation.cue`, set by the Nix wrapper.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `VALLEY_EVENT_SCHEMA`        | `integrator`                                                    | Path to `schema/events.cue`, set by the Nix wrapper.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `VALLEY_IDENTITY_SCHEMA`     | `identity`                                                      | Path to `schema/identity.cue`, set by the Nix wrapper.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `VALLEY_NOW`                 | `knot`, `plan`, `valley-worker`                                 | Optional UTC timestamp in `RFC 3339` format (`YYYY-MM-DDTHH:MM:SSZ`) overriding the system clock for knot `created` dates, comment stamps, comment edit times, claim timestamps, claim age calculations, and the check worker's waits after a failed batch. Invalid values exit `2`.                                                                                                                                                                                                                                                                                                                           |
 | `VALLEY_TELEMETRY_DIR`       | `valley-worker`, `integrator`                                   | Host-side: the directory a producer exports its telemetry to, set by the NixOS module ([Telemetry](architecture.md#telemetry)). Unset, the producer records nothing.                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `VALLEY_REVIEW_CHECKS_WAIT`  | `review`                                                        | Whole seconds `valley review` waits, at most, for a change's checks line before the prompt (default `0`: it does not wait). The line takes about as long to read as `valley pending --checks` takes for one project, so a prompt that follows a short diff right away shows it only with a wait of a few seconds.                                                                                                                                                                                                                                                                                              |
-| `VALLEY_VERSION`             | `bin/valley`, `self-update`                                     | Package stamp (`<version>-<rev>`) baked into the Nix-wrapped `valley` script, captured into `VALLEY_STAMP` and unset on startup so child processes do not inherit it, and passed explicitly to `valley-go self-update`.                                                                                                                                                                                                                                                                                                                                                                                        |
+| `VALLEY_VERSION`             | `valley`, `self-update`                                         | Package stamp (`<version>-<rev>`) the stamped `valley` package sets. `valley` takes it as it starts and unsets it, so programs it starts do not inherit it; `--version`, `self-update` and telemetry read the stamp taken.                                                                                                                                                                                                                                                                                                                                                                                     |
 | `VALLEY_PRINCIPAL`           | `valleyhook shell`, host `pre-receive` wrapper                  | Host-side environment variable set by `valleyhook shell` after looking up the key named in `SSH_USER_AUTH` against the host's `authorized_keys` files. Any client-supplied `VALLEY_PRINCIPAL` or `GIT_*` environment variable is stripped by `valleyhook shell` before `git-shell` runs.                                                                                                                                                                                                                                                                                                                       |
 | `SSH_USER_AUTH`              | `valleyhook shell`                                              | Path to the file written by OpenSSH `sshd` (`ExposeAuthInfo yes`) containing the public key that authenticated the SSH session.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `XDG_STATE_HOME`             | `review`, `approve` (via `attest run --timings`), `self-update` | Base directory for persistent client state, and for the check worker's (defaults to `~/.local/state`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -1508,26 +1508,24 @@ git config --global valley.telemetry true
 git config valley.telemetry.remote origin   # optional; origin is the default
 ```
 
-With `valley.telemetry` true, every `valley` command records one `command` record (its own run) on
-exit. It carries the project, the CLI's version stamp, `verb`, `subverb` (a `knot` verb or
+With `valley.telemetry` true, every public `valley` verb records one `command` record (its own run)
+on exit. It carries the project, the CLI's version stamp, `verb`, `subverb` (a `knot` verb or
 `telemetry` operation), `flags` (each known flag name once, never values or anything after `--`),
-`status` (exit status), and `elapsed_ms` (wall time from the start of `bin/valley`), and never an
-argument's value, path, title, or body. A verb `valley-go` runs (`pending`, `status`, `changes`,
-`ready`, `unready`, `withdraw`, `knot`, `plan`, `rebase`, `approve`, `checks`, `telemetry`,
-`self-update`, and `review` with no change) adds `shell_ms` (script time before `valley-go` started,
-including `pending`'s fetch of origin) and each phase's `<phase>_ms` (wall time, excluding nested
-phases) and `<phase>_procs` (processes started). The phases are `fetch` (`ls-remote` and `fetch`),
-`records` (reading change and outcome records), `transfers` (verifying transfer statements),
-`knots`, `changes` (the queue's change states), `checks` (the queue's check evidence), `policy`
-(policy at main), `main` (main's follow checks and worker runs), `branches` (pending's branches and
-stacks), `steps` (the reviews a walk runs), and `other`. With telemetry off, `valley-go` verbs start
-no extra process and write no file: `valley-go` reads the git configuration files directly and runs
-`git` only when one mentions telemetry or includes another file. With telemetry on, the command runs
-one `git config` and starts the background flusher. `review` of one change records no phases: its
-time is the operator's reading. A walk records each step's review the same way, as a `review` of one
-change from the step's repository, so a step read through a cache clone is its project's. `tail` and
-`replay`, which the script runs itself, pass their record on exit to `valley-go telemetry command`,
-which checks configuration the same way.
+`status` (exit status), and `elapsed_ms` (wall time from the start of `valley`), and never an
+argument's value, path, title, or body. It adds each phase's `<phase>_ms` (wall time, excluding
+nested phases) and `<phase>_procs` (processes started). The phases are `fetch` (`ls-remote` and
+`fetch`, `pending`'s and `rebase`'s fetch of origin included), `records` (reading change and outcome
+records), `transfers` (verifying transfer statements), `knots`, `changes` (the queue's change
+states), `checks` (the queue's check evidence), `policy` (policy at main), `main` (main's follow
+checks and worker runs), `branches` (pending's branches and stacks), `steps` (the reviews a walk
+runs), and `other`. With telemetry off, `valley` starts no extra process and writes no file: it
+reads the git configuration files directly and runs `git` only when one mentions telemetry or
+includes another file. With telemetry on, the command runs one `git config` and starts the
+background flusher. `review` of one change records no phases: its time is the operator's reading. A
+walk records each step's review the same way, as a `review` of one change from the step's
+repository, so a step read through a cache clone is its project's. `help`, a verb's `--help`,
+`--version`, the internal verbs and the background flusher record nothing, and nor does a `tail`
+that has become `nats sub`.
 
 Every approval attempt also records its steps: `valley approve`, and each `[a]pprove` answer in
 `valley review`, a stack's layers included. An attempt records its start, the policy it derived,
@@ -2262,7 +2260,7 @@ valley-tree-v1
      bytewise ascending and deduplicated: `<decimal-byte-length-of-name> <name>\n`
 3. **`valley-delta-v1`:**
    - **Purpose:** 64-hex SHA-256 digest of the whole-file changes between a pre-tree `T` and a
-     post-tree `R`, used by `valley review` (`valley-go compare`) to check whether two versions of a
+     post-tree `R`, used by `valley review` (`status/compare.go`) to check whether two versions of a
      change make the exact same modifications to their respective merge bases.
    - **Encoding:** Header `"valley-delta-v1\n"`, followed by one line per path whose entry differs
      between `T` and `R`, sorted bytewise ascending by `<path>`:
@@ -2985,7 +2983,7 @@ The types:
 | :-------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | check worker          | `pass.start`, `pass.end`, `pass.interrupted` (inferred, at the next pass), `change.seen`, `batch.start`, `batch.end`, `capacity`, `backoff`, `publish.start`, `publish.end`                        |
 | `attest run`          | `run.start`, `run.end`, `eval.start`, `eval.end`, `check.queued`, `check.build-start`, `check.build-end`, `check.start`, `check.result`, `evidence.stored`                                         |
-| any `valley` command  | `command`: the verb, flag names, project, exit status, wall time and, for a verb `valley-go` runs, each phase's time and processes                                                                 |
+| any `valley` command  | `command`: the verb, flag names, project, exit status, wall time and each phase's time and processes                                                                                               |
 | `valley approve`      | `approve.start`, `approve.policy`, `approve.coverage`, `approve.checks`, `approve.request`, `approve.end`                                                                                          |
 | a workstation's flush | `check.output`, a piece of a check's output, shown only with `--logs`                                                                                                                              |
 | integrator            | `decision`: the request, outcome, total duration and stage durations; for a decision made in a pass, also the deciding process and pass and when that process first listed the request at its head |

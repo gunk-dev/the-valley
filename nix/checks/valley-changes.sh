@@ -156,7 +156,7 @@ ready "$H" forged
 branch loose "$base" loose
 
 # Before anything lands, ff names its change.
-ok valley-go resolve ff
+ok valley resolve ff
 line "^change"$'\t'"$F"$'\t'
 
 # The integrator's keys: the integrator's own, and another a known
@@ -421,15 +421,15 @@ ok valley changes --json
 holds '[.repos[].repo] == ["guarded"]' '[.repos[0].changes[].handle] == ["mmmm", "nxvp", "oooo", "pqpq", "xxxx", "yyyy"]'
 # A qualified handle names the change in the repository it qualifies, and
 # a qualifier naming another repository is refused.
-ok valley-go resolve guarded:mmmm
+ok valley resolve guarded:mmmm
 line "^change"$'\t'"$B"$'\t'"mmmm"$'\t'"1"$'\t'"$(git rev-parse g-dup)"$'\t'
 cd "$w/open"
-ok valley-go resolve open:mmmm
+ok valley resolve open:mmmm
 line "^change"$'\t'"$B"$'\t'"mmmm"$'\t'"1"$'\t'"$(git rev-parse stack-b)"$'\t'
-if valley-go resolve origin:mmmm > "$w/out" 2> "$w/err"; then fail "open resolved a handle qualified by origin"; fi
+if valley resolve origin:mmmm > "$w/out" 2> "$w/err"; then fail "open resolved a handle qualified by origin"; fi
 grep -q 'origin:mmmm names a change in origin, and this repository is open' "$w/err" || fail "origin:mmmm was refused without saying why"
 cd "$w/origin"
-ok valley-go resolve origin:mmmm
+ok valley resolve origin:mmmm
 line "^change"$'\t'"$B"$'\t'"mmmm"$'\t'"1"$'\t'"$(git rev-parse o-dup)"$'\t'
 ok valley status origin:mmmm
 cd "$w/guarded"
@@ -625,25 +625,25 @@ holds '[.repos[].changes[].versions[] | select(has("checks"))] == []'
 # ----------------------------------------------------------------------
 # A branch name is used again once its change has landed: ff now names no
 # change, and reparent none either, once its transfer statement verifies.
-ok valley-go resolve ff
+ok valley resolve ff
 line "^branch"$'\t'"ff$"
-ok valley-go resolve reparent
+ok valley resolve reparent
 line "^branch"$'\t'"reparent$"
-env -u VALLEY_KNOWN_SIGNERS valley-go resolve reparent > "$w/out" 2> "$w/err" || fail "resolve failed"
+env -u VALLEY_KNOWN_SIGNERS valley resolve reparent > "$w/out" 2> "$w/err" || fail "resolve failed"
 line "^change"$'\t'"$G"$'\t'
-ok valley-go resolve stack-a
+ok valley resolve stack-a
 line "^change"$'\t'"$A"$'\t'
 
 # H' has not landed, so its branch still names I, which is a draft, and
 # approving the branch is refused for I's state rather than taken as a
 # plain branch.
-ok valley-go resolve again
+ok valley resolve again
 line "^change"$'\t'"$I"$'\t'"zzzz"$'\t'"2"$'\t'"$hprime"$'\t'"again"$'\t'"draft"$'\t'"alice$"
 if valley approve again > "$w/out" 2> "$w/err"; then fail "approve took the branch of a draft"; fi
 grep -qx "⊘ zzzz v2  not approved · change is a draft" "$w/err" || fail "approve did not refuse the draft for its state"
 
 # J' is not J's landing replayed, so its branch names J, a draft, too.
-ok valley-go resolve ffrec
+ok valley resolve ffrec
 line "^change"$'\t'"$J"$'\t'"lmlm"$'\t'"2"$'\t'"$jprime"$'\t'"ffrec"$'\t'"draft"$'\t'"alice$"
 if valley approve ffrec > "$w/out" 2> "$w/err"; then fail "approve took the branch of a replayed landing"; fi
 grep -qx "⊘ lmlm v2  not approved · change is a draft" "$w/err" || fail "approve did not refuse J' for its state"
@@ -655,7 +655,7 @@ echo more > more.txt
 git add more.txt
 git commit --quiet -m more
 git push --quiet origin ff-again:ff
-ok valley-go resolve ff
+ok valley resolve ff
 line "^branch"$'\t'"ff$"
 
 # ----------------------------------------------------------------------

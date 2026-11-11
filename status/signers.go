@@ -52,7 +52,7 @@ const (
 // so take --known-signers and --integrator-name.
 var signerVerbs = map[string]bool{
 	"status": true, "changes": true, "pending": true, "rebase": true,
-	"stack": true, "brings": true, "plan": true, "walk": true,
+	"stack": true, "brings": true, "plan": true,
 }
 
 // setting is one of the two values, and where it came from: a flag, a

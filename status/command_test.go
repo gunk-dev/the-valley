@@ -18,9 +18,6 @@ func TestCommandWordsKeepNoValue(t *testing.T) {
 	if verb, sub, _ := commandWords([]string{"zx81q", "show"}); verb != "unknown" || sub != "" {
 		t.Fatalf("an unknown verb read as %q %q", verb, sub)
 	}
-	if verb, _, flags := commandWords([]string{"walk", "-v", "--repo", "app"}); verb != "review" || !slices.Equal(flags, []string{"-v", "--repo"}) {
-		t.Fatalf("review's walk read as %q %q", verb, flags)
-	}
 }
 
 // Telemetry is off without asking git only where no configuration file

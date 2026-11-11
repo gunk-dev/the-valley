@@ -17,7 +17,7 @@ type Outcome struct {
 // unknown, never a decision: a damaged record, or one in a format newer
 // than this reader, must not read as a landing or as any other answer the
 // integrator did not give. Fields are separated by spaces or tabs, and
-// trailing newlines are dropped, as bin/valley read it with read(1); a
+// trailing newlines are dropped, as read(1) reads a line; a
 // second line, a NUL, or a sixth field makes the record unknown.
 func ParseOutcome(record string) Outcome {
 	line := strings.TrimRight(record, "\n")

@@ -87,8 +87,7 @@ in
       packages.attest
       packages.identity
       packages.integrator
-      packages.valley-script
-      packages.valley-go
+      packages.valley-unstamped
     ];
     inherit keys;
     initScript = host.config.systemd.services.valley-init.script;

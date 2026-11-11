@@ -197,7 +197,7 @@ for b in s-one s-two; do
   git -C "$data/guarded.git" merge-base --is-ancestor "$tip" "$b" || fail "the base left $b off main"
 done
 cd "$w/guarded"
-ok valley-go resolve "$S2"
+ok valley resolve "$S2"
 [ "$(cut -f4 "$w/out")" = 2 ] || fail "the base wrote no second version of srsr: $(cat "$w/out")"
 
 # ----------------------------------------------------------------------

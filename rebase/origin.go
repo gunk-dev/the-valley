@@ -194,8 +194,7 @@ func HeadOf(v change.Version) string {
 // ChangeName is the change segment of a request ref. The integrator reads
 // a request as <prefix>/<target>/<change> and refuses a change segment
 // holding a slash (integrator/refs.go), so a branch name with one is
-// written with dashes instead. bin/valley's change_name is the same
-// mapping, and the request approve files is named by it.
+// written with dashes instead. The request approve files is named by it.
 func ChangeName(branch string) string {
 	return strings.ReplaceAll(branch, "/", "-")
 }

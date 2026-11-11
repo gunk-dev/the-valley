@@ -1,7 +1,7 @@
 // The knots a change does: every knot in its project's plan graph whose
 // changes field lists valley:<project>/<change ID>. review shows them above
-// a change's diff (runDoes), and changes, pending and status --json include
-// them (list.go, pending.go, render.go).
+// a change's diff (reviewpage.go), and changes, pending and status --json
+// include them (list.go, pending.go, render.go).
 //
 // The plan graph in project storage holds the links from knots to changes.
 // Each command reads a project's graph once, however many changes it
@@ -35,8 +35,8 @@ type knotRef struct {
 //	does oc-6335749 (open): Ready changes stay landable as main moves
 //
 // It strips newlines, tabs and control characters even though the graph
-// schema forbids them, so a malformed knot cannot break runDoes's
-// tab-separated output or write escape sequences to the terminal.
+// schema forbids them, so a malformed knot cannot break a line review
+// shows or write escape sequences to the terminal.
 func (k knotRef) line() string {
 	title := strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\t' {
@@ -102,40 +102,4 @@ func (d doers) of(id string) []knotRef {
 		return list
 	}
 	return []knotRef{}
-}
-
-// runDoes implements `valley-go does`: the knots each change does, as
-// review reads them (readDoers). It reads this project's plan graph once
-// and prints one tab-separated line per knot, in the order the change IDs
-// are given:
-//
-//	<change ID>\tdoes <knot ID> (<status>): <title>
-//
-// Changes with no linked knots produce no lines. -v warns on stderr when
-// the graph is missing or unreadable.
-func runDoes(g git, args []string, stdout, stderr io.Writer) error {
-	verbose := false
-	var ids []string
-	for _, a := range args {
-		switch {
-		case a == "-v":
-			verbose = true
-		case change.ValidID(a):
-			ids = append(ids, a)
-		default:
-			return failure("usage: valley-go does [-v] <change ID>...")
-		}
-	}
-	if !g.succeeds(true, "rev-parse", "--git-dir") {
-		return failure("not a git repository")
-	}
-	d := readDoers(g, project(g), verbose, stderr)
-	var b strings.Builder
-	for _, id := range ids {
-		for _, k := range d.of(id) {
-			fmt.Fprintf(&b, "%s\t%s\n", id, k.line())
-		}
-	}
-	_, err := io.WriteString(stdout, b.String())
-	return err
 }

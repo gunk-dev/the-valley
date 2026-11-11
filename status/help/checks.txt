@@ -1,0 +1,51 @@
+usage: valley checks [--schema FILE] [--instance DIR] [--project DIR] [--names [--cost COST] | --json] [<base> [<head>]]
+
+  checks [<base> [<head>]]
+                   print the check names the composed verification policy
+                   (dcr-f41f718) requires of the change between two
+                   commits, which class made each one required, and the
+                   change's carry mode: how far an approval of it carries
+                   across a rebase, the strictest of exact, same-class and
+                   same-paths among the classes it matched. It prints: no
+                   check is run, nothing is gated, nothing is written.
+                   base defaults to the merge base with main, head to HEAD.
+                   by default both layers come from the target's tip
+                   (origin/main), never from your checkout: the project's
+                   own layer is policy/project there, and the owning valley
+                   is named one line at policy/valley there, fetched and
+                   read at policy/instance in that repository's integrated
+                   tip. a valley's own config repository carries
+                   policy/instance and uses it. a target carrying no
+                   policy/project is derived under the floor alone; a floor
+                   that is not there is refused. this is what the
+                   integrator reads, so the answer is the same from any
+                   branch, however stale. an option overrides each layer,
+                   which is the only way to derive against a layer that
+                   does not govern — the worked example under
+                   examples/policy/, say:
+                     --schema FILE    default $VALLEY_VERIFICATION_SCHEMA
+                     --instance DIR   default the owning valley's floor
+                     --project DIR    default policy/project at the target
+                   naming a layer stops this reading the source it
+                   replaced. the schema is the shape a policy is written
+                   in rather than a layer, so it ships with this tool: the
+                   package sets VALLEY_VERIFICATION_SCHEMA to its own copy.
+                   with that unset, as when valley runs outside its
+                   package, it is schema/verification.cue in the
+                   checkout.
+                   a class's globs match bytes, whatever your locale
+                   is: `?` is one byte, so `?.md` does not match
+                   é.md, whose é is two.
+                   after the report, two lines group the required checks
+                   by the cost the policy declares, `quick` or `slow`. a
+                   slow check takes minutes or needs special hardware. the
+                   cost changes nothing required: approving runs every
+                   required check whatever its cost, and the integrator
+                   requires evidence for every one.
+                     --names          print only the required check names,
+                                      one per line
+                     --cost COST      with --names, only the quick or
+                                      the slow ones, e.g.
+                                      `valley checks --names --cost slow`
+                     --json           print the valley-checks/v1 document
+                                      instead of the report

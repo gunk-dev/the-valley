@@ -645,7 +645,8 @@ let
   # this script inherits. Every payload field is derivable from git alone —
   # no wall-clock time, no hostname — so replaying a repo's refs reproduces
   # the same events (the roadmap's determinism criterion). `valley replay`
-  # builds the identical payload; change one only with the other.
+  # builds the identical payload (status/bus.go); change one only with the
+  # other.
   busPublisher = pkgs.writeShellScript "valley-bus-publish" ''
     repo="$(basename "$PWD" .git)"
     while read -r old new ref; do

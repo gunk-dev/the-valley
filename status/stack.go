@@ -1,4 +1,4 @@
-// valley-go stack: the layers of one change's stack, for valley review,
+// valley stack: the layers of one change's stack, for valley review,
 // which reviews a stack one layer at a time, bottom first.
 //
 // The layers are what valley pending lists under the change (pending.go):
@@ -50,7 +50,7 @@ import (
 // rebase engine captures it (rebase.Capture).
 func runStack(g git, args []string, w io.Writer) error {
 	if len(args) != 1 {
-		return failure("usage: valley-go stack <change>")
+		return failure("usage: valley stack <change>")
 	}
 	if !g.succeeds(true, "rev-parse", "--git-dir") {
 		return failure("not a git repository")

@@ -1235,7 +1235,7 @@ checks than the recorded table says. When a change means to alter the table, wri
 `--write`. To measure only some edits, name each with `--edit`:
 
 ```sh
-nix/tools/drv-churn.sh --edit 'commit only' --edit bin/valley --expect nix/tools/drv-churn.expected
+nix/tools/drv-churn.sh --edit 'commit only' --edit 'help text' --expect nix/tools/drv-churn.expected
 ```
 
 Every check is still evaluated, and `--expect` and `--write` compare or replace only the rows of the

@@ -1,0 +1,42 @@
+
+A change is named by its full change id, by its handle — the shortest
+prefix of the id, four letters at least, that no other change recorded on
+origin shares, written <repo>:<handle> too, with this repository's name —
+or by its branch. A name written origin/<branch> is always
+a branch. A handle that is also a branch on origin is refused unless the
+change is on that branch. review, approve and rebase read a branch name,
+written either way, against every record on origin: when exactly one
+record's active version is on the branch, the name is that change, as if
+its id were given, and when more than one's is, the verb refuses and lists
+their ids. A change that has landed as any version — its head is on
+main's first-parent history with no merge above it, or the integrator's
+outcome record and verified transfer statement record that exact head
+landing — is skipped, unless its active version was made on that landing, so a branch can be used again once its change has
+landed. unready, withdraw and status read a branch the same way. A
+branch no record's active version is on is acted on as a branch. A
+change with a record is reviewed, approved and rebased at the
+head its active version records, never at its branch's tip: review shows
+that head and its [a]pprove approves it, and rebase and review's
+[r]eject refuse, naming both, when the branch's tip on origin is another
+commit. approve approves the head bound to it, wherever the branch is.
+[r]eject deletes the branch under a lease on the recorded head. approve,
+and rebase refuse a change whose record is not ready, naming its state,
+and review offers neither [a]pprove nor [r]eject for a change that is not
+ready when it shows it. approve and rebase read the record again just
+before they act, and again before approve files or rebase pushes, and
+refuse when the change is not ready. review reads the change again before
+its [a]pprove or [r]eject acts. When the change has moved since review
+showed it, returned to draft, withdrawn, given a new version or landed,
+review says so in one line and moves on, without asking again. rebase also refuses when the change's
+record has changed at all since it began, and approve when the head it
+approves is not a version's. A name that read as a plain branch is
+read again before approve files or rebase pushes. If it names a change by
+then, rebase refuses, and approve files only while the change is ready at
+the head it began with. An approval already past that last check can
+still file if the change is unreadied or withdrawn in the moment before
+its push; the integrator refuses to land it, since it lands no request
+that would bring a version of a change that is not ready, whatever the
+request is named.
+The integrator reads the records last just before it moves main, so a
+change paused in that moment can still land at the head the operator
+approved, and never at any other.

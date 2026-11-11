@@ -1,5 +1,5 @@
-# bin/valley: that it stays a lint-clean script, what its review verb
-# anchors a note to, what its deriver makes of a policy and a diff, that
+# The valley command: that its help answers and its completions are
+# lint-clean, what its review verb anchors a note to, what its deriver makes of a policy and a diff, that
 # the-valley's own policy composes and names only checks that exist, what
 # its review verb publishes when it files an integration request, what it
 # walks with no change, what its
@@ -86,11 +86,9 @@ let
   };
 in
 {
-  # The CLI must stay a lint-clean script whose help verb answers
-  # without a repo or a remote — the cheap end of its eviction clause
-  # (dcr-74c3158); anything needing more graduates instead. The
-  # completions are held to the same bar, and the installed package
-  # must carry them at the auto-linked paths.
+  # The CLI's help verb answers without a repo or a remote, for every verb
+  # the usage lists. The completions are lint-clean, complete every verb,
+  # and the installed package carries them at the auto-linked paths.
   valley-cli = pkgs.runCommand "valley-cli" {
     nativeBuildInputs = [
       pkgs.git
@@ -98,14 +96,13 @@ in
       pkgs.zsh
       packages.valley
     ];
-    cliScript = ../../bin/valley;
     bashCompletion = ../../completions/valley.bash;
     zshCompletion = ../../completions/_valley;
     valley = packages.valley;
   } (builtins.readFile ./valley-cli.sh);
 
   # review's notes: the anchors are the whole claim, so they are
-  # pinned here rather than left to the reader of bin/valley. The
+  # pinned here rather than left to the reader of status/. The
   # session is real — a pty, real less, a pager filter that
   # restructures the diff, and an $EDITOR that inserts lines while
   # the pager is open — because every property under test is a
@@ -129,7 +126,7 @@ in
       pkgs.git
       pkgs.less
       pkgs.util-linux # script(1), for the pty less insists on
-      packages.valley-script
+      packages.valley-unstamped
     ];
     # The reviewer, as a script: five insertions and one edit of a
     # line that was already there. The edit is deliberately far
@@ -158,15 +155,15 @@ in
   # fails each call the derivation makes in turn.
   # Every failure must end the derivation with nothing on stdout, because
   # a failure read as an empty list is a change that requires nothing. The
-  # check runs valley-go, which `valley checks` hands the verb to, because
-  # the package's wrapper puts its own git ahead of anything on PATH.
+  # check runs the raw binary for that, because the package's wrapper puts
+  # its own git ahead of anything on PATH.
   policy-deriver = pkgs.runCommand "valley-policy-deriver" {
     nativeBuildInputs = [
       pkgs.git
       pkgs.cue
-      packages.valley-script
-      packages.valley-go
+      packages.valley-unstamped
     ];
+    valleyUnwrapped = lib.getExe packages.valley-unwrapped;
     fixtures = ../../examples/policy/deriver;
     schema = ../../schema/verification.cue;
     inherit failNth;
@@ -189,7 +186,7 @@ in
     nativeBuildInputs = [
       pkgs.git
       pkgs.cue
-      packages.valley-script
+      packages.valley-unstamped
     ];
     schema = ../../schema/verification.cue;
     project = ../../policy/project;
@@ -209,9 +206,8 @@ in
   # declares uses the command runner, for the reason attest-e2e gives: a
   # nix build has no daemon. The packaged CLI carries its own schema, so
   # the scratch projects that stand for projects other than the-valley
-  # carry no schema/. cliScript is bin/valley itself, for its other
-  # shipping mode: run straight from a the-valley checkout, it reads the
-  # schema there.
+  # carry no schema/. valleyUnwrapped is the raw binary, which nothing
+  # gives a schema: run in a the-valley checkout, it reads the schema there.
   #
   # Last, evidence a check worker already published, over a second origin
   # that runs the protected host's rendered hook and a project whose two
@@ -286,13 +282,12 @@ in
       pkgs.openssh
       pkgs.util-linux # setsid, to stop an approval as ctrl-C does
       packages.attest
-      packages.valley-script
-      packages.valley-go
+      packages.valley-unstamped
       packages.valley-worker
       packages.integrator
     ];
     schemaFile = ../../schema/verification.cue;
-    cliScript = ../../bin/valley;
+    valleyUnwrapped = lib.getExe packages.valley-unwrapped;
     inherit failNth reuseKeys;
     reuseInitScript = reuseHost.config.systemd.services.valley-init.script;
     passAsFile = [ "reuseInitScript" ];
@@ -315,14 +310,16 @@ in
   # valley-ready and integrator-e2e drive it through valley rebase.
   rebase-unit = packages.rebase.unit;
 
-  # The Go verbs' tests (status/), in valley-go's unit build: the
-  # outcome records status accepts, the names its JSON refuses, its shell
-  # quoting held to the bash it replaced, a rebase ended by a SIGTERM
+  # The valley command's tests (status/), in its unit build: how the
+  # command line dispatches, its help topics and the stamp, the outcome
+  # records status accepts, the names its JSON refuses, its shell
+  # quoting held to bash's, a rebase ended by a SIGTERM
   # while a hook blocks it, where review anchors a note in a renamed file
   # and in a diff of a diff, and the valley-checks/v1 document checks prints
   # over a real repository, a path that is not UTF-8 in base64. valley-status
   # and valley-ready drive the verbs through the CLI over real repositories.
-  valley-go-unit = packages.valley-go.unit;
+  # It keeps the name policies require it by.
+  valley-go-unit = packages.valley-unwrapped.unit;
 
   # Read origin's request/outcome refs and distinguish a pending request,
   # a recorded decision and a landing, without moving the user's checkout.
@@ -335,7 +332,7 @@ in
     nativeBuildInputs = [
       pkgs.git
       pkgs.jq
-      packages.valley-script
+      packages.valley-unstamped
     ];
   } (builtins.readFile ./valley-status.sh);
 
@@ -387,7 +384,7 @@ in
       pkgs.git
       pkgs.jq
       pkgs.util-linux # script(1), for approve's confirmation on a terminal
-      packages.valley-script
+      packages.valley-unstamped
     ];
     initScript = hosts.protectedHost.config.systemd.services.valley-init.script;
     passAsFile = [ "initScript" ];
@@ -414,8 +411,7 @@ in
       pkgs.git
       pkgs.jq
       pkgs.openssh
-      packages.valley-script
-      packages.valley-go
+      packages.valley-unstamped
       packages.attest
     ];
     initScript = hosts.integratorHost.config.systemd.services.valley-init.script;
@@ -442,8 +438,7 @@ in
       pkgs.less
       pkgs.openssh # ssh-keygen, for the key an approval's checks sign with
       pkgs.util-linux # script(1), for Ctrl-C on a terminal
-      packages.valley-script
-      packages.valley-go
+      packages.valley-unstamped
     ];
     initScript = walkHost.config.systemd.services.valley-init.script;
     passAsFile = [ "initScript" ];
@@ -459,16 +454,15 @@ in
   # connection after a push lands and after one that did not, takes a
   # claim, changes a field or edits a comment first, and releases and
   # retakes a claim an unclaim read. Each write must then land exactly
-  # once, or be reported as a conflict. Two writers also run at once. cliScript
-  # is bin/valley itself, because the package's wrapper puts its own git
-  # ahead of the stand-in.
+  # once, or be reported as a conflict. Two writers also run at once. valley
+  # is the raw binary, because the package's wrapper puts its own git ahead
+  # of the stand-in.
   valley-knot = pkgs.runCommand "valley-knot" {
     nativeBuildInputs = [
       pkgs.git
       pkgs.jq
-      packages.valley-go
+      packages.valley-unwrapped
     ];
-    cliScript = ../../bin/valley;
   } (builtins.readFile ./valley-knot.sh);
 
   # valley plan against local bare repositories that run no hook: a graph
@@ -478,17 +472,15 @@ in
   # files kept beside the code that prints them (status/testdata/plan/).
   # Then a project with no graph, --all over the projects the instance
   # publishes with one that cannot be read, and the operator named by
-  # --owner and by no one. cliScript is bin/valley itself, as for
-  # valley-knot.
+  # --owner and by no one. valley is the raw binary, as for valley-knot.
   valley-plan = pkgs.runCommand "valley-plan" {
     nativeBuildInputs = [
       pkgs.git
       pkgs.jq
       pkgs.gawk
       pkgs.diffutils
-      packages.valley-go
+      packages.valley-unwrapped
     ];
-    cliScript = ../../bin/valley;
     golden = ../../status/testdata/plan;
   } (builtins.readFile ./valley-plan.sh);
 
@@ -502,7 +494,7 @@ in
 
   # valley --version and valley self-update through the installed package,
   # against a real bare repository. A build has no nix, so a stand-in for
-  # nix builds a commit as a valley that runs the real, unstamped script
+  # nix builds a commit as a valley that runs the real, unstamped package
   # under the stamp nix would give that commit, beside the package's own
   # share/. The smoke test therefore runs the real CLI over the policy the
   # package ships, under the schema it carries. A run installs main's tip;
@@ -521,8 +513,7 @@ in
     ];
     inherit (packages.valley) version;
     valley = packages.valley;
-    valleyScript = packages.valley-script;
-    cliScript = ../../bin/valley;
+    valleyUnstamped = packages.valley-unstamped;
     units = builtins.toJSON selfUpdateUnits;
     passAsFile = [ "units" ];
   } (builtins.readFile ./valley-self-update.sh);

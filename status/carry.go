@@ -1,4 +1,4 @@
-// valley-go carry: whether review's answer about the version of a change
+// carry: whether review's answer about the version of a change
 // it showed carries to a later version the change gained while the
 // review was open (review.go's moved). It is information only: it files
 // no request, and the integrator judges what approve files as it judges
@@ -38,7 +38,8 @@ import (
 	"the-valley/derive"
 )
 
-const carryUsage = "usage: valley-go carry <change ID> <version shown> <later version>"
+// carryUsage is what runCarry, which review calls, takes.
+const carryUsage = "carry takes <change ID> <version shown> <later version>"
 
 func runCarry(g git, args []string, w io.Writer) error {
 	var n [2]int

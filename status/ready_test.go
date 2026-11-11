@@ -46,8 +46,8 @@ func TestSetStateWithdrawsOnlyAtTheHeadRead(t *testing.T) {
 	if out, err := exec.Command("git", "clone", "--quiet", origin, work).CombinedOutput(); err != nil {
 		t.Fatalf("git clone: %v\n%s", err, out)
 	}
-	sh("config", "user.name", "valley-go-test")
-	sh("config", "user.email", "valley-go-test@localhost")
+	sh("config", "user.name", "valley-test")
+	sh("config", "user.email", "valley-test@localhost")
 	sh("config", "valley.principal", "alice")
 	sh("checkout", "--quiet", "-b", "main")
 	sh("commit", "--quiet", "--allow-empty", "-m", "base")

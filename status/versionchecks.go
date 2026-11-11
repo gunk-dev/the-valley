@@ -308,7 +308,7 @@ func checksLine(c *jsonVersionChecks) string {
 func runCheckLine(g git, args []string, stdout, stderr io.Writer) error {
 	for _, a := range args {
 		if !change.ValidID(a) {
-			return failure("usage: valley-go checkline <change ID>...")
+			return failure("usage: valley checkline <change ID>...")
 		}
 	}
 	if !g.succeeds(true, "rev-parse", "--git-dir") {

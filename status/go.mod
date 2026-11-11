@@ -1,8 +1,7 @@
-// Named for the program it builds rather than its directory: the verbs
-// of the valley command that are written in Go. A binary called `status`
-// on a PATH would not say whose status it reads, and this one writes
-// change records too.
-module the-valley/valley-go
+// Named for the program it builds rather than its directory: the valley
+// command. A binary called `status` on a PATH would not say whose status
+// it reads, and this one writes change records too.
+module the-valley/valley
 
 go 1.24
 

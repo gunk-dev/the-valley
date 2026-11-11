@@ -1,0 +1,44 @@
+usage: valley plan [--project NAME | --all] [--owner P] [--json] [--known-signers <file>] [--integrator-name <name>]
+
+  plan [--project NAME | --all] [--owner P] [--json]
+       [--known-signers <file>] [--integrator-name <name>]
+                   show the project's plan graph as a tree, to see where
+                   things stand. the roots are the outcomes with no
+                   parent, the milestones, each with its progress: its
+                   descendants that are terminal and not abandoned, out
+                   of those not abandoned, as a count and a bar. under
+                   each come its children, indented, in the order they
+                   were created, then by title. each knot has a glyph for
+                   its state (○ ready, ◐ in progress, ⊘ blocked, ◇
+                   active, ✓ done, ✗ abandoned), its id and title, and,
+                   while active, its claim and the claim's age (marked
+                   stale past a day), its owner, and what blocks it. a
+                   blocker that ended abandoned, discarded, superseded or
+                   dropped clears the knot, and is marked with how it
+                   ended. a reference to another project's knot,
+                   <project>:<id>, is marked dangling when that
+                   project's graph cannot be read or holds no such knot.
+                   a root whose descendants are all terminal is one
+                   line. three sections follow. waiting on you: the
+                   active outcomes and bugs and the open questions the
+                   operator owns, then the changes ready for
+                   approval, as pending lists them. in flight: the
+                   claimed knots, oldest claim first. open residuals:
+                   the open bugs, under their parent. the operator is
+                   git config valley.principal, or --owner. lines fit
+                   the terminal as pending's do; glyphs are coloured on
+                   a terminal unless NO_COLOR is set.
+                     --project NAME  another project on the same host
+                     --all        every project the serving host
+                                  publishes, each under its name, as
+                                  pending --all reads them. a project
+                                  that cannot be read is reported in
+                                  its own section
+                     --owner P    read P as the operator
+                     --json       print valley-plan/v1: every knot with
+                                  what the graph derives of it, and the
+                                  three sections (docs/architecture.md)
+                     --known-signers FILE, --integrator-name NAME
+                                  what a transfer statement is verified
+                                  with, for the changes ready for
+                                  approval, as changes reads them

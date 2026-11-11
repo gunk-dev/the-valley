@@ -508,8 +508,8 @@ refused "  run: valley ready --change $bare_id" \
 if grep -qF "''" "$w/err"; then fail "approve suggested readying a change with no branch on the branch ''"; fi
 
 # A name no record is on is acted on as a branch only when it is a branch
-# name. resolve prints the name in a line of fields that bin/valley
-# splits, so a name holding a separator could otherwise read as main.
+# name. resolve prints the name in a line of fields, so a name holding a
+# separator could otherwise read as main.
 before="$(git -C "$origin" for-each-ref refs/the-valley)"
 for verb in approve review; do
   refused 'is not a branch name in UTF-8' as requester valley "$verb" $'main\x1fjunk'

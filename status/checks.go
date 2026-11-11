@@ -2,7 +2,7 @@ package main
 
 // checks prints which checks a change requires: the Go deriver's answer
 // (../derive) over the composed policy (../composed). It is the whole of
-// `valley checks`, which bin/valley hands to it.
+// `valley checks`.
 //
 // It selects checks over two commits, a base and a head, and never over a
 // working tree: what is derived is what a commit holds. A layer named with

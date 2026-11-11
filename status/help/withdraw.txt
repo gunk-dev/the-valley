@@ -1,0 +1,10 @@
+usage: valley withdraw <change>
+
+  withdraw <change>
+                   mark a ready change or a draft withdrawn in its record
+                   on origin, as its owner or the operator. withdrawing
+                   voids everything outstanding on the change: its
+                   integration requests, and the approvals and reviews of
+                   every version, so a change brought back needs fresh
+                   approvals. ready brings it back, at the same version
+                   or a new one. prints e.g. `app nxvp v2 withdrawn`.

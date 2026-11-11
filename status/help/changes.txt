@@ -1,0 +1,56 @@
+usage: valley changes --json [--all] [--repo <name>] [--checks] [-v] [--known-signers <file>] [--integrator-name <name>]
+
+  changes --json [--all] [--repo <name>] [--checks] [-v]
+          [--known-signers <file>] [--integrator-name <name>]
+                   print every change origin holds a record of, in every
+                   state, as one JSON object, valley-changes/v1, for front
+                   ends to read (docs/architecture.md): each version's
+                   head, title and branch, how far it has landed
+                   (landed, landed-recorded, uncertain or not-landed),
+                   its pending request and its last outcome, the knots in
+                   refs/the-valley/knots that link it
+                   (valley:<project>/<change id>, active first), and
+                   the branches no change is on. -v warns on stderr when a
+                   plan graph is missing or unreadable. --checks adds
+                   checks to the active version of each ready change that
+                   has not landed: each check the policy requires of it,
+                   passed, failed or pending by the note the integrator
+                   would judge it by on origin, and other for a check the
+                   host's worker does not run (docs/reference.md). each nix
+                   check also gives its build time for this version, and
+                   the median of its recent builds, from the host's
+                   worker telemetry; when that cannot be read, those
+                   fields are left out and stderr says why. it costs a
+                   few seconds for each project with such a change.
+                   handles are unique across
+                   everything listed: a change id recorded in more than
+                   one repository listed has the handle <repo>:<prefix>
+                   in each. without --all it covers this
+                   repository. --all covers every project the serving
+                   host lists at refs/the-valley/projects in its instance
+                   repository, which policy/valley names at main's tip on
+                   origin; each project's URL is the instance's with its
+                   last path segment replaced, and is read through a clone
+                   kept under $XDG_CACHE_HOME/valley/repos. a url that
+                   opens with a dash, names a <transport>:: helper such
+                   as ext::, or has a scheme other than ssh, git, https or
+                   file is refused. a repository that cannot be read is
+                   listed with its error. --repo limits it to one
+                   project. landed means on main's first-parent history
+                   with no merge above it. landed-recorded needs a landed
+                   commit with one parent and the integrator's transfer
+                   statement for the version's request name, verified;
+                   the integrator's outcome record for that name saying
+                   land at the version's head; and the integrator's merge
+                   of the head onto the landed commit's parent giving the
+                   landed tree. attest verifies the statement with the
+                   registry's known-signers file and the integrator's
+                   signing name. each is taken from the first of these
+                   that gives it: --known-signers FILE or
+                   --integrator-name NAME; VALLEY_KNOWN_SIGNERS or
+                   VALLEY_INTEGRATOR_SIGNER; what the serving host
+                   publishes at refs/the-valley/signers in its instance
+                   repository, read only when a statement needs
+                   verifying. a file that does not read, or holds no key
+                   under the name, is reported on stderr, and then no
+                   statement is verified.

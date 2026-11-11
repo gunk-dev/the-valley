@@ -363,7 +363,8 @@ func TestWalkRefusesAStepWhoseProjectNamesAnotherValley(t *testing.T) {
 	if strings.Contains(r.stdout, "s-one; nothing done") {
 		t.Errorf("the refused step was reviewed:\n%s", r.stdout)
 	}
-	r = h.run(h.answers("s\ns\n"), "walk", "--integrator-name", "operator")
+	t.Setenv("VALLEY_INTEGRATOR_SIGNER", "operator")
+	r = h.run(h.answers("s\ns\n"), "review")
 	if r.status != 0 || !strings.Contains(r.stdout, "  ◇ site ssss v1  skipped\n") {
 		t.Errorf("the walk given an integrator name did not review site (%d):\n%s%s", r.status, r.stdout, r.stderr)
 	}

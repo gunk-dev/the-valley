@@ -1,7 +1,7 @@
-// valley-go rebase: a change's whole stack, rebased onto main.
+// valley rebase: a change's whole stack, rebased onto main.
 //
 // `valley rebase <change>` and review's [b]ase run it. The stack is what
-// valley-go stack lists (stack.go): the change, and the chain of layers
+// valley stack lists (stack.go): the change, and the chain of layers
 // under it, each on the one below. A change with nothing under it is a
 // stack of one, and is rebased the same way.
 //
@@ -43,7 +43,7 @@ import (
 	"the-valley/rebase"
 )
 
-const rebaseUsage = "usage: valley-go rebase [--head <sha>] <change>"
+const rebaseUsage = "usage: valley rebase [--known-signers <file>] [--integrator-name <name>] <change>"
 
 // What became of a layer's branch in the push.
 const (
@@ -102,6 +102,37 @@ func (r *rebaseRun) place(l *rebase.Layer) string {
 		return ""
 	}
 	return fmt.Sprintf(", layer %d of %d under %s,", r.index(l)+1, len(r.f.Layers), r.top().Name)
+}
+
+// rebaseCommandArgs is what `valley rebase` passes to the verb: the
+// signer flags, as given, and then the change's name. It takes one name,
+// and no flag but the signer flags. --head is review's alone: its [b]ase
+// names the head it showed.
+func rebaseCommandArgs(args []string) ([]string, error) {
+	var verify []string
+	name := ""
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "--known-signers" || a == "--integrator-name":
+			if i+1 == len(args) {
+				return nil, failure(rebaseUsage)
+			}
+			verify = append(verify, a, args[i+1])
+			i++
+		case strings.HasPrefix(a, "--known-signers=") || strings.HasPrefix(a, "--integrator-name="):
+			verify = append(verify, a)
+		case strings.HasPrefix(a, "-"):
+			return nil, failure(rebaseUsage)
+		case name != "":
+			return nil, failure(rebaseUsage)
+		default:
+			name = a
+		}
+	}
+	if name == "" {
+		return nil, failure(rebaseUsage)
+	}
+	return append(verify, name), nil
 }
 
 func parseRebaseArgs(args []string) (name, want string, err error) {
@@ -532,8 +563,7 @@ func (r *rebaseRun) otherStacks() {
 }
 
 // readyHint is the valley ready line that readies a change again, naming
-// the branch unless its version records none, as bin/valley's ready_hint
-// writes it.
+// the branch unless its version records none.
 func readyHint(id, branch string) string {
 	if branch == "" {
 		return "valley ready --change " + id

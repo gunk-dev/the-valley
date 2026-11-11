@@ -169,7 +169,7 @@ in
       pkgs.openssh
       packages.attest
       packages.integrator
-      packages.valley-script
+      packages.valley-unstamped
       packages.valley-restacker
       transport
     ];

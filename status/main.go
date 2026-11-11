@@ -1,45 +1,45 @@
-// valley-go is the part of the valley command written in Go: the verbs
-// that read a change's state from origin, and the verbs that write its
-// change record there. bin/valley runs it for status, ready, unready and
-// withdraw, for changes and pending, which list every change across the
-// repositories a host serves, for review, which pages a change or a stack
-// for the operator's answer, and with no change walks what needs the
-// operator (review.go, walk.go), for approve, for
-// rebase, which rebases a change's whole stack onto main, and brings, which
-// lists the changes a head would bring that have not landed, for approve
-// (rebase.go), for knot, the plan graph's API (knot.go), which reads and
-// writes a project's knots at refs/the-valley/knots, for plan, which
-// shows that graph as a view (plan.go), and for self-update, which
-// installs the tip of a branch of the-valley into the user's nix profile
-// (selfupdate.go). resolve turns the name of a change into its record or
-// branch (changes.go), stack lists the layers under a change (stack.go),
-// does lists the knots each change does (does.go), checkline says what
-// review shows of a change's checks and their build times
-// (versionchecks.go), and compare sets a version review shows against the
-// change's approved version (compare.go); review calls each, and runs
-// checkline as a background process while the operator reads. checks prints
-// which checks a change requires, as the Go deriver derives them
-// (checks.go); no verb of bin/valley runs it. coverage says which of a
-// head's required nix checks already have evidence on origin that approve
-// can reuse rather than build (coverage.go), and verdict prints what
-// approve and review's prompt say (verdict.go). work is one pass of a check
-// worker, which builds and publishes that evidence for ready changes
-// before they are approved (worker.go); no verb of bin/valley runs it.
+// valley is the command line of a valley project: the public verbs
+// `valley help` lists, each with its help topic (help.go), and the
+// internal verbs the valley's own programs and checks run.
 //
 // status reads one change's integration status (status.go). changes and
 // pending read every record and how far each version has landed
-// (inventory.go, pending.go). ready,
-// unready and withdraw write the change's record,
-// refs/the-valley/changes/main/<change ID> (ready.go), in the format the
-// change module defines and the push hook guards. The integrator reads
-// records only to refuse: it lands no request that would bring a version
-// of a change that is not ready, and it voids a withdrawn change's
-// requests. The integration request stays the only way
-// to main. versions lists a change's versions, for approve, and standing
-// says where a change stands now, for review (standing.go). carry says
-// whether review's answer about the version it showed carries to the
-// version the change moved to (carry.go). style styles review's page for
-// a terminal (style.go).
+// (inventory.go, pending.go). ready, unready and withdraw write the
+// change's record, refs/the-valley/changes/main/<change ID> (ready.go), in
+// the format the change module defines and the push hook guards. The
+// integrator reads records only to refuse: it lands no request that would
+// bring a version of a change that is not ready, and it voids a withdrawn
+// change's requests. The integration request stays the only way to main.
+// review pages a change or a stack for the operator's answer, and with no
+// change walks what needs the operator (review.go, walk.go). approve is
+// review's [a]pprove without the pager (approve.go), and rebase its
+// [b]ase, which rebases a change's whole stack onto main (rebase.go). knot
+// is the plan graph's API (knot.go), which reads and writes a project's
+// knots at refs/the-valley/knots, and plan shows that graph as a view
+// (plan.go). checks prints which checks a change requires, as the Go
+// deriver derives them (checks.go). tail and replay watch the bus and
+// fill it from a repository's refs (bus.go). self-update installs the tip
+// of a branch of the-valley into the user's nix profile (selfupdate.go),
+// and telemetry reads a host's diagnostics and sends the workstation's
+// own (telemetry.go).
+//
+// The internal verbs are in neither the usage nor any help topic. resolve
+// turns the name of a change into its record or branch (changes.go), stack
+// lists the layers under a change (stack.go), checkline says what review
+// shows of a change's checks and their build times (versionchecks.go), and
+// style styles review's page for a terminal (style.go): review runs
+// checkline in the background while the operator reads, and style in its
+// pager. work is one pass of a check worker, which builds and publishes
+// the evidence for ready changes before they are approved (worker.go);
+// valley-worker runs it.
+//
+// review reads the rest in process: the knots each change does (does.go),
+// where a change stands now (standing.go), whether its answer carries to
+// the version the change moved to (carry.go), the version it shows set
+// against the change's approved version (compare.go), and the lines
+// approve and its prompt print (verdict.go). coverage says which of a
+// head's required nix checks already have evidence on origin that approve
+// can reuse rather than build (coverage.go).
 //
 // A change is named by its full change ID, by its handle (the shortest
 // prefix of the ID, four letters at least, that no other change on origin
@@ -58,48 +58,41 @@ import (
 	"the-valley/rebase"
 )
 
-const usage = `usage: valley-go status [--json] [-v] <change>
-       valley-go ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp] [<branch>]
-       valley-go unready <change>
-       valley-go withdraw <change>
-       valley-go review [-v] [--build-here] [<change> | --repo <name>]
-       valley-go resolve <change>
-       valley-go stack <change>
-       valley-go does [-v] <change ID>...
-       valley-go checkline <change ID>...
-       valley-go rebase [--head <sha>] <change>
-       valley-go standing <change ID>
-       valley-go compare [-v] --tip <commit> <change ID> <version> <head>
-       valley-go carry <change ID> <version shown> <later version>
-       valley-go style [--paged] < page
-       valley-go checks [--schema <file>] --instance <dir> --project <dir> <base> <head>
-       valley-go approve [-v] [--head <sha>] [--build-here] <change>
-       valley-go verdict prompt <clause>... -- <key>...
-       valley-go work --repo <name>... --key <file> [--name <name>] [--state <dir>]
-       valley-go changes --json [--all] [--repo <name>] [-v]
-       valley-go pending [--json] [--all] [--repo <name>] [--checks] [-v]
-       valley-go walk [--repo <name>] [-v] [--build-here]
-       valley-go knot <verb> [args]   (valley-go knot for its verbs)
-       valley-go plan [--project <name> | --all] [--owner <name>] [--json]
-       valley-go self-update [-v] [--retry | --rollback | --pin | --unpin] [--repo <url>] [--branch <name>]
-
-status, stack, rebase, brings, changes, pending, walk and plan read how far a
-version has landed, and also take --known-signers <file> and
---integrator-name <name>: what an integrator's transfer statement is
-verified with, ahead of VALLEY_KNOWN_SIGNERS, VALLEY_INTEGRATOR_SIGNER and
-what the serving host publishes at refs/the-valley/signers.`
-
 func main() {
-	// A verb bin/valley execs this program for records its command record
-	// once it has run (command.go), in the current checkout. A verb a
-	// signal ends records it too, through end.
-	inv := execed(os.Args[1:])
+	takeEnvironment()
+	// A public verb records its command record once it has run
+	// (command.go), in the current checkout. A verb a signal ends records
+	// it too, through end.
+	inv := commandOf(os.Args[1:])
 	here := git{env: gitEnvironment(os.Environ()), stderr: io.Discard}
 	end := func(status int) {
 		inv.record(here, status, commandTimed)
 		os.Exit(status)
 	}
-	end(run(os.Args[1:], os.Stdout, os.Stderr, end))
+	end(cli(os.Args[1:], os.Stdout, os.Stderr, end))
+}
+
+// versionStamp is the version the package stamped on this valley when nix built
+// it (nix/packages.nix): the CLI's version and the commit it was built
+// from, or "" for a build the package did not stamp. --version prints it,
+// self-update reads which commit is installed from it, and telemetry
+// names the producer of its records with it.
+var versionStamp string
+
+// takeEnvironment sets up the environment this process, and every program
+// it starts, runs in. The stamp is taken from VALLEY_VERSION, which is
+// removed, so no program this one starts takes the stamp for its own. git
+// ignores replacement refs, whatever configuration says, and loses the
+// variables that point it at other objects or at another replacement
+// namespace, for the reason gitEnvironment gives.
+func takeEnvironment() {
+	versionStamp = os.Getenv("VALLEY_VERSION")
+	os.Unsetenv("VALLEY_VERSION")
+	os.Setenv("GIT_NO_REPLACE_OBJECTS", "1")
+	for _, name := range []string{"GIT_REPLACE_REF_BASE", "GIT_GRAFT_FILE",
+		"GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"} {
+		os.Unsetenv(name)
+	}
 }
 
 // commandTimed is whether the command record holds each phase's time.
@@ -108,11 +101,57 @@ func main() {
 var commandTimed = true
 
 // failure is a verb that ends without doing what it was asked: a message
-// for stderr and nothing on stdout. Exit status 1, as bin/valley's die
-// gives.
+// for stderr and nothing on stdout. Exit status 1.
 type failure string
 
 func (f failure) Error() string { return string(f) }
+
+// cli runs the valley command line args. No verb at all is help. A public
+// verb given one argument, -h or --help, prints its help topic before
+// anything reads its arguments. pending and rebase read origin's branches
+// through this checkout's remote-tracking refs, so they fetch origin
+// first, and a fetch that fails exits with git's status. end ends the
+// process from a verb a signal interrupts, as run's does.
+func cli(args []string, stdout, stderr io.Writer, end func(int)) int {
+	verb := "help"
+	if len(args) > 0 {
+		verb, args = args[0], args[1:]
+	}
+	if publicVerb(verb) && len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
+		return runHelp([]string{verb}, stdout, stderr)
+	}
+	g := git{env: gitEnvironment(os.Environ()), stderr: stderr}
+	switch verb {
+	case "help", "-h", "--help":
+		return runHelp(args, stdout, stderr)
+	case "--version":
+		v := versionStamp
+		if v == "" {
+			v = "unstamped (built without the package's version stamp)"
+		}
+		fmt.Fprintf(stdout, "valley %s\n", v)
+		return 0
+	case "tail":
+		return runTail(args, stderr)
+	case "replay":
+		return runReplay(g, args, stdout, stderr)
+	case "pending", "rebase":
+		if verb == "rebase" {
+			var err error
+			if args, err = rebaseCommandArgs(args); err != nil {
+				fmt.Fprintf(stderr, "valley: %s\n", err)
+				return 1
+			}
+		}
+		fetched := phase("fetch")
+		err := fetchOrigin(g, stdout, stderr)
+		fetched()
+		if err != nil {
+			return exitCode(err)
+		}
+	}
+	return run(append([]string{verb}, args...), stdout, stderr, end)
+}
 
 // run runs the verb args name. end ends the process from a verb a signal
 // interrupts, once the verb has cleaned up; it does not return.
@@ -147,34 +186,22 @@ func run(args []string, stdout, stderr io.Writer, end func(int)) int {
 		err = runResolve(g, args, stdout)
 	case "stack":
 		err = runStack(g, args, stdout)
-	case "does":
-		err = runDoes(g, args, stdout, stderr)
 	case "checkline":
 		err = runCheckLine(g, args, stdout, stderr)
 	case "rebase":
 		return runRebase(g, args, stdout, stderr)
-	case "standing":
-		err = runStanding(g, args, stdout)
-	case "compare":
-		err = runCompare(g, args, stdout)
-	case "carry":
-		err = runCarry(g, args, stdout)
 	case "style":
 		err = runStyle(args, os.Stdin, stdout)
 	case "checks":
 		err = runChecks(g, args, stdout)
 	case "approve":
 		return runApprove(g, args, stdout, stderr, end)
-	case "verdict":
-		return runVerdict(args, stdout, stderr)
 	case "changes":
 		err = runChanges(g, args, stdout, stderr)
 	case "pending":
 		err = runPending(g, args, stdout, stderr)
 	case "review":
 		return runReview(g, args, stdout, stderr, end)
-	case "walk":
-		return runWalk(g, args, stdout, stderr, end)
 	case "telemetry":
 		err = runTelemetry(g, args, stdout, stderr)
 	case "self-update":
@@ -198,8 +225,10 @@ func run(args []string, stdout, stderr io.Writer, end func(int)) int {
 			}
 		}
 	default:
-		fmt.Fprintln(stderr, usage)
-		return 2
+		stderr = droppable(stderr)
+		fmt.Fprintf(stderr, "valley: unknown verb: %s\n\n", verb)
+		io.WriteString(stderr, helpPart("usage"))
+		return 1
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "valley: %s\n", err)
@@ -208,8 +237,8 @@ func run(args []string, stdout, stderr io.Writer, end func(int)) int {
 	return 0
 }
 
-// git runs git in a repository, in the environment bin/valley gives every
-// git it runs.
+// git runs git in a repository, in the environment valley gives every git
+// it runs.
 type git struct {
 	env    []string
 	stderr io.Writer // where git's own diagnostics go, unless quiet

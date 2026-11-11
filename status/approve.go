@@ -1,8 +1,7 @@
 package main
 
 // approve files a change's integration request: the whole of `valley
-// approve`, which bin/valley hands to it, and review's [a]pprove
-// (review.go). Both run one attempt (approval.attempt), so the verb and
+// approve`, and review's [a]pprove (review.go). Both run one attempt (approval.attempt), so the verb and
 // the key cannot drift apart.
 //
 // An attempt binds the head it files, derives what the policy at main's
@@ -1354,7 +1353,7 @@ func (a *approval) beginTelemetry() *approveTelemetry {
 	if err == nil {
 		var dir string
 		if dir, err = bindSpool(dest); err == nil {
-			version := producerStamp
+			version := versionStamp
 			if version == "" {
 				version = "unstamped"
 			}

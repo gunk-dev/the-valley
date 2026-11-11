@@ -1,8 +1,8 @@
 # End-to-end check for the web push path using the packaged binaries:
 # valley-web-publish, valley-web-receive, and valley-web as built and
 # wrapped by nix/packages.nix (with their pinned tools and schemas),
-# the packaged valley CLI (valley-script, unstamped so commits alone do
-# not trigger a rebuild), and git.
+# the packaged valley CLI (valley-unstamped, so commits alone do not
+# trigger a rebuild), and git.
 #
 # The test creates a valley instance with four projects in one group: two
 # that anyone may read, app and site; docs, which two named readers may
@@ -90,7 +90,7 @@
       pkgs.curl
       pkgs.jq
       pkgs.util-linux
-      packages.valley-script
+      packages.valley-unstamped
       packages.valley-web-publish
       packages.valley-web-receive
       packages.valley-web

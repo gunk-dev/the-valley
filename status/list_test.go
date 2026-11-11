@@ -314,7 +314,7 @@ func TestListingsSayWhichVersionAChangeLandedAs(t *testing.T) {
 		t.Helper()
 		var stdout, stderr bytes.Buffer
 		if code := run(args, &stdout, &stderr, os.Exit); code != 0 {
-			t.Fatalf("valley-go %s: %s", strings.Join(args, " "), stderr.String())
+			t.Fatalf("valley %s: %s", strings.Join(args, " "), stderr.String())
 		}
 		return stdout.Bytes()
 	}
@@ -349,7 +349,7 @@ func TestListingsSayWhichVersionAChangeLandedAs(t *testing.T) {
 			} `json:"repos"`
 		}
 		if err := json.Unmarshal(valley(args...), &doc); err != nil || len(doc.Repos) != 1 {
-			t.Fatalf("valley-go %s: %v, %d repos", strings.Join(args, " "), err, len(doc.Repos))
+			t.Fatalf("valley %s: %v, %d repos", strings.Join(args, " "), err, len(doc.Repos))
 		}
 		got := map[string]string{}
 		for _, c := range doc.Repos[0].Changes {
@@ -367,7 +367,7 @@ func TestListingsSayWhichVersionAChangeLandedAs(t *testing.T) {
 			Version *int `json:"landed_version"`
 		}
 		if err := json.Unmarshal(valley("status", "--json", id), &status); err != nil {
-			t.Fatalf("valley-go status --json %s: %v", id, err)
+			t.Fatalf("valley status --json %s: %v", id, err)
 		}
 		said := "<nil>"
 		if status.Version != nil {

@@ -289,7 +289,7 @@ project: {
 		paths: "attest/progress.go":        true
 		paths: "status/telemetry.go":       true
 		paths: "status/workertelemetry.go": true
-		paths: "bin/valley":                true
+		paths: "status/command.go":         true
 		follows: "telemetry-e2e":           true
 	}
 
@@ -393,8 +393,8 @@ project: {
 		requires: "web-unit":         true
 	}
 
-	// The valley CLI: the script, its Go verbs (status/), the rebase engine
-	// they rebase and read landings with (rebase/), and its completions.
+	// The valley CLI: the valley command (status/), the rebase engine it
+	// rebases and reads landings with (rebase/), and its completions.
 	// valley-ready drives ready, withdraw, rebase and the verbs that take a
 	// change's handle, valley-changes drives changes and pending,
 	// valley-walk drives review with no change across a host's projects,
@@ -404,7 +404,6 @@ project: {
 	// show, and its tests in web-unit run the CLI itself, as web-push-e2e
 	// runs the CLI's package.
 	classes: cli: {
-		paths: "bin/valley":            true
 		paths: "status/**":             true
 		paths: "rebase/**":             true
 		paths: "completions/**":        true
@@ -617,7 +616,7 @@ project: {
 
 	// The other files under nix/checks/, and the checks that read each: the
 	// definitions of a subject's checks, and the helpers and rejection lists
-	// a check is given. cli.nix, which defines every check of bin/valley,
+	// a check is given. cli.nix, which defines every check of the CLI,
 	// is left to the nix class, as is nix/checks.nix, which wires them all.
 	// This map can only require, so telemetry.nix keeps requiring
 	// telemetry-e2e: a change to its definition builds it before landing.

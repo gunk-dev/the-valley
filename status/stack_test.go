@@ -63,7 +63,7 @@ func TestStackListsLayersBottomFirst(t *testing.T) {
 		t.Helper()
 		var stdout, stderr bytes.Buffer
 		if code := run(args, &stdout, &stderr, os.Exit); code != 0 {
-			t.Fatalf("valley-go %s: %s", strings.Join(args, " "), stderr.String())
+			t.Fatalf("valley %s: %s", strings.Join(args, " "), stderr.String())
 		}
 		return stdout.String()
 	}

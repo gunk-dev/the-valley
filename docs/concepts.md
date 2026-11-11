@@ -65,10 +65,9 @@ trailer, or if you pass `--change <id>`. Change records live as `record.json` co
 and approvals write an **integration request** ref at
 `refs/the-valley/integration-requests/<target>/c-<id>` (or `<branch>` with `/` replaced by `-` for
 an unrecorded branch). On the client, this flake's `valley` package (`nix shell .#valley` or
-`packages.<system>.valley`) wraps `bin/valley` with `valley-go`, `attest`, `cue`, `git`, `less` (for
-paging diffs and taking review notes), and `natscli`, while running `bin/valley` directly from a
-checkout uses those tools plus `ssh` and `coreutils` from `PATH`, and `nix` with flakes enabled
-builds pure checks ([`nix/packages.nix`](../nix/packages.nix)).
+`packages.<system>.valley`) wraps the `valley` command with `attest`, `cue`, `git`, `less` (for
+paging diffs and taking review notes), and `natscli`, and takes `ssh` and `coreutils` from `PATH`;
+`nix` with flakes enabled builds pure checks ([`nix/packages.nix`](../nix/packages.nix)).
 
 Follow [Authoring a change](./guide.md#authoring-a-change) to put these steps into practice,
 [Reviewing and approving changes](./guide.md#reviewing-and-approving-changes) to review one, or the

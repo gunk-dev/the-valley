@@ -24,12 +24,6 @@ fail() {
   exit 1
 }
 
-# valley is bin/valley, run by bash, with the valley-go helper on PATH.
-mkdir -p "$w/bin"
-printf '#!%s\nexec %q %q "$@"\n' "$BASH" "$BASH" "$cliScript" > "$w/bin/valley"
-chmod +x "$w/bin/valley"
-export PATH="$w/bin:$PATH"
-
 # A bare repo wired as valley-init wires it, with the hook followed from
 # the rendered init script, as protect-e2e wires it. No verifier keys are
 # named: no attestation is accepted here. git runs the hook through a

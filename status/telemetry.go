@@ -99,30 +99,6 @@ verb:
 		return nil
 	case "emit":
 		return runEmit(args[1:])
-	case "command":
-		// The command record of a verb bin/valley runs itself, as it
-		// exits: --since <µs> --version <stamp> --status <n> -- <verb> [args].
-		// It exits 0 whatever becomes of the record.
-		var since, version, status string
-		rest := args[1:]
-		for len(rest) > 1 && rest[0] != "--" {
-			switch rest[0] {
-			case "--since":
-				since = rest[1]
-			case "--version":
-				version = rest[1]
-			case "--status":
-				status = rest[1]
-			}
-			rest = rest[2:]
-		}
-		if len(rest) > 0 && rest[0] == "--" {
-			n, err := strconv.Atoi(status)
-			if err == nil {
-				invocationOf(rest[1:], since, version).record(g, n, false)
-			}
-		}
-		return nil
 	case "flush":
 		return runFlush(g, remote, args[1:], stderr)
 	case telemetry.OpSources, telemetry.OpSnapshot, telemetry.OpRead, telemetry.OpFollow:
@@ -696,7 +672,7 @@ func runEmit(args []string) error {
 		return nil
 	})
 	if err := fs.Parse(args); err != nil || typ == "" || run == "" || spool == "" {
-		return failure("usage: valley-go telemetry emit --spool <dir> --type <type> --run <id> [--project --change --version --head --tree --check] [--data k=v] [--number k=n] [--list k=a,b]")
+		return failure("usage: valley telemetry emit --spool <dir> --type <type> --run <id> [--project --change --version --head --tree --check] [--data k=v] [--number k=n] [--list k=a,b]")
 	}
 	// Only a spool start bound stores a record: one that names no
 	// destination would have nowhere to go.

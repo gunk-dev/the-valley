@@ -26,12 +26,6 @@ git config --global init.defaultBranch main
 export GIT_AUTHOR_DATE=2026-10-01T09:00:00Z GIT_COMMITTER_DATE=2026-10-01T09:00:00Z
 unset NO_COLOR
 
-# valley is bin/valley itself, run by bash, with valley-go on PATH.
-mkdir -p "$w/bin"
-printf '#!%s\nexec %q %q "$@"\n' "$BASH" "$BASH" "$cliScript" > "$w/bin/valley"
-chmod +x "$w/bin/valley"
-export PATH="$w/bin:$PATH"
-
 fail() {
   printf 'valley-plan: %s\n' "$*" >&2
   for f in "$w"/out "$w"/err; do

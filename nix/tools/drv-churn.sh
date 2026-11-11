@@ -151,7 +151,7 @@ apply() {
 edits() {
   cat <<'EOF'
 commit only	commit	-
-bin/valley	append	bin/valley
+help text	append	status/help/usage.txt
 completions	append	completions/_valley
 doc	append	docs/architecture.md
 doc: README	append	README.md

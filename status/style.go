@@ -1,4 +1,4 @@
-// valley-go style: review's page, styled for a terminal. review pages a
+// valley style: review's page, styled for a terminal. review pages a
 // plain buffer, which the editor opens and notes are read from, and shows
 // a rendering of it (reviewpage.go's page): the diff pager's, then
 // style's. style comes last so that the pager never reads its escapes,
@@ -27,7 +27,7 @@ import (
 	"strings"
 )
 
-const styleUsage = "usage: valley-go style [--paged] < page"
+const styleUsage = "usage: valley style [--paged] < page"
 
 var (
 	styleTitle   = regexp.MustCompile(`^\S+ v[0-9]+ at [0-9a-f]+: (rebased|recommitted|edited) since `)

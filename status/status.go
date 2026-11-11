@@ -207,8 +207,7 @@ func reservedName(branch string) error {
 // changeName is the change segment of a request ref. The integrator reads
 // a request as <prefix>/<target>/<change> and refuses a change segment
 // holding a slash (integrator/refs.go), so a branch name with one is
-// written with dashes instead. bin/valley's change_name is the same
-// mapping, and the request approve files is named by it.
+// written with dashes instead. The request approve files is named by it.
 func changeName(branch string) string { return rebase.ChangeName(branch) }
 
 // read takes one snapshot of origin and decides the change's state from

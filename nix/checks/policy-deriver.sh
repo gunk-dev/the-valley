@@ -269,8 +269,8 @@ git update-ref -d "refs/replace/$(git rev-parse uncovered)"
 # run non-zero, say so, and print nothing on stdout: no report, and no
 # names.
 #
-# This runs valley-go, which `valley checks` hands the verb to, because the
-# package's wrapper puts its own git ahead of anything on PATH. The case
+# This runs the raw binary, because the package's wrapper puts its own git
+# ahead of anything on PATH. The case
 # touches a class, a second class through `**`, the template's default,
 # and an uncovered path, so every producer has something to lose.
 case_start mixed
@@ -298,7 +298,7 @@ shimmed() {
   echo 0 > "$TMPDIR/shim-count"
   SHIM_REAL_PATH="$PATH" SHIM_TOOL="$tool" SHIM_FAIL_AT="$at" \
     SHIM_STATUS="$status" SHIM_COUNT="$TMPDIR/shim-count" PATH="$shims:$PATH" \
-    valley-go checks --schema "$schema" --instance "$policy/instance" \
+    "$valleyUnwrapped" checks --schema "$schema" --instance "$policy/instance" \
     --project "$policy/project" "$@" "$base" "$head"
 }
 

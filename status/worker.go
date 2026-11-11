@@ -2,7 +2,7 @@ package main
 
 // work is one pass of a check worker. It builds the nix checks that ready
 // changes require before anyone approves them, and publishes the evidence
-// on origin, where approve (bin/valley) reuses it instead of building it,
+// on origin, where approve (approve.go) reuses it instead of building it,
 // and where the integrator finds it for a request approve filed without it.
 // A timer starts a pass, and so does a wake mark. A pass keeps nothing
 // between passes but its record of failures.
@@ -12,7 +12,7 @@ package main
 //
 //  1. It lists the ready changes whose active version has not landed, as
 //     valley pending does (pending.go), and pins each one's active head.
-//  2. It derives the checks the head requires, as valley-go checks does
+//  2. It derives the checks the head requires, as valley checks does
 //     (checks.go), over the head's merge base with main. Both policy
 //     layers are read at main's tip on origin, as approve reads them,
 //     never from the change.
@@ -204,7 +204,7 @@ import (
 	"the-valley/telemetry"
 )
 
-const workUsage = "usage: valley-go work --repo <name>... --key <file> [--name <name>] [--state <dir>] [--wake <dir>] [--telemetry <dir>] [--slots <n>] [--batches <n>] [--interval <span>] [--keep-outputs <age>] [--eval-budget <size>] [--eval-share <fraction>]"
+const workUsage = "usage: valley work --repo <name>... --key <file> [--name <name>] [--state <dir>] [--wake <dir>] [--telemetry <dir>] [--slots <n>] [--batches <n>] [--interval <span>] [--keep-outputs <age>] [--eval-budget <size>] [--eval-share <fraction>]"
 
 // projectLayer is the project's own policy layer, in main's tree.
 const projectLayer = "policy/project"

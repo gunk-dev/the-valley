@@ -33,7 +33,7 @@
       pkgs.jq # the timing line's JSON
       pkgs.cue
       packages.attest
-      packages.valley-script
+      packages.valley-unstamped
       packages.integrator
     ];
     e2eDir = ../../integrator/e2e;

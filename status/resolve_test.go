@@ -10,8 +10,8 @@ import (
 )
 
 // resolve prints a name no record is on as a branch only when it is a
-// valid branch name in UTF-8. bin/valley splits the line resolve prints
-// on its separators, so a name holding one, or a tab, would read as some
+// valid branch name in UTF-8. A reader splits the line resolve prints on
+// its separators, so a name holding one, or a tab, would read as some
 // other branch. Such a name is refused, and nothing is printed.
 func TestResolveRefusesANameThatIsNoBranch(t *testing.T) {
 	dir := t.TempDir()
@@ -33,8 +33,8 @@ func TestResolveRefusesANameThatIsNoBranch(t *testing.T) {
 	if out, err := exec.Command("git", "clone", "--quiet", origin, work).CombinedOutput(); err != nil {
 		t.Fatalf("git clone: %v\n%s", err, out)
 	}
-	sh("config", "user.name", "valley-go-test")
-	sh("config", "user.email", "valley-go-test@localhost")
+	sh("config", "user.name", "valley-test")
+	sh("config", "user.email", "valley-test@localhost")
 	sh("checkout", "--quiet", "-b", "main")
 	sh("commit", "--quiet", "--allow-empty", "-m", "base")
 	sh("push", "--quiet", "origin", "main")

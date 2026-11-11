@@ -1,7 +1,7 @@
 # What go build and go test -c leave in each Go module: test binaries
 # (*.test), and for a module whose root is a main package, the binary
 # named for it. attest/ and integrator/ ignore their own binary. In
-# status/ the binary is valley-go. In knot/, go build ./cmd/knotcheck
+# status/ the binary is valley. In knot/, go build ./cmd/knotcheck
 # leaves knotcheck. In web/, go build in a command directory leaves that
 # command's binary.
 /attest/*.test
@@ -16,7 +16,7 @@
 /rebase/*.test
 /selfupdate/*.test
 /sigverify/*.test
-/status/valley-go
+/status/valley
 /status/*.test
 /valleyhook/valleyhook
 /valleyhook/*.test

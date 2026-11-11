@@ -3,8 +3,7 @@ package main
 // valley review: a change, or a stack layer by layer, paged for the
 // operator to approve, reject or skip. With no change it walks what needs
 // the operator (walk.go), and each step of the walk is this review of one
-// change, called with the step's repository. bin/valley hands the verb to
-// this program.
+// change, called with the step's repository.
 //
 // A change is resolved before origin is fetched, as approve resolves it,
 // and shown at the head its record names, or a plain branch at its tip on

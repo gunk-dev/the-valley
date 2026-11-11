@@ -1,0 +1,67 @@
+usage: valley pending [--all] [--repo <name>] [--checks] [--drafts] [--branches] [--json] [-v] [--known-signers <file>] [--integrator-name <name>]
+
+  pending [--all] [--repo <name>] [--checks] [--drafts] [--branches]
+          [--json] [-v] [--known-signers <file>] [--integrator-name <name>]
+                   list what waits on you and what is moving. one line
+                   on main's state comes first for each project whose
+                   policy declares follow checks: clear, clearing or
+                   muddy. needs you holds the ready changes that wait on
+                   an approval, one numbered row each in landing order:
+                   oldest ready first, as the check worker builds them,
+                   then by project and change id. a row gives the
+                   handle and active version, its checks as passed out of
+                   required (or how many are pending), and how long it
+                   has been ready, with its title under it. a stack of
+                   such changes is one row, its top's, saying `stack of
+                   N`: approving the top lands every layer. moving holds
+                   the ready changes that need no approval now, one line
+                   each: ◐ approved, waiting on checks and the
+                   integrator; ✗ a check failed, named; ✗ or ◇ a restack
+                   holds it. older versions are never listed. a last line
+                   counts the drafts and the branches no change is on.
+                   lines fit the terminal, or 80 columns off one; titles
+                   are cut short with …, names never. names are bold and
+                   glyphs coloured on a terminal unless NO_COLOR is set.
+                     --all        every project the serving host
+                                  publishes, as one listing: each line
+                                  names its project, and the rows of
+                                  every project share one landing order
+                                  (see valley help changes)
+                     --repo NAME  that one project
+                     --checks     add to each row the checks the policy
+                                  requires of it, by cost, as checks
+                                  derives them, and its full check state,
+                                  naming the checks that failed and what
+                                  they cost the host's check worker to
+                                  build. with --json, give each pending
+                                  change its checks object
+                     --drafts     list the drafts in full, in place of
+                                  their count
+                     --branches   list the branches no change is on in
+                                  full, in place of their count. each
+                                  draft and branch is a block: its name
+                                  with its head's age and author, its
+                                  title, then the commits and the diff
+                                  it adds to the nearest listed entry
+                                  its head contains, or to main. a stack
+                                  is its top, then every entry the top
+                                  contains, at one indentation; an entry
+                                  not on the one listed after it says
+                                  `on <base>`
+                     --json       print valley-pending/v1: the
+                                  valley-changes/v1 shape, with the
+                                  pending changes in changes, each
+                                  marked approved or not, and the
+                                  drafts in drafts
+                     -v           follow each row with its block, its
+                                  stack drawn in full, with what its
+                                  head includes, `uncertain` when it may
+                                  have landed without its evidence
+                                  stored, and its full check state; and
+                                  warn on stderr when a plan graph is
+                                  missing or unreadable
+                     --known-signers FILE, --integrator-name NAME
+                                  what a transfer statement is verified
+                                  with (see changes below)
+                   reading the checks costs seconds for each project
+                   with a ready change.

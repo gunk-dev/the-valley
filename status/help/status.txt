@@ -1,0 +1,28 @@
+usage: valley status [--json] [-v] [--known-signers <file>] [--integrator-name <name>] <change>
+
+  status [--json] [-v] [--known-signers <file>] [--integrator-name <name>]
+         <change>
+                   read the request and the integrator's last decision from
+                   origin. distinguish waiting, a decision that needs
+                   attention, and a change integrated into origin/main.
+                   a change with a record is read at its active version's
+                   head, under c-<change id>, and the status says the
+                   version, its title, the owner, and how far the version
+                   has landed, as changes reads it. a change that landed
+                   as an older version is read at that version's head. a refusal for a record
+                   that is not ready, or for a merge in the change's
+                   commits, is a state of its own.
+                   after integration, show how to update the local checkout.
+                   fetches objects without moving local branches or files;
+                   no checks run and no request is filed.
+                     --json       print the status as one JSON object,
+                                  valley-status/v1, for front ends to read
+                                  (docs/architecture.md), with the knots
+                                  in the plan graph that link the change.
+                                  an error prints no object: it goes to
+                                  stderr and the exit status is non-zero.
+                     -v           with --json, warn on stderr when the plan
+                                  graph is missing or unreadable
+                     --known-signers FILE, --integrator-name NAME
+                                  what a transfer statement is verified
+                                  with, as changes reads them

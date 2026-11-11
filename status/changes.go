@@ -265,7 +265,7 @@ func unlandedOn(g git, o origin, branch string) ([]recorded, error) {
 // fetched, so the head is in this checkout's objects.
 func runResolve(g git, args []string, w io.Writer) error {
 	if len(args) != 1 {
-		return failure("usage: valley-go resolve <change>")
+		return failure("usage: valley resolve <change>")
 	}
 	if !g.succeeds(true, "rev-parse", "--git-dir") {
 		return failure("not a git repository")

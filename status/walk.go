@@ -179,7 +179,7 @@ func runWalk(g git, args []string, stdout, stderr io.Writer, end func(int)) int 
 			walked = append(walked, walkStep{row: e, outcome: stepOutcome{kind: "error", reason: why}})
 			continue
 		}
-		inv := &invocation{args: append(append([]string{"review"}, flags...), e.id), since: time.Now(), version: producerStamp}
+		inv := &invocation{args: append(append([]string{"review"}, flags...), e.id), since: time.Now(), version: versionStamp}
 		left := phase("steps")
 		o := reviewChange(reviewStep{g: step, queued: &queuedChange{id: e.id, version: e.version, head: e.head},
 			verbose: verbose, buildHere: buildHere, stdin: os.Stdin, stdout: stdout, stderr: stderr,

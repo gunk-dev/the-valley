@@ -1,4 +1,4 @@
-# Everything this flake builds: the CLI and its Go verbs, the
+# Everything this flake builds: the valley command, the
 # formatter, the attestation helper, the integrator, the identity
 # compiler, the pre-receive hook's policy, the security-key signature
 # verifier. The flake wires these into packages, apps, and the checks that
@@ -122,88 +122,33 @@ rec {
   # formatting is off so fenced code blocks pass through byte-for-byte.
   proseFmtArgs = "--prose-wrap always --print-width 100 --embedded-language-formatting off";
 
-  # The integrator's CLI (bin/valley) wrapped for `nix run`. The script
-  # itself must keep running bare from any checkout — the package is the
-  # second of its two shipping modes, never a dependency of the first.
-  valley-script-unwrapped = pkgs.writeShellApplication {
-    name = "valley";
-    runtimeInputs = [
-      pkgs.git
-      pkgs.natscli # tail and replay only; every other verb needs just git
-      pkgs.cue # checks and approving — it composes the policy layers
-      pkgs.less # review only — its v key is what takes a note
-      attest # approving only — it runs the checks and signs them
-      valley-go # status, ready, unready, withdraw and rebase, naming a change by its ID, and pending's drafts
-    ];
-    text = builtins.readFile ../bin/valley;
-  };
-
-  # The shipping form. The verification schema travels with the script, as
-  # it does with the integrator: only the-valley's own tree carries
-  # schema/, so a project's checkout has none to read. --set-default leaves
-  # an explicit VALLEY_VERIFICATION_SCHEMA in charge.
-  valley-script =
-    pkgs.runCommand "valley"
-      {
-        nativeBuildInputs = [ pkgs.makeWrapper ];
-        meta.mainProgram = "valley";
-      }
-      ''
-        mkdir -p $out/bin
-        makeWrapper ${lib.getExe valley-script-unwrapped} $out/bin/valley \
-          --set-default VALLEY_VERIFICATION_SCHEMA ${../schema/verification.cue}
-      '';
-
-  # The installed package: the wrapped script stamped with its version, the
-  # shell completions at the standard paths home-manager/NixOS auto-link,
-  # and the tiny policy self-update's smoke test derives checks from
-  # (examples/policy/smoke/). The stamp is set on this outer wrapper alone,
-  # so the packages the checks and the integrator use do not change with
-  # every commit. The name carries the version as well: nix profile names
-  # the element valley from it, and self-update reads a hand-installed
-  # valley's commit from it.
-  valley =
-    pkgs.runCommand "valley-${version}"
-      {
-        inherit version;
-        nativeBuildInputs = [
-          pkgs.makeWrapper
-          pkgs.installShellFiles
-        ];
-        meta.mainProgram = "valley";
-      }
-      ''
-        mkdir -p $out/bin $out/share/valley
-        makeWrapper ${lib.getExe valley-script} $out/bin/valley \
-          --set VALLEY_VERSION ${version}
-        installShellCompletion --bash --name valley ${../completions/valley.bash}
-        installShellCompletion --zsh --name _valley ${../completions/_valley}
-        cp -r --no-preserve=mode ${../examples/policy/smoke} $out/share/valley/smoke-policy
-      '';
-
-  # The verbs of the CLI written in Go (status/). status reads one change's
-  # request and outcome record from origin, and prints them as sentences or
-  # as the valley-status/v1 JSON object front ends read. ready, unready and
-  # withdraw write a change's record, with the one reading of a record the
-  # push hook shares (../change). rebase rebases a change's whole stack and
-  # adds each change's rebased head to its record, through the rebase engine
+  # The valley command (status/), the raw Go binary with nothing wrapped:
+  # the verbs that read a change's state from origin and write its record,
+  # review and approve, the plan graph's verbs, the bus's, checks and
+  # self-update. status reads one change's request and outcome record from
+  # origin, and prints them as sentences or as the valley-status/v1 JSON
+  # object front ends read. ready, unready and withdraw write a change's
+  # record, with the one reading of a record the push hook shares
+  # (../change). rebase rebases a change's whole stack and adds each
+  # change's rebased head to its record, through the rebase engine
   # (../rebase), which also reads how far each version has landed for the
   # listings. knot reads and writes the plan graph, with the one reading of
   # a graph the push hook shares (../knot), and plan shows that graph as a
-  # view. compare reads a version's file delta and its approved version's
-  # with the one reading of valley-delta-v1 (../delta), for review.
-  # self-update installs the tip of a branch of the-valley into the user's
-  # nix profile (../selfupdate). checks prints which checks a change
-  # requires, as the deriver (../derive) derives them from the policy the
-  # composed-policy reader (../composed) reads. Go, standard library only.
-  # It runs whatever git and cue are on PATH, which inside the CLI's package
-  # are the CLI's own. Its unit tests hold its shell quoting to the bash it
-  # replaced, so they need bash, lay pending out over real repositories,
-  # so they need git, and derive a change's checks under the verification
-  # schema, so they need cue and the schema. The plan's golden files
-  # (status/testdata/plan/) are valley-plan's, and no Go test reads them.
-  valley-go = goModule {
-    pname = "valley-go";
+  # view. review reads a version's file delta and its approved version's
+  # with the one reading of valley-delta-v1 (../delta). self-update
+  # installs the tip of a branch of the-valley into the user's nix profile
+  # (../selfupdate). checks prints which checks a change requires, as the
+  # deriver (../derive) derives them from the policy the composed-policy
+  # reader (../composed) reads. Go, standard library only. It runs
+  # whatever git, cue, less, attest and nats are on PATH, so checks that
+  # put a failing stand-in for one ahead of it run this binary rather than
+  # a wrapper. Its unit tests hold its shell quoting to bash, so they need
+  # bash, lay pending out over real repositories, so they need git, and
+  # derive a change's checks under the verification schema, so they need
+  # cue and the schema. The plan's golden files (status/testdata/plan/) are
+  # valley-plan's, and no Go test reads them.
+  valley-unwrapped = goModule {
+    pname = "valley-unwrapped";
     dir = ../status;
     modules = [
       ../change
@@ -230,10 +175,67 @@ rec {
         export VALLEY_TEST_TOOLS=required
       '';
     };
-    meta.mainProgram = "valley-go";
+    meta.mainProgram = "valley";
   };
 
-  # The check worker: one pass of `valley-go work` (status/worker.go), which
+  # The valley command with the tools it runs: git, natscli (tail and
+  # replay), cue (checks and approving, which compose the policy layers),
+  # less (review's notes) and attest (approving, which runs the checks and
+  # signs them). The verification schema travels with it, as it does with
+  # the integrator: only the-valley's own tree carries schema/, so a
+  # project's checkout has none to read. --set-default leaves an explicit
+  # VALLEY_VERIFICATION_SCHEMA in charge. It carries no stamp, so the
+  # packages the checks and the integrator use do not change with every
+  # commit.
+  valley-unstamped =
+    pkgs.runCommand "valley"
+      {
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        meta.mainProgram = "valley";
+      }
+      ''
+        mkdir -p $out/bin
+        makeWrapper ${lib.getExe valley-unwrapped} $out/bin/valley \
+          --prefix PATH : ${
+            lib.makeBinPath [
+              pkgs.git
+              pkgs.natscli
+              pkgs.cue
+              pkgs.less
+              attest
+            ]
+          } \
+          --set-default VALLEY_VERIFICATION_SCHEMA ${../schema/verification.cue}
+      '';
+
+  # The installed package: the valley command stamped with its version, the
+  # shell completions at the standard paths home-manager/NixOS auto-link,
+  # and the tiny policy self-update's smoke test derives checks from
+  # (examples/policy/smoke/). The stamp is set on this outer wrapper alone,
+  # so the packages the checks and the integrator use do not change with
+  # every commit. The name carries the version as well: nix profile names
+  # the element valley from it, and self-update reads a hand-installed
+  # valley's commit from it.
+  valley =
+    pkgs.runCommand "valley-${version}"
+      {
+        inherit version;
+        nativeBuildInputs = [
+          pkgs.makeWrapper
+          pkgs.installShellFiles
+        ];
+        meta.mainProgram = "valley";
+      }
+      ''
+        mkdir -p $out/bin $out/share/valley
+        makeWrapper ${lib.getExe valley-unstamped} $out/bin/valley \
+          --set VALLEY_VERSION ${version}
+        installShellCompletion --bash --name valley ${../completions/valley.bash}
+        installShellCompletion --zsh --name _valley ${../completions/_valley}
+        cp -r --no-preserve=mode ${../examples/policy/smoke} $out/share/valley/smoke-policy
+      '';
+
+  # The check worker: one pass of `valley work` (status/worker.go), which
   # builds the nix checks ready changes require and publishes the evidence
   # before anyone approves them. It runs this flake's git, cue and attest,
   # and the verification schema travels with it, as it does with the CLI.
@@ -246,7 +248,7 @@ rec {
       }
       ''
         mkdir -p $out/bin
-        makeWrapper ${lib.getExe valley-go} $out/bin/valley-worker \
+        makeWrapper ${lib.getExe valley-unwrapped} $out/bin/valley-worker \
           --add-flags work \
           --prefix PATH : ${
             lib.makeBinPath [
@@ -522,8 +524,7 @@ rec {
   # valley-web below, and the receiver by valley-web-receive. The export's
   # tests accept bundles and build the shared fixture's repositories with
   # real git. The publisher's tests run it against a valley built with real
-  # git and the CLI itself (bin/valley, run by bash, with valley-go on
-  # PATH), read each project's policy/read and the instance's identity
+  # git and the valley command's raw binary, read each project's policy/read and the instance's identity
   # registry with cue under schema/read.cue and schema/identity.cue, and
   # upload to a receiver over a real store, and to the real receiver, whose
   # state directory the real valley-web serves. One lands a change as the
@@ -555,7 +556,6 @@ rec {
         ../web/export/exporttest/testdata
         ../README.md
         ../docs
-        ../bin/valley
         ../schema/read.cue
         ../schema/identity.cue
         ../schema/valley.cue
@@ -565,7 +565,7 @@ rec {
         pkgs.bash
         pkgs.cue
         pkgs.openssh
-        valley-go
+        valley-unwrapped
         attest
       ];
       # A test that cannot find a tool it needs fails rather than skipping.
@@ -703,7 +703,7 @@ rec {
           pkgs.git
           pkgs.cue
           pkgs.jq
-          valley-script
+          valley-unstamped
           valley-web-publish
         ];
         schema = ../schema/valley.cue;
@@ -822,7 +822,7 @@ rec {
             lib.makeBinPath [
               pkgs.git
               pkgs.cue
-              valley-script
+              valley-unstamped
             ]
           } \
           --set-default VALLEY_READ_SCHEMA ${../schema/read.cue} \

@@ -66,7 +66,7 @@
 #                    valley-go-unit, valley-status, valley-ready,
 #                    valley-changes, valley-walk, valley-knot, valley-plan,
 #                    selfupdate-unit, valley-self-update,
-#                    valley-darwin-eval — bin/valley, its Go verbs, the
+#                    valley-darwin-eval — the valley command, the
 #                    rebase engine, self-update and its home-manager
 #                    module, the-valley's own policy, and the CLI's
 #                    package evaluated for Darwin

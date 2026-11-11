@@ -26,7 +26,7 @@ The parts are:
 - the integrator, one controller per protected project (`integrator/`);
 - `attest`, which runs checks and signs the evidence (`attest/`, `note/`);
 - the identity compiler, which turns a registry into keys and grants (`identity/`);
-- the `valley` command line tool (`bin/valley`);
+- the `valley` command line tool (`status/`);
 - `valley-worker`, the check worker, which builds and publishes pure check evidence for ready
   changes before approval (`status/worker.go`);
 - `valley-web-publish`, `valley-web-receive`, `valley-web`, and the web export (`web/`). The
@@ -1236,11 +1236,11 @@ Checked by `restack-host-e2e` in a NixOS VM with the principal enrolled and the 
 
 The check worker builds the checks a ready change requires before anyone approves it. It publishes
 the evidence on `origin`, where approval reuses it instead of building it (see
-[The valley command](#the-valley-command)). `valley-worker` runs one pass of it. It is
-`valley-go work` (`status/worker.go`), packaged with this flake's git, cue and `attest` and the
-verification schema (`nix/packages.nix`). Within a pass it schedules batches; between passes it
-keeps nothing but its record of failures, and nothing connects to it. A host that turns the worker
-on runs a pass on a timer (see [The worker on the host](#the-worker-on-the-host)).
+[The valley command](#the-valley-command)). `valley-worker` runs one pass of it. It is `valley work`
+(`status/worker.go`), packaged with this flake's git, cue and `attest` and the verification schema
+(`nix/packages.nix`). Within a pass it schedules batches; between passes it keeps nothing but its
+record of failures, and nothing connects to it. A host that turns the worker on runs a pass on a
+timer (see [The worker on the host](#the-worker-on-the-host)).
 
 A pass builds evidence only for the projects named with `--repo`. It reads each project as
 `valley pending --repo` does, so it can run from a clone of any project the host serves. To find a
@@ -1251,7 +1251,7 @@ project's policy floor, it can fetch `main` of the owning valley that the projec
 names. For each project it follows approval's steps:
 
 1. It lists the ready changes whose active version has not landed, and pins each one's active head.
-2. It derives the checks the head requires with the Go deriver, as `valley-go checks` does, over the
+2. It derives the checks the head requires with the Go deriver, as `valley checks` does, over the
    head's merge base with `main`. Both policy layers come from `main`'s tip on `origin`, as approval
    reads them, never from the change.
 3. It reads the evidence `origin` holds for the head's tree, with the coverage rules approval uses.
@@ -1511,7 +1511,7 @@ keys to `<stateDir>/known_hosts` under `localhost` and passes `HostKeyAlias=loca
 its public hostname, such as `git@valley-host:valley.git`, SSH still verifies it against the local
 host key. A server presenting an unrecognized host key fails verification. This host-key pin
 restricts SSH connections only; it does not cut the worker off from the network. When the worker
-fetches an instance floor named in `policy/valley`, `valley-go` sets
+fetches an instance floor named in `policy/valley`, `valley` sets
 `GIT_ALLOW_PROTOCOL=ssh:git:https:file` in its own child environment (`status/list.go`), so the host
 module cannot narrow that list, and `git://` and `https://` URLs still reach other hosts without
 using SSH. Similarly, when Nix builds a check, it can fetch flake inputs over the network from the
@@ -2194,12 +2194,11 @@ Nothing in the-valley calls `sigverify` yet.
 
 ## The valley command
 
-`bin/valley` is a shell script, also packaged with its schema (`nix/packages.nix`). Its `status`,
-`ready`, `unready`, `withdraw`, `review`, `approve`, `rebase`, `changes`, `pending`, `knot`, `plan`
-and `self-update` verbs are a Go program, `valley-go` (`status/`), which the package puts on the
-script's `PATH`. `valley-go` rebases with the rebase engine, a Go module of its own (`rebase/`),
-which also reads how far each version has landed for its listings. The package stamps its version on
-the script, and `valley self-update` keeps a user's `valley` at the tip of a branch (see
+`valley` is a Go program (`status/`), packaged with its schema and the tools it runs: git, cue,
+less, `attest` and the nats CLI (`nix/packages.nix`). Each public verb has a help topic, embedded
+from `status/help/`. It rebases with the rebase engine, a Go module of its own (`rebase/`), which
+also reads how far each version has landed for its listings. The package stamps its version on the
+command, and `valley self-update` keeps a user's `valley` at the tip of a branch (see
 [Version and self-update](#version-and-self-update)).
 
 | Command                      | What it does                                                                                          |
@@ -2372,16 +2371,14 @@ does oc-6335749 (open): Ready changes stay landable as main moves
 
 For a single change, these lines follow the first line of the comparison or diff, or the draft or
 withdrawn notice when the change is not ready. In a stack, each layer's page shows that layer's
-knots under its heading. Active knots come first, then terminal ones, each group in ID order.
-`valley-go does` reads the graph once per review for every change in it (`status/does.go`). A
-missing or unreadable graph shows no knots. `valley review -v` says why on stderr. Checked by
-`valley-ready`.
+knots under its heading. Active knots come first, then terminal ones, each group in ID order. Review
+reads the graph once for every change in it (`status/does.go`). A missing or unreadable graph shows
+no knots. `valley review -v` says why on stderr. Checked by `valley-ready`.
 
 A change with a stack under it is reviewed one layer at a time, bottom first, each against the layer
 below it. The layers are what `valley pending` lists under the change: the changes whose active
 version has not landed, and the branches no record is on, whose heads the change's head contains.
-`valley-go stack` lists them (`status/stack.go`). A withdrawn change under the change is a layer
-too.
+`status/stack.go` lists them. A withdrawn change under the change is a layer too.
 
 - `review` first lists the layers. It warns of each lower layer that is a draft or withdrawn, since
   the integrator refuses to land it or anything above it. Its last line says how the review goes:
@@ -2460,7 +2457,7 @@ not been read.
 
 `valley rebase <change>`, and `[b]ase onto main` before a stale stack's review, rebase the change's
 whole stack. The verb is `status/rebase.go`, and the rebase engine (`rebase/`) does the work. The
-stack is the change and the layers `valley-go stack` lists under it. A change with nothing under it
+stack is the change and the layers `status/stack.go` lists under it. A change with nothing under it
 is a stack of one. In a throwaway worktree, bottom first, each layer's own commits are rebased onto
 the rebased layer below it, and the bottom's onto `main`. So each layer keeps its own delta. Commits
 under the bottom that a lower change landed drop out, since the integrator landed them as one new
@@ -2582,8 +2579,7 @@ that branch:
 - If there is exactly one, the name is that record's change, exactly as if its ID had been given.
 - If there is more than one, the verb refuses and lists their change IDs, so that one can be named.
 
-So whether a change's record is read never depends on how the change is named. These three verbs
-need the `valley-go` helper for that reason.
+So whether a change's record is read never depends on how the change is named.
 
 `review`, `approve` and `rebase` act on a change with a record at a head its record names. They
 never act on the branch's tip. A record's branch is only where its head is expected to be, and
@@ -2794,7 +2790,7 @@ The log shows each commit's short hash and subject, then its body indented four 
 lands with its head commit's message, and the indent keeps a body line from reading as a diff
 header.
 
-The text is plain. On a terminal, unless `NO_COLOR` is set, `valley-go style` renders it last, after
+The text is plain. On a terminal, unless `NO_COLOR` is set, `valley style` renders it last, after
 the diff pager, so that the pager never reads its escapes: the title in bold, `edited` in yellow,
 `unchanged` and `same file changes` in green, hashes dim, and section headings in cyan. It keeps
 every line in its place, so the editor opens the buffer on the line the view shows, and the buffer
@@ -2943,10 +2939,11 @@ not guarantee their removal: commits replayed by the rebase can still count as w
 A change has landed once any of its versions is `landed` or `landed-recorded`
 (`rebase.Snapshot.LandedAs`, `implemented`). An approval names the head the reviewer read, so the
 version that lands can be older than the active one: a restack made during review stays active after
-the version it restacked lands, and is no work left to land. `valley pending`, `valley-go standing`,
-`valley status`, branch names and the restacker all read a change this way, and say which version it
-landed as. An active version whose head descends from that landing was made on a `main` that holds
-it, and is the change's next round: the change reads unlanded until that version lands.
+the version it restacked lands, and is no work left to land. `valley pending`, `valley review` as it
+reads a change again before acting (`status/standing.go`), `valley status`, branch names and the
+restacker all read a change this way, and say which version it landed as. An active version whose
+head descends from that landing was made on a `main` that holds it, and is the change's next round:
+the change reads unlanded until that version lands.
 
 The client checks a transfer statement with `attest verify`. The signature must be by the
 integrator's signing name, under a key in a known-signers file. The client takes each of these two
@@ -3169,15 +3166,17 @@ The installed `valley` package carries a version stamp: the CLI's version and th
 it from, such as `0.1.0-97db597` (`nix/packages.nix`). `valley --version` prints it. A build from a
 tree with uncommitted changes ends in `-dirty`, and a build with no known commit ends in `-unknown`.
 The stamp is on the package's outer wrapper and in its name only. So the packages that the checks
-and the integrator use do not change with every commit. The script run straight from a checkout says
-it is unstamped.
+and the integrator use do not change with every commit. A build without the stamp, such as the
+packages the checks use, says it is unstamped. The command takes the stamp from `VALLEY_VERSION` as
+it starts and removes it from its environment, so no program it starts inherits a stamp that is not
+its own.
 
 `valley self-update` keeps a user's `valley` at the tip of a branch of the-valley, without a system
 rebuild. It is for a machine where `valley` is a working tool, such as an agent's guest. The machine
 the operator approves from, and the valley host, keep the version their system configuration pins.
 So a commit on `main` never changes the tool that approves or admits the next one.
 
-Self-update is a Go module (`selfupdate/`) that `valley-go` runs. It installs only a commit it has
+Self-update is a Go module (`selfupdate/`) that `valley` runs. It installs only a commit it has
 built and smoke-tested, and it keeps the previous install to roll back to. Each run:
 
 1. resolves the branch with `git ls-remote`;

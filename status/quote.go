@@ -9,7 +9,7 @@ import (
 
 // shellQuote quotes a word the way bash's `printf %q` does in a UTF-8
 // locale, so the commands status suggests can be pasted back into a
-// shell and say exactly what bin/valley's own printf said. A branch name
+// shell and name exactly what they print. A branch name
 // may hold most punctuation, and every character a shell would read
 // specially is escaped with a backslash. A word holding a character that
 // is not printable, or bytes that are not UTF-8, is written in $'...'

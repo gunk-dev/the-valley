@@ -230,7 +230,7 @@ landings > "$w/unpublished"
 listing valley status --json "$lands" || fail 'valley status failed'
 [ "$(jq -r .landing "$w/out")" = uncertain ] || fail "status reads lands as $(jq -r .landing "$w/out")"
 stack() { cut -f4 "$w/out" | tr '\n' ' '; }
-listing valley-go stack "$above" || fail 'valley-go stack failed'
+listing valley stack "$above" || fail 'valley stack failed'
 [ "$(stack)" = "$(git rev-parse lands) $(git rev-parse above) " ] \
   || fail "the stack under above is not lands and above: $(cat "$w/out")"
 # The variables still verify it, as they did before there was a
@@ -283,7 +283,7 @@ listing valley status --json "$lands" || fail 'valley status failed'
 quiet 'could not be verified'
 # lands is no layer under above any more, and rebase drops its commits:
 # above's own commit goes onto main alone.
-listing valley-go stack "$above" || fail 'valley-go stack failed'
+listing valley stack "$above" || fail 'valley stack failed'
 [ "$(stack)" = "$(git rev-parse above) " ] \
   || fail "the stack under above still holds more than above: $(cat "$w/out")"
 listing VALLEY_PRINCIPAL=alice valley rebase "$above" || fail 'valley rebase failed'

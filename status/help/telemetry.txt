@@ -1,0 +1,39 @@
+usage: valley telemetry [--remote <remote>] [--json] <operation> [flags]
+
+  sources                 every source the host declares, and its state:
+                          disabled, unavailable, failed, stale, active or
+                          idle, with its units, its records and how far its
+                          journal reaches
+  snapshot                sources, with each producer's exported state and
+                          its open and latest runs
+  read [--source <name>] [--since <cursor>] [--limit <n>] [--logs]
+                          records after the cursor (default: the newest
+                          --limit, 200, at most 1000); a source's systemd
+                          lifecycle from the journal; with --logs, its own
+                          output and the tail of its build logs, marked
+                          untrusted
+  follow [--source <name>] [--since <cursor>] [--seconds <n>] [--logs]
+                          records as they are stored, and with --logs build
+                          output as it is written, for --seconds (default
+                          60, at most 300); ends with a cursor to resume from
+  flush                   send this workstation's spooled records now
+
+Reading needs a key whose principal holds the host's observe grant. The
+remote is the checkout's valley.telemetry.remote, else origin, or the one
+--remote names (a remote, an ssh URL, or user@host:path); its URL is read
+and never run. --json prints the valley-telemetry/v1 answer lines as they
+come. A gap, a cut-short answer or an error is said; an answer that does
+not end exits 1.
+
+With `git config valley.telemetry true`, every valley command records a
+command record: its verb (and knot's or telemetry's subverb), the names of
+the flags it was given, its project, its exit status and its wall time,
+and for pending and status the milliseconds and processes each phase took.
+It never records an argument's value, a path, a title or a body. Every
+approval attempt, from approve or from review, also records its steps and
+its checks' progress. Records go to an owner-only spool for the
+destination the checkout's telemetry remote names, under
+$XDG_STATE_HOME/valley/telemetry/spools. A background flusher sends each
+spool to its own destination, with the report grant; flush does the same
+now, and --remote limits it to that remote's spool. Telemetry never fails
+or holds up a command, and changes nothing it prints.

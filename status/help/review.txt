@@ -1,0 +1,274 @@
+usage: valley review [-v] [--build-here] <change>
+       valley review [-v] [--build-here] [--repo <name>]
+
+  review [-v] [--build-here] [--repo <name>]
+                   with no change, review each change that needs you, as
+                   valley pending --all lists them, in landing order, or
+                   those of the project --repo names. each step opens
+                   with `[1/3] <project> · <handle> v<N> · <checks>` and
+                   is the review below, run where the project is read:
+                   this checkout, or the clone valley keeps of another
+                   project, lent this checkout's valley.principal,
+                   user.name and user.email. a change that landed, is
+                   not ready or has no branch since is not reviewed; one
+                   at a new version is reviewed at it. the walk ends with
+                   each change's outcome and what still needs you. a
+                   project that did not read is said first and last. a
+                   change in a project whose main names another valley
+                   ends in error: review it from that valley's checkout.
+                   ctrl-c or SIGTERM ends the walk with what it walked,
+                   exit 130.
+
+  review [-v] [--build-here] <change>
+                   page through the change's branch: its log, with each
+                   commit's whole message, and diff vs origin/main, or a
+                   stack layer by layer (below). above
+                   each change's diff, review shows every knot in the plan
+                   graph that links the change, as `does oc-6335749 (open):
+                   <title>`. a missing or unreadable graph
+                   shows no knots; -v warns on stderr. before the prompt, a
+                   ready change shows the state of its checks and what
+                   they cost the host's check worker to build, as pending
+                   --checks shows it: `checks: 21 passed in 9m10s (eval
+                   24s); worker-e2e 431s, +100s against its recent 331s`.
+                   review reads them while it shows the diff and never
+                   waits for them: a line not read by the prompt is not
+                   shown, unless VALLEY_REVIEW_CHECKS_WAIT=<seconds> says
+                   how long to wait for it. checks that cannot be read show no line; -v
+                   warns on stderr. the prompt is one header line, the
+                   change and its state, `nqyw v3 · checks: 4 passed ·
+                   behind main (integrator merges)`, then the keys it
+                   takes; a change that can't be approved says why in the
+                   header and is not offered [a]pprove. -v also passes -v
+                   to approve. then choose:
+                     [a]pprove    file an integration request for the
+                                  head shown, as approve does (valley
+                                  help approve). it reuses the evidence
+                                  origin holds for the checks the
+                                  composed policy requires of this
+                                  change. when a required nix check has
+                                  none, it files the request at once
+                                  all the same, builds nothing, and
+                                  names the check. when evidence is
+                                  published, the integrator considers
+                                  the request again; it may never be
+                                  published. given
+                                  --build-here, review's [a]pprove builds
+                                  those nix checks here instead. it runs
+                                  the command checks, and any nix check
+                                  it builds, over a throwaway worktree of
+                                  that head, signs each result as an
+                                  attestation, and publishes the evidence
+                                  and the request ref to origin in ONE
+                                  atomic push. this files the request;
+                                  it does not wait for integration or
+                                  update your local checkout. use status
+                                  to read the result. the policy comes
+                                  from the target's tip and the owning
+                                  valley's, as checks describes (valley
+                                  help checks), so your checkout
+                                  can be on any branch. a change the policy
+                                  requires no check of is filed too, as a
+                                  request with no evidence, and says so.
+                                  approving a change already requested is
+                                  how it is filed again. at a head rebased
+                                  onto a moved main it replaces the request
+                                  ref under a lease and names the head it
+                                  replaced; at the same head it leaves the
+                                  ref alone and publishes only the new
+                                  evidence, which origin refuses when
+                                  this signer has already attested that
+                                  tree: approve publishes a signer's
+                                  evidence for a tree once (bd-7b7d58f). every write of the request
+                                  ref is leased, filing included, so an
+                                  approval that lost a race is refused
+                                  rather than clobbering the one that won.
+                                  needs the attest helper whenever a
+                                  check is required, and
+                                  VALLEY_ATTEST_KEY, the ed25519 key this
+                                  host signs with, whenever a check runs
+                                  here; VALLEY_ATTEST_NAME is the name it
+                                  signs under, defaulting to this host's.
+                     [v]iew full diff
+                                  page the change's whole diff, with
+                                  notes taken as below, and ask again
+                     [r]eject     delete the remote branch (confirmed first)
+                     [s]kip       do nothing
+                   a change with a record is first set against its
+                   approved version: the greatest version below the one
+                   shown whose exact head an integration request or a
+                   land, stale or reject outcome on origin names, under
+                   c-<change id> or a branch name of the change that
+                   nothing else maps to. with none,
+                   or an ambiguous one, review pages the whole diff. its
+                   first line says what changed since you approved v<m>:
+                     `<change> v<n> at <head>: rebased since you approved
+                     v<m> at <old head>, with the same file changes.`
+                   each version's diff from its merge base with main
+                   changes the same files the same way (valley-delta-v1).
+                   review prints the commits main landed between the
+                   bases, and pages nothing.
+                     `... rebased since you approved v<m> at <old head>.`
+                   the commits are the same patches, messages and
+                   authors, but main also edited files the change edits.
+                   review pages each file whose change differs, with the
+                   landings that edited it, then the shown version's diff
+                   of those files.
+                     `... edited since you approved v<m> at <old head>.`
+                   a commit's patch, message or author differs. review
+                   pages how many commits changed, the files whose change
+                   differs with the landings that edited them, git
+                   range-diff of the two versions, and the shown
+                   version's diff of those files, or prints a changed
+                   message or author when the files are the same. -v adds
+                   each file's mode and SHA-256 in each version. on a
+                   terminal, unless NO_COLOR is set, the title, the
+                   section headings and the hashes are styled; the buffer
+                   the editor opens is plain. this is information only:
+                   it files nothing and skips no check.
+                   when [a]pprove's checks fail, the prompt says approving
+                   needs a new head and stops offering [a]pprove until the
+                   change has one. any other refusal keeps the prompt as
+                   it was.
+                   [a]pprove files the head shown, for a branch no record
+                   is on too: it refuses, naming both heads, when the
+                   branch on origin has moved off that head since.
+                   [a]pprove is the only way a change reaches main from
+                   here, and approve (valley help approve) is the same act
+                   without the pager.
+                   Nothing in review writes the protected ref: the
+                   integrator does, having judged the request.
+                   a change behind main (one that does not fast-forward
+                   from it) is asked the same prompt, under one line:
+                     `<branch> is behind main; the integrator lands it
+                     onto main as main stands (no rebase needed).`
+                   the integrator applies the change's delta onto main as
+                   it stands, and the host's restacker rebases ready
+                   changes itself, so review asks nothing more of it.
+                   while the restacker reports a conflict for the change,
+                   the line says `<branch> conflicts with main; its owner
+                   is resolving it.` instead. [a]pprove is still offered,
+                   and the integrator decides whether the change applies.
+                   to rebase a change of your own, use valley rebase.
+                   a change whose record is not ready says so above its
+                   diff, and again in place of the prompt, which then
+                   offers only [v]iew full diff and [s]kip:
+                     `<change> v<n> is a draft: its owner (<owner>) hasn't
+                     marked it ready, so it can't be approved yet.`
+                     `<change> is withdrawn: there is nothing to approve.`
+                   a draft is often a change an agent is still working on.
+                   [a]pprove would be refused. [r]eject records nothing
+                   on the change: it would only delete a branch its owner
+                   may still be working on.
+                   before [a]pprove or [r]eject acts, review reads the
+                   change again. when it moved while you read it, review
+                   says what changed in one line, and acts on nothing
+                   unless you approve a new version it offers:
+                     `<change> changed while you were reviewing: it was
+                     returned to draft (since <time>), so there is
+                     nothing to approve now. It comes back when it is
+                     ready again.`
+                     `<change> changed while you were reviewing: it was
+                     withdrawn (since <time>), so there is nothing to
+                     approve.`
+                     `<change> moved to v<n> while you were reviewing
+                     (<why>) · [a]pprove v<n>, [v]iew what changed
+                     since v<m>, [s]kip?`
+                     `<change> landed as v<n> while you were reviewing;
+                     there is nothing left to approve.`
+                   <time> is when the record last changed, in UTC.
+                   a new version with the same changes and commits, such
+                   as a restack the carry mode allows, keeps the answer:
+                     `<change> moved to v<n> while you were reviewing.
+                     v<n> is v<m> rebased onto the new main with no
+                     other changes, so your approval covers it.`
+                   and [a]pprove files v<m>, the head shown. its verdict
+                   names v<n>, which lands, with v<n>'s checks. otherwise
+                   <why> says whether the change's commits changed or
+                   only main moved under them, and why the answer does
+                   not carry. with its commits unchanged, [a]pprove v<n>
+                   is offered at once; with a commit changed, only after
+                   [v]iew. [a] files v<n>'s head, and is refused if the
+                   change moves again first.
+                   a branch no record is on has no state, and is offered
+                   the usual prompt.
+                   while paging, press v: less opens the diff in $EDITOR.
+                   every line you insert there is a note. it is anchored to
+                   the file and new-side line it sits on — to the file alone
+                   when it sits above the first hunk. range-diff gives no
+                   line numbers, so set against an approved version a
+                   note keeps its file and line only in the section
+                   headed `── v<n>'s diff of these files against main`. each note is then appended to
+                   $XDG_STATE_HOME/valley/notes/<branch>.md (default
+                   ~/.local/state) and printed after the verdict. notes
+                   survive a stack's [b]ase onto main. lines you change
+                   or delete instead of inserting are ignored, with a
+                   warning.
+                   a change whose active version names no branch is
+                   refused, since notes and [r]eject act on a branch;
+                   approve files its head without one.
+                   a stack is reviewed one layer at a time, bottom first.
+                   a layer below the top that is approved, as pending
+                   lists it, is named in the list and not paged: it asks
+                   nothing of you. the top is always paged.
+                   its layers are what pending lists under the change: the
+                   changes not landed and the branches no record is on
+                   that its head contains. review first
+                   lists them, warns of a lower layer that is a draft or
+                   withdrawn, since the integrator lands nothing above it,
+                   and says how the review goes: [n] through the layers,
+                   and approving the top lands them all. a stack whose
+                   bottom does not fast-forward from main is then asked,
+                   before any layer is paged, under `<top> · stack of <n>
+                   · behind main`:
+                     [b]ase onto main
+                                  rebase the whole stack onto origin/main,
+                                  as rebase does (valley help rebase), then
+                                  list it again and page the rebased layers,
+                                  so the heads paged are the heads approved
+                     [v]iew diff  page the top's whole diff against main
+                     [s]kip       end the review; nothing done
+                   a rebase that is refused or left unfinished says what
+                   happened, and then only [v]iew diff and [s]kip are
+                   offered.
+                   it then shows each layer, headed `change <k> of <n>:
+                   <name> on <below>`, as a change alone is shown: set
+                   against its own change's approved version, or its log
+                   and diff against the layer below it paged, with notes
+                   kept under that layer's branch.
+                   after each lower layer it asks, naming the layer and
+                   its place, as in `two, 2 of 3:`:
+                     [n]ext layer go on to the layer above; the usual
+                                  answer
+                     [a]pprove    approve that layer at the head shown,
+                                  as review of it would. this lands it
+                                  and every layer under it, which the
+                                  prompt names (`one alone`, `one and
+                                  two`, `the <k> up to <name>`), and
+                                  ends the review
+                     [v]iew full diff
+                                  page that layer's log and diff against
+                                  the layer below it, and ask again
+                     [s]top       end the review; nothing done
+                   after the top it asks, as in `three, 3 of 3:`:
+                     [a]pprove all <n>
+                                  approve the top at the head shown,
+                                  which lands every layer
+                     [v]iew full diff
+                                  page the top's log and diff against
+                                  the layer below it, and ask again
+                     [r]eject <name>
+                                  delete the top's branch (confirmed
+                                  first)
+                     [s]top       end the review; nothing done
+                   only the top is offered [r]eject. when a layer's checks
+                   fail, its prompt says approving needs a new head and
+                   stops offering [a]pprove, as for any change. a layer
+                   that is not ready says so as a change alone does, under
+                   its heading and in its prompt. neither it nor any layer
+                   above it is offered [a]pprove, since approving one would
+                   land it: each prompt above it says `it would bring
+                   <name>, change <k> of <n>, which is a draft` (or
+                   withdrawn) in its place. a top that is not ready is not
+                   offered [r]eject either. every layer's notes are printed
+                   at the end.

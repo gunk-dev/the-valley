@@ -26,6 +26,13 @@ func TestMain(m *testing.M) {
 	if filepath.Base(os.Args[0]) == "ssh" {
 		os.Exit(fakeSSH(os.Args[1:]))
 	}
+	if os.Getenv("VALLEY_TEST_AS_MAIN") != "" {
+		// Run valley's own main, once the test has closed the reader of
+		// the output (pipe_test.go).
+		io.ReadFull(os.Stdin, make([]byte, 1))
+		os.Unsetenv("VALLEY_TEST_AS_MAIN")
+		main()
+	}
 	if len(os.Args) > 1 && os.Args[1] == "checkline" {
 		os.Exit(fakeCheckline())
 	}

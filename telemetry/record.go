@@ -97,7 +97,7 @@ var recordTypes = map[string]bool{
 	// A piece of a check's output, which a workstation sends from its
 	// spool's logs (Untrusted).
 	"check.output": true,
-	// valley approve (bin/valley), on a workstation.
+	// valley approve (status/approve.go), on a workstation.
 	"approve.start": true, "approve.policy": true, "approve.coverage": true,
 	"approve.checks": true, "approve.request": true, "approve.end": true,
 	// One valley invocation, on a workstation (status/command.go).

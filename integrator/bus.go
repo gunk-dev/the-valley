@@ -67,7 +67,7 @@ func (in *integrator) publishStale(ch verdict.Change, v verdict.Verdict, tip str
 // refs with update-ref, which runs no hook, so it publishes the event
 // itself, once the landing is recorded, and never behind a mirror push.
 // The fields are the host publisher's, in its order (nix/valley-host.nix,
-// and `valley replay` in bin/valley); change one only with the others.
+// and `valley replay` in status/bus.go); change one only with the others.
 func (in *integrator) publishRefUpdated(ref, old, new string) {
 	in.publish("ref-updated", struct {
 		Event string `json:"event"`

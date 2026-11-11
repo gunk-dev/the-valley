@@ -21,9 +21,7 @@ import (
 // the names of the flags it was given, its exit status, its wall time,
 // and the time and processes each phase of it took. It carries no
 // argument's value, since a report goes to the host and a project may be
-// public. bin/valley execs this program for most verbs, so this program
-// records them itself, once it has run; the verbs bin/valley runs itself
-// it records with `valley-go telemetry command` as it exits.
+// public. Each public verb records its own, once it has run.
 
 // phaseClock is where this process's wall time goes: to the phase current
 // when it passes, and to "other" outside every phase. A phase's time
@@ -71,37 +69,28 @@ func processStarted() {
 }
 
 // invocation is the valley command a process records: the arguments it
-// was run with, when bin/valley started it, and bin/valley's version.
+// was run with, when it started, and the valley's stamp.
 type invocation struct {
 	args    []string
 	since   time.Time
 	version string
 }
 
-// execed is the invocation bin/valley execs this process as, or nil. The
-// variables are removed, so no program this one runs takes them for its
-// own.
-func execed(args []string) *invocation {
-	since, version := os.Getenv("VALLEY_TELEMETRY_SINCE"), os.Getenv("VALLEY_TELEMETRY_VERSION")
-	producerStamp = version
-	os.Unsetenv("VALLEY_TELEMETRY_SINCE")
-	os.Unsetenv("VALLEY_TELEMETRY_VERSION")
-	return invocationOf(args, since, version)
-}
-
-// stamp is bin/valley's version, which bin/valley passes as
-// VALLEY_TELEMETRY_VERSION, or "" for a script run from a checkout. It
-// names the producer of an approval's records (approve.go).
-var producerStamp string
-
-// invocationOf is an invocation started at since, in microseconds of the
-// Unix epoch as bash's EPOCHREALTIME reads with its point removed.
-func invocationOf(args []string, since, version string) *invocation {
-	us, err := strconv.ParseInt(since, 10, 64)
-	if err != nil || us <= 0 || len(args) == 0 {
+// commandOf is the invocation a process run with args records, started
+// when the process did, or nil for one that records nothing: help, a
+// verb's help, --version, an unknown or internal verb, and the background
+// flusher, telemetry flush --watch, which sends the records and makes
+// none.
+func commandOf(args []string) *invocation {
+	switch {
+	case len(args) == 0 || !publicVerb(args[0]):
+		return nil
+	case len(args) == 2 && (args[1] == "-h" || args[1] == "--help"):
+		return nil
+	case len(args) > 2 && args[0] == "telemetry" && args[1] == "flush" && args[2] == "--watch":
 		return nil
 	}
-	return &invocation{args: args, since: time.UnixMicro(us), version: version}
+	return &invocation{args: args, since: phases.began, version: versionStamp}
 }
 
 // record stores the invocation's command record in the spool, when the
@@ -161,9 +150,8 @@ func (inv *invocation) record(g git, status int, timed bool) {
 
 // data is the record's data: the verb, its subverb for knot and
 // telemetry, the flag names given, the exit status, the wall time since
-// bin/valley started, and, when this process timed the command, each
-// phase's milliseconds and processes started. shell is bin/valley's time
-// before this process started, such as pending's fetch of origin.
+// the command started, and, when this process timed the command, each
+// phase's milliseconds and processes started.
 func (inv *invocation) data(status int, elapsed time.Duration, timed bool) map[string]any {
 	verb, sub, flags := commandWords(inv.args)
 	d := map[string]any{"verb": verb, "flags": flags, "status": int64(status), "elapsed_ms": elapsed.Milliseconds()}
@@ -177,7 +165,6 @@ func (inv *invocation) data(status int, elapsed time.Duration, timed bool) map[s
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.switchTo(c.current)
-	d["shell_ms"] = max(c.began.Sub(inv.since).Milliseconds(), 0)
 	for name, t := range c.spent {
 		d[name+"_ms"] = t.Milliseconds()
 		d[name+"_procs"] = c.procs[name]
@@ -185,14 +172,17 @@ func (inv *invocation) data(status int, elapsed time.Duration, timed bool) map[s
 	return d
 }
 
-// knownFlags is every flag a valley verb takes, from the usage texts and
-// bin/valley's own verbs. A word that looks like a flag and is not one
-// may be an argument's value, so it is left out.
+// knownFlags is every flag a public verb takes: each word the help text
+// and the usage texts write as a flag, and -h. A word that looks like a
+// flag and is not one may be an argument's value, so it is left out.
 var knownFlags = func() map[string]bool {
 	flagRE := regexp.MustCompile(`(?:^|[\s\[|(])(--?[a-z][a-z0-9-]*)`)
-	shell := " --build-here --checks --change --head --verbose --cost --instance --names --project --schema -v -h --help"
+	text := helpText("") + knotUsage + telemetryUsage + " -h"
+	for verb := range helpTopics {
+		text += helpText(verb)
+	}
 	known := map[string]bool{}
-	for _, m := range flagRE.FindAllStringSubmatch(usage+knotUsage+telemetryUsage+shell, -1) {
+	for _, m := range flagRE.FindAllStringSubmatch(text, -1) {
 		known[m[1]] = true
 	}
 	return known
@@ -208,7 +198,7 @@ var (
 		return known
 	}()
 	telemetryOps = map[string]bool{"sources": true, "snapshot": true, "read": true, "follow": true,
-		"flush": true, "start": true, "emit": true, "command": true}
+		"flush": true, "start": true, "emit": true}
 )
 
 // commandWords is an invocation's verb, its subverb, and the names of the
@@ -216,10 +206,7 @@ var (
 // -- is read, since everything there is a value.
 func commandWords(args []string) (verb, sub string, flags []string) {
 	verb, flags = args[0], []string{}
-	if verb == "walk" { // what valley review runs with no change (walk.go)
-		verb = "review"
-	}
-	if !knownVerbs[verb] {
+	if !publicVerb(verb) {
 		verb = "unknown"
 	}
 	for _, arg := range args[1:] {
@@ -238,11 +225,6 @@ func commandWords(args []string) (verb, sub string, flags []string) {
 	}
 	return verb, sub, flags
 }
-
-// knownVerbs is valley's verbs (bin/valley's main).
-var knownVerbs = map[string]bool{"pending": true, "changes": true, "review": true, "approve": true,
-	"rebase": true, "status": true, "ready": true, "unready": true, "withdraw": true, "knot": true,
-	"plan": true, "checks": true, "tail": true, "replay": true, "self-update": true, "telemetry": true}
 
 // telemetryMentioned reports whether a configuration file git reads in
 // g's repository and environment may set valley.telemetry, without

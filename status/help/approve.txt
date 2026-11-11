@@ -1,0 +1,136 @@
+usage: valley approve [-v] [--head <sha>] [--build-here] <change>
+
+  approve [-v] [--head <sha>] [--build-here] <change>
+                   do what review's [a]pprove does for the change, without
+                   paging it: the same checks, the same refusals, the same
+                   leased request write and the same output. exits non-zero
+                   when it refuses. a change with a record is approved at
+                   exactly one head, and its request is filed as
+                   refs/the-valley/integration-requests/main/c-<change id>,
+                   at that head:
+                     --head SHA   approve exactly this head, which must be
+                                  one of the record's version heads,
+                                  active or not. a front end passes the
+                                  head it showed, so a record that moves
+                                  after review cannot change what lands.
+                   without --head, approve shows the active version's head
+                   and title and asks to confirm them, on a terminal; off
+                   one it refuses. a branch no record is on is approved at
+                   its tip on origin, which --head must name if it is
+                   given (review's [a]pprove files the head it showed, and
+                   refuses once the branch on origin has moved off it), under
+                   the branch's request name: the branch with
+                   each / replaced by -. a branch whose request name would
+                   be c-<change id> is refused, since that name is the
+                   change's.
+                   approve first reads the evidence origin holds for that
+                   head's tree, refs/the-valley/attestations/<tree>/*, byte
+                   for byte. it judges each required nix check by the note
+                   the integrator judges it by: the first, in ref order,
+                   that attest verify accepts under the known-signers file
+                   the host publishes. it reuses that note when it is pure
+                   evidence for the check's name and flake attribute and
+                   says it passed. VALLEY_KNOWN_SIGNERS, when set, must
+                   accept it too: it can narrow what is reused, never widen
+                   it. a required nix check whose judged note records a
+                   failure refuses the approval, since the integrator
+                   judges the check by that note. a command check is never
+                   reused. a listing or a fetch of
+                   origin's evidence that fails is refused, and nothing is
+                   run.
+                   a required nix check that origin holds no evidence for
+                   does not stop the approval. approve files the request at
+                   once, with the evidence origin holds, builds nothing,
+                   and publishes no evidence for that check. required
+                   command checks still run first, and a missing signing
+                   key, a failed check, or a refused push still fails the
+                   approval. approve says the approval is recorded and
+                   how many checks it waits for. the integrator keeps the
+                   request and considers it again when evidence is
+                   published. landing still requires a clean apply and
+                   acceptable evidence for every required check. an
+                   enabled worker that serves the project attempts the nix
+                   checks of a ready change's active version, but cannot
+                   add checks to its own existing evidence ref for the
+                   same tree, and a failed build publishes nothing. waiting
+                   does not ensure the evidence will be published. no
+                   worker builds a branch no record is on, or a version
+                   that is not the active one, and approve says so and
+                   offers --build-here. the
+                   evidence of an approval that ran a command check
+                   occupies this signer's ref for the tree, so use
+                   --build-here on the initial approval.
+                     --build-here build those nix checks on this
+                                  machine instead, and publish their
+                                  evidence with the request.
+                   approve runs every command check, and every nix check
+                   it builds, over a throwaway worktree of that head, signs
+                   each result as an attestation, and publishes the new
+                   evidence and the request ref to origin in ONE atomic
+                   push. when every required check is reused, nothing
+                   runs, no signing key is needed, and the push carries
+                   the request alone.
+                   this files the request; it does not wait for
+                   integration or update your local checkout. use status to
+                   read the result. the policy comes from the target's tip
+                   and the owning valley's, as checks describes (valley help
+                   checks), so your checkout can be on any branch. a change
+                   the policy requires no check of is filed too, as a
+                   request with no evidence, and says so. approving a
+                   change already requested is how it is filed again: at a
+                   head rebased onto a moved main it replaces the request
+                   ref under a lease and names the head it replaced; at the
+                   same head it leaves the ref alone and publishes only the
+                   new evidence. origin already holding this signer's
+                   evidence for that tree, without a check that still has
+                   to run, is refused before anything runs: approve
+                   publishes a signer's evidence for a tree once, as a
+                   ref of the new notes alone, and origin keeps every
+                   note the ref holds (bd-7b7d58f). every
+                   write of the request ref
+                   is leased, filing included, so an approval that lost a
+                   race is refused rather than clobbering the one that won.
+                   needs the attest helper whenever a check is required,
+                   and VALLEY_ATTEST_KEY, the ed25519 key this host signs
+                   with, whenever a check has to run here;
+                   VALLEY_ATTEST_NAME is the name it signs under,
+                   defaulting to this host's. approve never writes the
+                   protected ref: the integrator does, having judged the
+                   request.
+                   approve refuses, before any check runs, a head that does
+                   not fast-forward from main and would bring a version of
+                   another change that has not landed: a layer above the
+                   bottom of a stale stack. the refusal names the command
+                   that rebases the stack, valley rebase <change>. this is
+                   the project's choice, not a rule the integrator needs:
+                   approved as it is, the stack would land as one commit
+                   recorded against this request alone, so the changes
+                   under it would have no landing record of their own, and
+                   the checks would run over a head that has to be rebased
+                   anyway. a stale head with no change under it, such as
+                   the bottom layer of a stack or a change alone, is
+                   approved as it is, and the integrator merges it onto
+                   main.
+                   approve ends in one verdict line: the change, whether
+                   it was approved, and what happens next, with one
+                   indented line under it only when you must act:
+                     ✓ nqyw v3  approved · checks passed · landing on main
+                     ◐ nqyw v3  approved · lands when 3 checks pass (1/4 passed)
+                     ◇ nqyw v3  approved · waiting for 2 checks (no worker building)
+                       run: valley approve --build-here nqyw
+                     ⊘ nqyw v3  not approved · change is a draft
+                       run: valley ready --change <id> <branch>
+                   a refusal goes to stderr. checks built here show one
+                   line of progress, and a failed check's log. the glyphs
+                   are in colour on a terminal unless NO_COLOR is set.
+                     -v, --verbose  also print what approve read and
+                                  published: the checks it reuses and who
+                                  signed them, the tree's digest, the
+                                  evidence and request refs, and the
+                                  checks' own output and timings.
+                   approve times each required check it runs, and
+                   appends one JSON line per check to the timing log,
+                   $XDG_STATE_HOME/valley/timings.jsonl (default
+                   ~/.local/state/valley/timings.jsonl). the log stays on
+                   this machine and is not evidence; a log that cannot be
+                   written is a warning, and approving goes on.

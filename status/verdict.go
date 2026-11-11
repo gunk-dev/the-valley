@@ -39,8 +39,6 @@ import (
 	"time"
 )
 
-const promptUsage = "usage: valley-go verdict prompt <clause>... -- <key>..."
-
 // The SGR colours of the verdict glyphs, as plan shows its states.
 const (
 	colourDone    = "32"
@@ -68,17 +66,6 @@ type verdict struct {
 	then     string // what the person does next, when it is no command
 }
 
-// runVerdict prints review's prompt.
-func runVerdict(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || args[0] != "prompt" {
-		fmt.Fprintln(stderr, promptUsage)
-		return 2
-	}
-	header, keys := cutArgs(args[1:])
-	fmt.Fprint(stdout, promptLines(terminalOf(stdout), header, keys))
-	return 0
-}
-
 // droppable is w, when it is a file, through a duplicate of its
 // descriptor. Go ends a process whose write to its own standard output or
 // error finds no reader; through a duplicate the write fails with EPIPE
@@ -99,16 +86,6 @@ func droppable(w io.Writer) io.Writer {
 		return w
 	}
 	return os.NewFile(uintptr(fd), f.Name())
-}
-
-// cutArgs splits args at the first "--".
-func cutArgs(args []string) (before, after []string) {
-	for i, a := range args {
-		if a == "--" {
-			return args[:i], args[i+1:]
-		}
-	}
-	return args, nil
 }
 
 // lines is the verdict: its line, and the action line under it when there

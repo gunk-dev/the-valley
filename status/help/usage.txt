@@ -1,0 +1,40 @@
+usage: valley <verb> [args]
+
+valley — S1 integrator verbs for a valley project: author, review, approve, and
+track changes and the plan graph.
+
+Authoring and updating changes:
+  ready        mark a branch head ready as a new version of its change
+  unready      pause a ready change by marking it a draft
+  withdraw     mark a ready or draft change withdrawn
+  rebase       rebase a change and its stack onto origin/main
+  checks       print the checks the composed policy requires of a diff
+
+Reviewing, approving, and inspecting changes:
+  pending      list what needs an approval, in landing order, and what moves
+  review       page through a change or stack to approve, rebase, or reject
+  approve      run required checks and file an integration request
+  status       read a change's integration request and last outcome
+  changes      print every recorded change as valley-changes/v1 JSON
+
+Planning work:
+  plan         show the project's plan graph as a milestone tree
+  knot         read and write knots in the plan graph at refs/the-valley/knots
+
+Bus and client maintenance:
+  tail         watch NATS bus events scroll by
+  replay       publish ref-updated events for the current refs of a repo
+  self-update  build, test, and install the tip of a branch of the-valley
+  telemetry    read a valley host's diagnostics over ssh (observe grant)
+
+A change is named by its 32-letter change id, its handle (shortest unique
+prefix, at least 4 letters, or <repo>:<handle>), or its branch name.
+Runs from any checkout; nix run .#valley bundles git, attest, cue, less, and
+natscli (self-update also needs nix). Judgment stays with the human:
+nothing here writes main.
+
+`valley --version` prints the package's version and commit (e.g. 0.1.0-97db597,
+with -dirty for uncommitted changes, -unknown when nix knew no commit, or
+unstamped for a build without the package's stamp).
+Run `valley help <verb>` (or `valley <verb> --help`) for a verb's flags and
+rules. See docs/reference.md for the full CLI, ref, and schema reference.

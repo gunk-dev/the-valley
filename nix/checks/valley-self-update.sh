@@ -13,12 +13,12 @@ fail() {
   exit 1
 }
 
-# The package prints the version nix stamped on it. The script run
-# straight from a checkout says it has none.
+# The package prints the version nix stamped on it. The unstamped package
+# says it has none.
 [ "$(valley --version)" = "valley $version" ] \
   || fail "valley --version says '$(valley --version)', not 'valley $version'"
-bash "$cliScript" --version | grep -q '^valley unstamped' \
-  || fail "the bare script claims a stamp: $(bash "$cliScript" --version)"
+"$valleyUnstamped/bin/valley" --version | grep -q '^valley unstamped' \
+  || fail "the unstamped package claims a stamp: $("$valleyUnstamped/bin/valley" --version)"
 valley help self-update | grep -q -- '--rollback' \
   || fail "valley help self-update does not describe --rollback"
 
@@ -35,12 +35,12 @@ git config --global valley.selfUpdate.repo "$upstream"
 
 # A stand-in for nix, first on PATH, since a build has no nix to build
 # with. Its build of a commit is a directory holding this package's share/
-# and a valley that runs the real, unstamped script under the version
+# and a valley that runs the real, unstamped package under the version
 # stamp nix would give that commit. So the smoke test runs the real CLI
 # over the policy the package ships. A commit whose message is `broken`
 # builds a valley pointed at a schema that does not exist, so its smoke
 # test fails at valley checks. The profile is a JSON file of elements.
-export STAND_IN="$TMPDIR/nix" UPSTREAM="$upstream" VALLEY_SCRIPT="$valleyScript" VALLEY_PACKAGE="$valley"
+export STAND_IN="$TMPDIR/nix" UPSTREAM="$upstream" VALLEY_UNSTAMPED="$valleyUnstamped" VALLEY_PACKAGE="$valley"
 mkdir -p "$STAND_IN/bin" "$STAND_IN/store"
 echo '{}' > "$STAND_IN/profile.json"
 printf '#!%s\n' "$(command -v bash)" > "$STAND_IN/bin/nix"
@@ -61,7 +61,7 @@ case "$1" in
       schema="export VALLEY_VERIFICATION_SCHEMA=/nonexistent/verification.cue"
     fi
     printf '#!/bin/sh\nexport VALLEY_VERSION=0.1.0-%s\n%s\nexec %s "$@"\n' \
-      "${rev:0:7}" "$schema" "$VALLEY_SCRIPT/bin/valley" > "$out/bin/valley"
+      "${rev:0:7}" "$schema" "$VALLEY_UNSTAMPED/bin/valley" > "$out/bin/valley"
     chmod +x "$out/bin/valley"
     echo "$out"
     ;;

@@ -28,8 +28,9 @@ import (
 // The tests run the publisher against a real valley: bare repositories
 // that run no hook, as any git remote would, an instance repository that
 // publishes its projects as valley-init writes the list, and a plan graph
-// written with the real valley knot verbs. The valley CLI is bin/valley
-// itself, run by bash, with valley-go on PATH; the instance's identity
+// written with the real valley knot verbs. The valley CLI is the valley
+// command's raw binary, run by a wrapper first on PATH that a test may
+// edit, beside stand-ins for the tools it runs; the instance's identity
 // registry and each project's policy/read are read by the real cue under
 // schema/identity.cue and schema/read.cue. Uploads go to a receiver over a
 // real export.Store.
@@ -103,7 +104,7 @@ func newValley(t *testing.T) *testValley {
 	bash := needTool(t, "bash")
 	needTool(t, "git")
 	needTool(t, "cue")
-	needTool(t, "valley-go")
+	valley := needTool(t, "valley")
 	repoRoot, err := filepath.Abs(filepath.Join("..", "..", ".."))
 	if err != nil {
 		t.Fatal(err)
@@ -118,8 +119,7 @@ func newValley(t *testing.T) *testValley {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	wrapper := "#!" + bash + "\nexec " + bash + " " + filepath.Join(repoRoot, "bin", "valley") + " \"$@\"\n"
-	v.write(filepath.Join(bin, "valley"), wrapper)
+	v.write(filepath.Join(bin, "valley"), "#!"+bash+"\nexec "+valley+" \"$@\"\n")
 	if err := os.Chmod(filepath.Join(bin, "valley"), 0o755); err != nil {
 		t.Fatal(err)
 	}

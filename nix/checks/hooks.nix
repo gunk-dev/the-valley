@@ -119,9 +119,8 @@
     nativeBuildInputs = [
       pkgs.git
       pkgs.jq
-      packages.valley-go
+      packages.valley-unwrapped
     ];
-    cliScript = ../../bin/valley;
     initScript = hosts.protectedHost.config.systemd.services.valley-init.script;
     passAsFile = [ "initScript" ];
   } (builtins.readFile ./knots-e2e.sh);
@@ -163,7 +162,7 @@
       pkgs.nats-server
       pkgs.jq
       pkgs.cue
-      packages.valley-script
+      packages.valley-unstamped
     ];
     initScript = stubbedHosts.busHost.config.systemd.services.valley-init.script;
     busInitScript = stubbedHosts.busHost.config.systemd.services.valley-bus-init.script;

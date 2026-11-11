@@ -1,0 +1,8 @@
+usage: valley unready <change>
+
+  unready <change>
+                   make a ready change a draft in its record on origin, as
+                   its owner or the operator. a draft is a pause: it voids
+                   nothing, and approvals of its active version stand when
+                   it is readied again. ready brings it back. prints e.g.
+                   `app nxvp v2 draft`.

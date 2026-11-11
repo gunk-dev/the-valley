@@ -115,8 +115,8 @@ git -C "$valleywork" push --quiet "$valley" main
 # so that the failure would be visible rather than plausible.
 #
 # schema/ is here because the-valley's own tree carries it. The packaged
-# CLI never reads it; only bin/valley run straight from the checkout does
-# (16).
+# CLI never reads it; only the raw binary, run with nothing setting the
+# schema, reads it from the checkout (16).
 repo="$TMPDIR/project"
 git init --quiet "$repo"
 cd "$repo" || exit 1
@@ -1086,19 +1086,19 @@ VALLEY_VERIFICATION_SCHEMA="$TMPDIR/no-such-schema.cue" valley checks --schema "
   > "$w/flagschema.out" 2> "$w/flagschema.err"
 grep -qE '^  tree-ok +mandatory +prose$' "$w/flagschema.out"
 
-# bin/valley run straight from a checkout, with nothing setting the
+# The raw binary run in a checkout, with nothing setting the
 # variable, reads schema/verification.cue in that checkout. the-valley's own
 # tree carries one, as the first scratch project does, and every other
 # project's tree does not.
-if env -u VALLEY_VERIFICATION_SCHEMA bash "$cliScript" checks \
+if env -u VALLEY_VERIFICATION_SCHEMA "$valleyUnwrapped" checks \
   > "$w/bare-config.out" 2> "$w/bare-config.err"; then
-  echo "valley-request: bin/valley run bare found a schema in a checkout without one" >&2
+  echo "valley-request: the raw binary found a schema in a checkout without one" >&2
   exit 1
 fi
 grep -qF "no policy schema at $(git rev-parse --show-toplevel)/schema/verification.cue" \
   "$w/bare-config.err"
 cd "$repo" || exit 1
-env -u VALLEY_VERIFICATION_SCHEMA bash "$cliScript" checks "$first" topic/one \
+env -u VALLEY_VERIFICATION_SCHEMA "$valleyUnwrapped" checks "$first" topic/one \
   > "$w/bare.out" 2> "$w/bare.err"
 grep -qE '^  tree-ok +mandatory +prose$' "$w/bare.out"
 
@@ -1117,7 +1117,7 @@ shimmed_checks() {
   echo 0 > "$TMPDIR/shim-count"
   env -u VALLEY_VERIFICATION_SCHEMA SHIM_REAL_PATH="$PATH" SHIM_TOOL=git \
     SHIM_FAIL_AT="$1" SHIM_STATUS=128 SHIM_COUNT="$TMPDIR/shim-count" \
-    PATH="$shims:$PATH" bash "$cliScript" checks "$first" topic/one
+    PATH="$shims:$PATH" "$valleyUnwrapped" checks "$first" topic/one
 }
 shimmed_checks 0 > "$w/shim-want.out"
 grep -qE '^  tree-ok +mandatory +prose$' "$w/shim-want.out"
@@ -1143,7 +1143,7 @@ defaulted_checks() {
   echo 0 > "$TMPDIR/shim-count"
   env -u VALLEY_VERIFICATION_SCHEMA SHIM_REAL_PATH="$PATH" SHIM_TOOL=git \
     SHIM_FAIL_AT="$1" SHIM_STATUS=128 SHIM_COUNT="$TMPDIR/shim-count" \
-    PATH="$shims:$PATH" bash "$cliScript" checks "${@:2}"
+    PATH="$shims:$PATH" "$valleyUnwrapped" checks "${@:2}"
 }
 git checkout --quiet topic/one
 for mode in report names; do
@@ -1177,7 +1177,7 @@ for mode in report names; do
   if wrote="$(
     ulimit -f 0
     trap '' XFSZ
-    env -u VALLEY_VERIFICATION_SCHEMA bash "$cliScript" checks "${margs[@]}" "$first" topic/one 2> /dev/null
+    env -u VALLEY_VERIFICATION_SCHEMA "$valleyUnwrapped" checks "${margs[@]}" "$first" topic/one 2> /dev/null
   )" || [ -n "$wrote" ]; then
     echo "valley-request: a derivation with unwritable scratch files ($mode) did not fail cleanly" >&2
     printf '%s\n' "$wrote" >&2
@@ -1743,8 +1743,8 @@ fi
 # 20f. A listing of origin's evidence that fails, and a fetch of it that
 #      fails, are refusals, never an empty answer: nothing runs and nothing
 #      is published. A stand-in for git, first on PATH, fails the one call
-#      named. It needs bin/valley run straight, since the package's wrapper
-#      puts its own git ahead of anything on PATH.
+#      named. It needs the raw binary, since the package's wrapper puts
+#      its own git ahead of anything on PATH.
 edited unread docs/readme.md
 unreadhead="$(git rev-parse unread)"
 unreaddigest="$(attest digest --rev unread | cut -d: -f2)"
@@ -1775,7 +1775,7 @@ EOF
 chmod +x "$r/shim/git"
 for failing in inventory fetch; do
   if REUSE_FAIL="$failing" PATH="$r/shim:$PATH" VALLEY_VERIFICATION_SCHEMA="$schemaFile" \
-    approving "unread-$failing" bash "$cliScript" approve -v origin/unread; then
+    approving "unread-$failing" "$valleyUnwrapped" approve -v origin/unread; then
     echo "valley-request: approve went on past a failed $failing of origin's evidence" >&2
     exit 1
   fi
@@ -1792,7 +1792,7 @@ for failing in inventory fetch; do
 done
 # And with origin answering, the same approval reuses the worker's
 # evidence: the stand-in failed only what it was told to.
-VALLEY_VERIFICATION_SCHEMA="$schemaFile" approving unread bash "$cliScript" approve -v origin/unread
+VALLEY_VERIFICATION_SCHEMA="$schemaFile" approving unread "$valleyUnwrapped" approve -v origin/unread
 grep -qE "^  prose-format +signed by $workername\+$workerhash\$" "$w/unread.out"
 [ "$(requested unread)" = "$unreadhead" ]
 integrated unread
@@ -2641,10 +2641,10 @@ cat > "$r/hold-kill" <<EOF
 #!$(command -v bash)
 [ -e "$r/kill-armed" ] || exit 0
 rm -f "$r/kill-armed"
-# The worker is the nearest process above this one named valley-go.
+# The worker is the nearest process above this one named valley.
 p=\$\$
 while [ "\$p" -gt 1 ]; do
-  if [ "\$(cat "/proc/\$p/comm")" = valley-go ]; then
+  if [ "\$(cat "/proc/\$p/comm")" = valley ]; then
     echo "\$p" > "$r/killed.pid"
     break
   fi
@@ -2683,8 +2683,8 @@ pushed "$killedref"
 #      the clone's config.lock as it sets the origin, kills the worker, and
 #      dies holding the lock, as git killed mid-write does. The next pass
 #      makes the clone again and reads the project through it. The worker
-#      runs as valley-go here, since the package's wrapper puts its own git
-#      ahead of the stand-in.
+#      runs as the raw binary here, since the package's wrapper puts its
+#      own git ahead of the stand-in.
 cachehome="$r/interrupted-cache"
 interrupted="$cachehome/valley/repos/$(printf '%s' "$served" | sha256sum | cut -c1-16)-project"
 mkdir -p "$r/killing-git"
@@ -2700,7 +2700,7 @@ EOF
 chmod +x "$r/killing-git/git"
 status=0
 (cd "$r/worker-home" && VALLEY_PRINCIPAL=worker XDG_CACHE_HOME="$cachehome" PATH="$r/killing-git:$PATH" \
-  VALLEY_VERIFICATION_SCHEMA="$schemaFile" valley-go work --repo project \
+  VALLEY_VERIFICATION_SCHEMA="$schemaFile" "$valleyUnwrapped" work --repo project \
   --key "$r/keys/worker" --name "$workername" --state "$wstate") > "$r/interrupted-1.log" 2>&1 || status=$?
 if [ "$status" != 137 ] || [ -z "$(find "$cachehome" -name config.lock)" ]; then
   echo "valley-request: the stand-in did not interrupt the clone's making while holding its config.lock ($status)" >&2
@@ -2884,7 +2884,7 @@ git show-ref --verify --quiet refs/tags/refs/remotes/origin/main || {
 cd "$repo" || exit 1
 
 # ----------------------------------------------------------------------
-# 23. review's [a]pprove runs valley-go approve on review's terminal:
+# 23. review's [a]pprove runs approve on review's terminal:
 #     a plain branch approved is filed at the head review showed, and a
 #     failed check is said at the prompt. A ctrl-C during the checks stops them,
 #     removes their worktree, records the attempt's end as interrupted and

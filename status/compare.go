@@ -1,4 +1,4 @@
-// valley-go compare: a version under review, set against the version of
+// compare: a version under review, set against the version of
 // its change the operator last approved. review runs it for each change it
 // shows, a stack's layers included, and prints what it says (review.go).
 // It is information only: it files no request and skips no check.
@@ -70,7 +70,8 @@ import (
 	"the-valley/delta"
 )
 
-const compareUsage = "usage: valley-go compare [-v] --tip <commit> <change ID> <version> <head>"
+// compareUsage is what runCompare, which review calls, takes.
+const compareUsage = "compare takes [-v] --tip <commit> <change ID> <version> <head>"
 
 // The kinds of comparison.
 const (

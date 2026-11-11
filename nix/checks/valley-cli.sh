@@ -1,7 +1,6 @@
 # shellcheck shell=bash
 # Paths and fixtures come from the derivation environment.
 # shellcheck disable=SC2154
-shellcheck "$cliScript"
 shellcheck "$bashCompletion"
 # The linter cannot read zsh; a bare parse is the cheap check.
 zsh -n "$zshCompletion"

@@ -1,6 +1,6 @@
 #compdef valley
-# zsh completion for valley. The verb list mirrors the case statement in
-# bin/valley — update both together.
+# zsh completion for valley. The verb list mirrors valley's public verbs
+# (helpTopics in status/help.go) — update both together.
 #
 # NEVER fetch from here: completion runs on every <TAB> and must be instant.
 # Candidates come from the remote-tracking refs of the last fetch and from

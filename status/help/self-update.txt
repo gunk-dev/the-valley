@@ -1,0 +1,74 @@
+usage: valley self-update [-v] [--retry | --rollback | --pin | --unpin]
+                          [--repo <url>] [--branch <name>]
+
+Brings the installed valley up to the tip of a branch of the-valley, for a
+machine whose valley should follow that branch without a system rebuild.
+It is off until a repository is named, by --repo or by the user's git
+config, which is read whatever the current directory:
+
+  git config --global valley.selfUpdate.repo git@<valley host>:the-valley
+  git config --global valley.selfUpdate.branch main   (the default)
+
+repo is an https://, ssh://, git:// or file:// URL, an absolute path, or
+user@host:path. user@host:path names what git itself would: a path that
+starts with / or ~ as written, and any other path under the login's home,
+read as ssh://user@host/~/path, which is how a valley host serves its
+projects. Name a forge by its https:// or ssh:// URL. Any other transport
+(ext::, fd::) and any character outside [A-Za-z0-9._~/:@-], which nix's
+flake-ref parser would re-encode, is refused. git ls-remote and nix read the
+repo by the same URL, and the git that self-update runs, directly or through
+nix, is limited to those transports (GIT_ALLOW_PROTOCOL). Each run:
+  1. takes a lock under $XDG_STATE_HOME/valley, so runs never overlap: a run
+     that finds another in progress exits 0 and says so;
+  2. resolves the branch's commit with git ls-remote;
+  3. exits 0 if the installed valley was built from that commit (quietly;
+     -v says so), or if that commit already failed to build or test (it is
+     retried when the branch moves, or with --retry);
+  4. builds exactly that commit, the flake's packages.<system>.valley:
+     nix build 'git+<repo>?ref=refs/heads/<branch>&rev=<sha>#...';
+  5. smoke-tests the build, in an environment that carries nothing of the
+     running valley's: its valley --version must report the commit, its
+     valley help must exit 0, and its valley checks --names must derive
+     the expected checks from the tiny policy the package ships, which
+     shows the schema it carries composes a policy. A failure records the
+     commit as failed, installs nothing, and exits non-zero;
+  6. installs it into the user's default nix profile in place of the
+     profile element named valley, leaving other elements alone. The system
+     valley stays underneath as the fallback;
+  7. records the current and previous store paths and commits, the time and
+     any failure in $XDG_STATE_HOME/valley/self-update.json.
+
+Only the named branch installs, pinned to the commit ls-remote returned,
+and only after it builds and passes the smoke test. Before self-update has
+installed anything, the running valley's version (valley --version) says
+which commit is installed.
+
+  -v, --verbose   also say so when valley is up to date
+  --retry         build the branch's tip even if it failed before
+  --rollback      reinstall the previous valley; again to return to the
+                  newer one
+  --pin           leave the current install alone until --unpin: runs while
+                  pinned exit 0 with a note, so a bad tip is not reinstalled
+                  while it gets fixed
+  --unpin         let self-update install the branch's tip again
+  --repo URL      the repository, in place of valley.selfUpdate.repo
+  --branch NAME   the branch, in place of valley.selfUpdate.branch
+
+  self-update [-v] [--retry | --rollback | --pin | --unpin]
+              [--repo <url>] [--branch <name>]
+                   install the tip of a branch of the-valley into your
+                   default nix profile, in place of its valley element,
+                   once that exact commit builds and passes a smoke test.
+                   a commit that fails is skipped until the branch moves,
+                   or until --retry. it is off until --repo or
+                   git config valley.selfUpdate.repo names the
+                   repository; the branch is valley.selfUpdate.branch,
+                   or main. --rollback reinstalls the previous build, and
+                   --pin and --unpin freeze and release the install.
+                   needs nix.
+
+  --version        print this valley's version: the package's version and
+                   the commit it was built from, e.g. 0.1.0-97db597, with
+                   -dirty after it for a tree with uncommitted changes and
+                   -unknown in its place when nix knew no commit. built
+                   without the package's stamp, it says it is unstamped.

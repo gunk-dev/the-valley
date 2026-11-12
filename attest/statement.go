@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"the-valley/note/statement"
 )
 
 // The statement of dcr-0de694f, in the shape schema/attestation.cue fixes.
@@ -15,17 +17,10 @@ import (
 // schema before anything is done with it.
 
 const (
-	statementType   = "the-valley/attestation/v1"
-	predicatePure   = "the-valley/check/pure/v1"
-	predicateEffect = "the-valley/check/effectful/v1"
+	statementType   = statement.Type
+	predicatePure   = statement.PredicatePure
+	predicateEffect = statement.PredicateEffect
 	refPrefix       = "refs/the-valley/attestations"
-
-	// predicateTransfer is the integrator's commit-point claim
-	// (dcr-439b771): evidence produced over one tree stands for another.
-	// attest never composes one — the integrator does — but the written
-	// form of a statement is defined once, here, so that both programs
-	// sign the same bytes.
-	predicateTransfer = "the-valley/integration/transfer/v1"
 
 	// signerSuffix completes a host's signer name. A note names its key by
 	// a string and a hash, and the string a valley host uses is its fully
@@ -50,7 +45,7 @@ func defaultSignerName() string {
 	return host + signerSuffix
 }
 
-type statement struct {
+type document struct {
 	StatementType string          `json:"statementType"`
 	Subject       subject         `json:"subject"`
 	PredicateType string          `json:"predicateType"`

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"the-valley/note/statement"
 )
 
 // cmdVerify checks an attestation, in the order the protocol states it:
@@ -56,7 +58,7 @@ func cmdVerify(args []string) error {
 	if err != nil {
 		return err
 	}
-	doc, err := parseText(text)
+	doc, err := statement.Parse(text)
 	if err != nil {
 		return fmt.Errorf("%s: %w", *noteFile, err)
 	}
@@ -96,7 +98,7 @@ func cmdVerify(args []string) error {
 		}
 	}
 
-	var st statement
+	var st document
 	if err := json.Unmarshal(raw, &st); err != nil {
 		return err
 	}
@@ -112,8 +114,8 @@ func cmdVerify(args []string) error {
 	if err != nil {
 		return err
 	}
-	got := treeDigest(entries)
-	fmt.Printf("tree      %s@%s %s:%s\n", root, *rev, treeScheme, got)
+	got := statement.TreeDigest(entries)
+	fmt.Printf("tree      %s@%s %s:%s\n", root, *rev, statement.TreeScheme, got)
 	if got != recorded {
 		return fmt.Errorf("tree digest mismatch: the statement is about a different tree\n  recorded %s\n  found    %s", recorded, got)
 	}
@@ -139,15 +141,15 @@ func cmdRender(args []string) error {
 	}
 	var out []byte
 	if isJSON(raw) {
-		if out, err = renderJSON(raw); err != nil {
+		if out, err = statement.RenderJSON(raw); err != nil {
 			return err
 		}
 	} else {
-		doc, err := parseText(raw)
+		doc, err := statement.Parse(raw)
 		if err != nil {
 			return err
 		}
-		if out, err = renderText(doc); err != nil {
+		if out, err = statement.Render(doc); err != nil {
 			return err
 		}
 	}

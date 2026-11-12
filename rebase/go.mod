@@ -7,9 +7,18 @@ module the-valley/rebase
 
 go 1.24
 
-require the-valley/change v0.0.0
+require (
+	the-valley/change v0.0.0
+	the-valley/note v0.0.0
+)
 
 // The change record is shared with the push hook (../valleyhook), so the
-// engine writes a record exactly the way the hook reads it. It lives in
-// this repository and is never fetched.
-replace the-valley/change => ../change
+// engine writes a record exactly the way the hook reads it. A transfer
+// statement is opened with the note reader every verifier uses (../note),
+// and parsed and digested with the written form and the valley-tree-v1
+// scheme attest signs and verifies with (../note/statement). Both live in
+// this repository and are never fetched.
+replace (
+	the-valley/change => ../change
+	the-valley/note => ../note
+)

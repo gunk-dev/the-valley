@@ -2,9 +2,7 @@ package main
 
 import (
 	"archive/tar"
-	"bufio"
 	"bytes"
-	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +11,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"the-valley/note/statement"
 )
 
 // git runs a git command in repo and returns its stdout. Stderr is folded
@@ -125,51 +125,10 @@ func gitLine(repo string, args ...string) (string, error) {
 	return strings.TrimSpace(out), err
 }
 
-// gitBlobSums returns the SHA-256 of each named blob's content, in the
-// order asked for. One `cat-file --batch` serves the whole tree.
-func gitBlobSums(repo string, oids []string) ([][32]byte, error) {
-	sums := make([][32]byte, len(oids))
-	if len(oids) == 0 {
-		return sums, nil
-	}
-	cmd := gitCommand(repo, "cat-file", "--batch")
-	cmd.Stdin = strings.NewReader(strings.Join(oids, "\n") + "\n")
-	var errb bytes.Buffer
-	cmd.Stderr = &errb
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	r := bufio.NewReader(stdout)
-	for i := range oids {
-		header, err := r.ReadString('\n')
-		if err != nil {
-			return nil, fmt.Errorf("cat-file: %w: %s", err, strings.TrimSpace(errb.String()))
-		}
-		fields := strings.Fields(strings.TrimSpace(header))
-		if len(fields) != 3 || fields[1] != "blob" {
-			return nil, fmt.Errorf("cat-file: unexpected header %q for %s", strings.TrimSpace(header), oids[i])
-		}
-		size, err := strconv.Atoi(fields[2])
-		if err != nil {
-			return nil, fmt.Errorf("cat-file: bad size in %q", strings.TrimSpace(header))
-		}
-		h := sha256.New()
-		if _, err := io.CopyN(h, r, int64(size)); err != nil {
-			return nil, fmt.Errorf("cat-file: reading %s: %w", oids[i], err)
-		}
-		if _, err := r.Discard(1); err != nil { // the record's trailing newline
-			return nil, err
-		}
-		copy(sums[i][:], h.Sum(nil))
-	}
-	if err := cmd.Wait(); err != nil {
-		return nil, fmt.Errorf("cat-file: %w: %s", err, strings.TrimSpace(errb.String()))
-	}
-	return sums, nil
+// gitTreeEntries reads the entries of a revision's tree, as valley-tree-v1
+// reads them, with gitCommand's git.
+func gitTreeEntries(repo, rev string) ([]statement.Entry, error) {
+	return statement.GitTree(func(args ...string) *exec.Cmd { return gitCommand(repo, args...) }, rev)
 }
 
 // exportTree writes a revision's tree to dir. Checks run over the exported

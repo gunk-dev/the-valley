@@ -349,8 +349,12 @@ trusts the same host to serve `main`, and the same integrator to decide what lan
 A revocation reaches clients through the publication. Once the registry lets no key sign, the
 compiler writes a known-signers file with no key in it, and the host publishes that file. A client
 then verifies no transfer statement with the revoked keys (`implemented`, checked by `signers-e2e`).
-Two runs of the publisher take turns under a lock, so a run that read the file before a rotation
-cannot publish it over a run that read it after (`implemented`, checked by `signers-e2e`).
+What a client remembers of a verified statement does not outlive its key: the client opens the note
+under the current file on every read (`implemented`, checked by `signers-e2e` and `rebase-unit`).
+Someone who can write the user's cache directory can skip a statement's digest and merge checks, but
+cannot make a statement count that the integrator did not sign and its records do not bind. Two runs
+of the publisher take turns under a lock, so a run that read the file before a rotation cannot
+publish it over a run that read it after (`implemented`, checked by `signers-e2e`).
 
 The client finds the instance repository through `policy/valley` at `main`'s tip on origin, which is
 integrated source. A change that lands a new `policy/valley` points clients at another repository's

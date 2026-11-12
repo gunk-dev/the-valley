@@ -39,6 +39,7 @@ import (
 	"strings"
 
 	"the-valley/note"
+	"the-valley/rebase"
 )
 
 const (
@@ -84,7 +85,7 @@ type signerSource struct {
 	resolved      bool
 	found, signer string              // what resolve answered
 	projects      note.SignerProjects // and the signer projects file
-	temp          string              // the published file, written out for attest
+	temp          string              // the published file, written out for the snapshot to read
 }
 
 // verification is the current run's source, which run sets up. A walk
@@ -96,9 +97,10 @@ var verification = &signerSource{}
 func newVerifier() verifier { return verification.verifier() }
 
 // verifier is what a snapshot checks a transfer statement with: the
-// values s finds, once one is needed.
+// values s finds, once one is needed, and the user's cache directory,
+// where what it verified is remembered between commands.
 func (s *signerSource) verifier() verifier {
-	return verifier{Attest: "attest", Resolve: s.resolve}
+	return verifier{Resolve: s.resolve, Cache: rebase.CacheDir()}
 }
 
 // given reports whether a flag or the environment gives either value:
@@ -209,7 +211,7 @@ func agree(keys, name setting) error {
 	return fmt.Errorf("%s holds no key under %s", file, signer)
 }
 
-// writeKeys writes the published file where attest can read it, for done
+// writeKeys writes the published file where the snapshot reads it, for done
 // to remove.
 func (s *signerSource) writeKeys(data []byte) (string, error) {
 	f, err := os.CreateTemp("", "valley-known-signers-*")

@@ -1,6 +1,10 @@
-package main
-
-// The statement's written form: the exact bytes a signature covers.
+// Package statement is a valley statement's written form, the exact bytes
+// a note's signature covers, and valley-tree-v1, the scheme its subject is
+// named by. attest writes and verifies statements with it, and the rebase
+// engine (../../rebase) verifies the integrator's transfer statements with
+// it, so a statement one accepts is a statement the other accepts.
+//
+// # The written form
 //
 // A statement is written as lines. The first line is the statement type,
 // which says what the document is and which revision of it this is.
@@ -66,15 +70,32 @@ package main
 // reproduces it byte for byte, so text that parses is text this renderer
 // would have produced. attest/conformance/ pins that against a second
 // implementation.
+package statement
 
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
+)
+
+const (
+	// Type is the first line of every statement's written form.
+	Type = "the-valley/attestation/v1"
+
+	// The predicate types a statement can carry, each with a written form
+	// of its own (statementOrder). A transfer is the integrator's claim
+	// at the commit point: evidence produced over one tree stands for
+	// another. attest never composes one, the integrator does, and both
+	// sign the bytes Render writes.
+	PredicatePure     = "the-valley/check/pure/v1"
+	PredicateEffect   = "the-valley/check/effectful/v1"
+	PredicateTransfer = "the-valley/integration/transfer/v1"
 )
 
 // field is one entry in the order table: a name, and how what sits under
@@ -114,7 +135,7 @@ func obj(name string, u ...field) field { return field{name: name, under: u} }
 func statementOrder(predicateType string) ([]field, error) {
 	var predicate field
 	switch predicateType {
-	case predicatePure:
+	case PredicatePure:
 		predicate = obj("predicate",
 			checkOrder,
 			leaf("result"),
@@ -122,14 +143,14 @@ func statementOrder(predicateType string) ([]field, error) {
 			set("derivation"),
 			set("output"),
 		)
-	case predicateEffect:
+	case PredicateEffect:
 		predicate = obj("predicate",
 			checkOrder,
 			leaf("environment"),
 			leaf("observedAt"),
 			leaf("result"),
 		)
-	case predicateTransfer:
+	case PredicateTransfer:
 		// A transfer reads as: which change, onto what, from which base,
 		// under which policy, and then the per-check verdicts.
 		//
@@ -183,15 +204,15 @@ var checkOrder = obj("check",
 	leaf("command"),
 )
 
-// renderText writes a document as statement text.
-func renderText(doc any) ([]byte, error) {
+// Render writes a document as statement text.
+func Render(doc any) ([]byte, error) {
 	root, ok := doc.(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("a statement is an object, and this is %T", doc)
 	}
 	kind, _ := root["statementType"].(string)
-	if kind != statementType {
-		return nil, fmt.Errorf("the statement type is %q; %q is the one this writes down", root["statementType"], statementType)
+	if kind != Type {
+		return nil, fmt.Errorf("the statement type is %q; %q is the one this writes down", root["statementType"], Type)
 	}
 	predicateType, _ := root["predicateType"].(string)
 	order, err := statementOrder(predicateType)
@@ -224,7 +245,7 @@ func renderText(doc any) ([]byte, error) {
 		delete(lines, key)
 		placed++
 	}
-	for _, key := range sortedKeys(lines) {
+	for _, key := range slices.Sorted(maps.Keys(lines)) {
 		return nil, fmt.Errorf("%s has no position in the written form of a %s", key, predicateType)
 	}
 	if placed == 0 {
@@ -236,7 +257,7 @@ func renderText(doc any) ([]byte, error) {
 // orderedKeys walks the order table over a document and returns the keys
 // it names, in order. A field the document does not carry contributes
 // nothing; what the table has no entry for is not reached at all, which is
-// how renderText finds it left over.
+// how Render finds it left over.
 func orderedKeys(doc map[string]any, order []field, prefix string) []string {
 	var out []string
 	for _, f := range order {
@@ -292,19 +313,19 @@ func sortedAnyKeys(m map[string]any) []string {
 	return keys
 }
 
-// renderJSON writes a JSON document as statement text. JSON is how a
+// RenderJSON writes a JSON document as statement text. JSON is how a
 // statement is composed and how it is handed to `cue vet`; this form is
 // how it is signed. UseNumber keeps a number a number rather than a
 // float64, so a document carrying one is refused rather than quietly
 // rounded on the way through.
-func renderJSON(raw []byte) ([]byte, error) {
+func RenderJSON(raw []byte) ([]byte, error) {
 	var doc any
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	if err := dec.Decode(&doc); err != nil {
 		return nil, err
 	}
-	return renderText(doc)
+	return Render(doc)
 }
 
 func flatten(key string, v any, out map[string]string) error {
@@ -402,7 +423,7 @@ func checkValue(s string) error {
 	return nil
 }
 
-// parseText reads statement text back into a document.
+// Parse reads statement text back into a document.
 //
 // It accepts text only if writing the document that text says back out
 // reproduces it byte for byte. That is the whole acceptance rule, and it
@@ -411,7 +432,7 @@ func checkValue(s string) error {
 // line order, a duplicated key, a set out of order and a value no line can
 // carry all fail the same way, because none of them is what a renderer
 // would have produced.
-func parseText(raw []byte) (map[string]any, error) {
+func Parse(raw []byte) (map[string]any, error) {
 	if len(raw) == 0 || raw[len(raw)-1] != '\n' {
 		return nil, fmt.Errorf("statement text must end with a newline")
 	}
@@ -452,7 +473,7 @@ func parseText(raw []byte) (map[string]any, error) {
 	}
 	doc := built.(map[string]any)
 
-	again, err := renderText(doc)
+	again, err := Render(doc)
 	if err != nil {
 		return nil, err
 	}

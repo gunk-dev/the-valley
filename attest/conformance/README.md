@@ -9,7 +9,8 @@ nothing.
 
 The written form is lines in a fixed order, and the envelope is a signed note. Both are specified in
 [archive/design/verification.md](../../archive/design/verification.md); the reasons behind each rule
-are in [`../text.go`](../text.go) and [`../sign.go`](../sign.go), and the decision node those cite.
+are in [`note/statement/text.go`](../../note/statement/text.go) and [`../sign.go`](../sign.go), and
+the decision node those cite.
 
 ## What is here
 

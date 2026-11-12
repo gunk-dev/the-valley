@@ -24,6 +24,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"the-valley/note/statement"
 )
 
 type checkSpec struct {
@@ -559,7 +561,7 @@ func pureOutcome(b *drvBuild, out *checkOutcome) error {
 	if err != nil {
 		return err
 	}
-	out.output = treeDigest(entries)
+	out.output = statement.TreeDigest(entries)
 	out.passed = true
 	return nil
 }

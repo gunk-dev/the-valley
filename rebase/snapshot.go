@@ -46,12 +46,8 @@
 package rebase
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"sort"
 	"strings"
 
@@ -66,13 +62,11 @@ const (
 	NotLanded        = "not-landed"
 )
 
-const predicateTransfer = "the-valley/integration/transfer/v1"
-
-// Verifier is what a transfer statement is checked with: the verifier
-// keys of the identity registry's known-signers file, the name the
-// integrator signs under, and the attest helper that checks a note.
-// Without the first two, no transfer statement is believed, and a version
-// that only one could show landed reads as uncertain or not-landed.
+// Verifier is what a transfer statement is checked with: the known-signers
+// file of verifier keys, the name the integrator signs under, and the
+// directory what was verified is remembered in. Without the first two, no
+// transfer statement is believed, and a version that only one could show
+// landed reads as uncertain or not-landed.
 //
 // SignerProjects is the signer projects file the host's controllers
 // read (note/signerprojects.go): each signer it names, and the projects
@@ -82,23 +76,18 @@ const predicateTransfer = "the-valley/integration/transfer/v1"
 //
 // Resolve, when set, finds the keys, the name and the signer projects
 // file when they are first needed: a snapshot calls it once, before it
-// verifies its first statement, and checks with what it returns in place
-// of Keys, Signer and SignerProjects. A snapshot that verifies no
-// statement never calls it.
+// reads its first statement, and checks with what it returns in place of
+// Keys, Signer and SignerProjects. A snapshot that reads no statement
+// never calls it.
+//
+// Cache is the directory verified statements and tree digests are
+// remembered in between commands (cache.go), such as CacheDir, or "" to
+// remember nothing.
 type Verifier struct {
-	Keys, Signer, Attest string
-	SignerProjects       map[string]map[string]bool
-	Resolve              func() (keys, signer string, signerProjects map[string]map[string]bool)
-}
-
-// transferStatement is one transfer statement found under an attestation
-// ref, with the values a landing is matched on, read before it is
-// verified.
-type transferStatement struct {
-	note   []byte
-	change string // predicate.change: the request's change name
-	base   string // predicate.base.valley-tree-v1: the tree the evidence was over
-	landed string // subject.digest.git-sha1: the commit that landed
+	Keys, Signer   string
+	SignerProjects map[string]map[string]bool
+	Resolve        func() (keys, signer string, signerProjects map[string]map[string]bool)
+	Cache          string
 }
 
 // Snapshot is one read of a repository's origin. Its landing decisions,
@@ -113,9 +102,12 @@ type Snapshot struct {
 	ctx    context.Context
 	g      Git
 	verify Verifier
+	keys   *keyring // the verifier, once resolved
+	cache  cache
 
 	outcomes    map[string]Outcome   // outcome ref → the record it holds
 	landed      map[string]landingAt // head → its landing record, once read
+	landingData map[string]string    // landing record commit → its landing file, as one batch read them; nil until read
 	reports     map[string]Report    // change ID → its restack report, once read
 	landings    map[string][2]string // "<change ID> <n>" → landing and commit
 	firstParent map[string]int       // main's first-parent history, down to its first merge, and each commit's number of parents; nil until read
@@ -193,7 +185,7 @@ func fetchSnapshot(ctx context.Context, g Git, o Origin, v Verifier) (*Snapshot,
 func NewSnapshot(ctx context.Context, g Git, o Origin, all []Recorded, v Verifier) *Snapshot {
 	s := &Snapshot{
 		Origin: o, Tip: o.Refs["refs/heads/"+Target], Changes: all,
-		ctx: ctx, g: g, verify: v,
+		ctx: ctx, g: g, verify: v, cache: cache{dir: v.Cache},
 		outcomes: map[string]Outcome{}, landed: map[string]landingAt{}, reports: map[string]Report{}, landings: map[string][2]string{},
 		reachesOf: map[string]bool{}, reachOf: map[string]reached{}, ancestorOf: map[[2]string]bool{}, digestOf: map[string]string{},
 	}
@@ -380,32 +372,41 @@ func (s *Snapshot) Unlanded(n Recorded) bool {
 
 // recordedLanding looks for a transfer statement that records the version
 // landing as a commit on main, and verifies the first that matches.
+// Statements are read only for a version the integrator's records bind to
+// some landing, since boundTo asks that of every statement that counts.
 func (s *Snapshot) recordedLanding(id string, v change.Version) (string, bool) {
 	names := map[string]bool{}
 	for _, n := range RequestNames(id, v) {
 		names[n] = true
 	}
 	head := HeadOf(v)
+	if !s.bound(names, head) {
+		return "", false
+	}
 	for _, t := range s.transferStatements() {
 		if !names[t.change] || !IsObjectID(t.landed) || !s.OnMain(t.landed) || !s.singleParent(t.landed) {
 			continue
 		}
-		if !s.boundTo(t, head) {
-			continue
-		}
-		digest, ok := s.digest(head)
-		if !ok {
-			s.unverified = true
-			continue
-		}
-		if t.base != digest || !s.mergesTo(head, t.landed) {
-			continue
-		}
-		if s.verified(t) {
+		if s.boundTo(t, head) && s.verified(t, head) {
 			return t.landed, true
 		}
 	}
 	return "", false
+}
+
+// bound reports whether the integrator's records bind head to a landing
+// under one of names, whatever commit it landed as: what boundTo asks of
+// a statement, before any statement is read.
+func (s *Snapshot) bound(names map[string]bool, head string) bool {
+	if at, found := s.landingRecord(head); found {
+		return at.read && at.Head == head && names[at.Request]
+	}
+	for name := range names {
+		if m, ok := s.outcomes[OutcomePrefix+name]; ok && m.Decision == "land" && m.Head == head {
+			return true
+		}
+	}
+	return false
 }
 
 // boundTo reports whether the integrator recorded landing head as the
@@ -430,7 +431,9 @@ type landingAt struct {
 
 // landingRecord reads the landing record origin holds for head, once.
 // found is false when origin holds none. A record that does not read is
-// found, and says nothing.
+// found, and says nothing. The first call reads every landing record
+// origin holds with one batch, and a record the batch does not show is
+// fetched and read alone.
 func (s *Snapshot) landingRecord(head string) (landingAt, bool) {
 	oid := s.Refs[LandingPrefix+head]
 	if oid == "" {
@@ -439,10 +442,27 @@ func (s *Snapshot) landingRecord(head string) (landingAt, bool) {
 	if at, ok := s.landed[head]; ok {
 		return at, true
 	}
+	if s.landingData == nil {
+		var names []string
+		for ref, oid := range s.Refs {
+			if strings.HasPrefix(ref, LandingPrefix) {
+				names = append(names, oid+":"+change.LandingFile)
+			}
+		}
+		s.landingData = s.g.blobs(s.ctx, names)
+	}
 	var at landingAt
-	if err := Fetch(s.ctx, s.g, oid); err != nil {
-		s.unverified = true
-	} else if data, err := s.g.output(s.ctx, true, "cat-file", "blob", oid+":"+change.LandingFile); err == nil {
+	data, ok := s.landingData[oid+":"+change.LandingFile]
+	if !ok {
+		var err error
+		if err = Fetch(s.ctx, s.g, oid); err != nil {
+			s.unverified = true
+		} else {
+			data, err = s.g.output(s.ctx, true, "cat-file", "blob", oid+":"+change.LandingFile)
+		}
+		ok = err == nil
+	}
+	if ok {
 		if l, err := change.ParseLanding([]byte(data + "\n")); err == nil {
 			at = landingAt{Landing: l, read: true}
 		}
@@ -466,202 +486,32 @@ func (s *Snapshot) singleParent(oid string) bool {
 // parent gives landed's tree. It is the merge integrator/git.go's
 // mergeDelta makes: merge-tree onto the tip, with the merge base of the
 // tip and the head as the base. A head that merges to another tree, or
-// not at all, is not what landed.
+// not at all, is not what landed. Every git here reads with replacement
+// refs off, as digest does, so the answer a landing entry remembers
+// depends on the objects alone, never on the reading repository's
+// refs/replace.
 func (s *Snapshot) mergesTo(head, landed string) bool {
-	tip, err := s.g.output(s.ctx, true, "rev-parse", "--verify", "--quiet", landed+"^1^{commit}")
+	git := func(args ...string) (string, error) {
+		return s.g.output(s.ctx, true, append([]string{"--no-replace-objects"}, args...)...)
+	}
+	tip, err := git("rev-parse", "--verify", "--quiet", landed+"^1^{commit}")
 	if err != nil {
 		return false
 	}
-	want, err := s.g.output(s.ctx, true, "rev-parse", "--verify", "--quiet", landed+"^{tree}")
+	want, err := git("rev-parse", "--verify", "--quiet", landed+"^{tree}")
 	if err != nil {
 		return false
 	}
-	base, err := s.g.output(s.ctx, true, "merge-base", tip, head)
+	base, err := git("merge-base", tip, head)
 	if err != nil {
 		return false
 	}
-	out, err := s.g.output(s.ctx, true, "merge-tree", "--write-tree", "--merge-base="+base, tip, head)
+	out, err := git("merge-tree", "--write-tree", "--merge-base="+base, tip, head)
 	if err != nil {
 		return false
 	}
 	tree, _, _ := strings.Cut(out, "\n")
 	return strings.TrimSpace(tree) == want
-}
-
-// transferStatements reads every transfer statement under origin's
-// attestation refs, once. A transfer statement is a note at
-// change.TransferPath of a landed commit, under the transfer.d directory
-// at the top of an attestation ref's tree, or a single transfer.note at
-// the top of the tree, as a ref written before statements were kept per
-// landing holds it. Anything unreadable is skipped: what is not read is
-// not believed.
-func (s *Snapshot) transferStatements() []transferStatement {
-	if s.read {
-		return s.transfers
-	}
-	s.read = true
-	var trees []string
-	for ref, oid := range s.Refs {
-		if strings.HasPrefix(ref, AttestationRefs) {
-			trees = append(trees, oid)
-		}
-	}
-	if len(trees) == 0 {
-		return nil
-	}
-	sort.Strings(trees)
-	if err := Fetch(s.ctx, s.g, trees...); err != nil {
-		s.unverified = true
-		return nil
-	}
-	var query bytes.Buffer
-	for _, tree := range trees {
-		fmt.Fprintf(&query, "%s:%s\n%s:%s\n", tree, change.TransferNote, tree, change.TransferDir)
-	}
-	out, err := s.g.input(s.ctx, true, &query, "cat-file", "--batch-check=%(objectname) %(objecttype)")
-	if err != nil {
-		s.unverified = true
-		return nil
-	}
-	var blobs []string
-	for _, line := range strings.Split(out, "\n") {
-		oid, kind, _ := strings.Cut(line, " ")
-		switch kind {
-		case "blob":
-			blobs = append(blobs, oid)
-		case "tree":
-			listing, err := s.g.output(s.ctx, true, "ls-tree", "-r", "-z", oid)
-			if err != nil {
-				s.unverified = true
-				continue
-			}
-			for _, entry := range strings.Split(listing, "\x00") {
-				meta, path, ok := strings.Cut(entry, "\t")
-				if fields := strings.Fields(meta); ok && len(fields) == 3 && fields[1] == "blob" && isTransferPath(path) {
-					blobs = append(blobs, fields[2])
-				}
-			}
-		}
-	}
-	read := s.g.blobs(s.ctx, blobs)
-	for _, oid := range blobs {
-		note, ok := read[oid]
-		if !ok {
-			var err error
-			if note, err = s.g.output(s.ctx, true, "cat-file", "blob", oid); err != nil {
-				continue
-			}
-		}
-		note += "\n"
-		text, ok := noteText(note)
-		if !ok || statementValue(text, "predicateType") != predicateTransfer {
-			continue
-		}
-		s.transfers = append(s.transfers, transferStatement{
-			note:   []byte(note),
-			change: statementValue(text, "predicate.change"),
-			base:   statementValue(text, "predicate.base.valley-tree-v1"),
-			landed: statementValue(text, "subject.digest.git-sha1"),
-		})
-	}
-	return s.transfers
-}
-
-// isTransferPath reports whether a path within the transfer.d directory is
-// where change.TransferPath puts the statement for some commit:
-// <2 hex>/<2 hex>/<rest>.note, the three parts a full object ID.
-func isTransferPath(path string) bool {
-	parts := strings.Split(strings.TrimSuffix(path, ".note"), "/")
-	if len(parts) != 3 || len(parts[0]) != 2 || len(parts[1]) != 2 || !strings.HasSuffix(path, ".note") {
-		return false
-	}
-	return IsObjectID(parts[0] + parts[1] + parts[2])
-}
-
-// noteText is the statement text of a note: everything before the last
-// blank line, which separates the text from its signatures.
-func noteText(note string) (string, bool) {
-	split := strings.LastIndex(note, "\n\n")
-	if split < 0 {
-		return "", false
-	}
-	return note[:split+1], true
-}
-
-// statementValue reads one key's value from statement text, where each
-// line is a key, one space and a value. It is a lookup, and it decides
-// nothing: what is read here only chooses which statement to verify.
-func statementValue(text, key string) string {
-	for _, line := range strings.Split(text, "\n") {
-		if k, v, ok := strings.Cut(line, " "); ok && k == key {
-			return v
-		}
-	}
-	return ""
-}
-
-// repoDir is the directory attest is pointed at.
-func (s *Snapshot) repoDir() string {
-	if s.g.Dir == "" {
-		return "."
-	}
-	return s.g.Dir
-}
-
-// digest is the valley-tree-v1 digest of a commit's tree, from attest,
-// which defines the scheme.
-func (s *Snapshot) digest(oid string) (string, bool) {
-	defer s.g.phase("transfers")()
-	if d, ok := s.digestOf[oid]; ok {
-		return d, d != ""
-	}
-	out, err := s.g.tool(s.ctx, s.verify.Attest, "digest", "--repo", s.repoDir(), "--rev", oid).Output()
-	d := ""
-	if scheme, value, ok := strings.Cut(strings.TrimSpace(string(out)), ":"); finished(err) == nil && ok && scheme == "valley-tree-v1" {
-		d = value
-	}
-	s.digestOf[oid] = d
-	return d, d != ""
-}
-
-// verified runs attest verify over a transfer statement: its signature
-// must be the integrator's, by a key the known-signers file holds, and
-// its subject must be the tree of the commit it says landed. A name the
-// signer projects file restricts is not the integrator's, so nothing
-// signed under it is verified.
-func (s *Snapshot) verified(t transferStatement) bool {
-	defer s.g.phase("transfers")()
-	if s.verify.Resolve != nil {
-		s.verify.Keys, s.verify.Signer, s.verify.SignerProjects = s.verify.Resolve()
-		s.verify.Resolve = nil
-	}
-	if _, worker := s.verify.SignerProjects[s.verify.Signer]; worker || s.verify.Keys == "" || s.verify.Signer == "" {
-		s.unverified = true
-		return false
-	}
-	file, err := os.CreateTemp("", "valley-transfer-*.note")
-	if err != nil {
-		s.unverified = true
-		return false
-	}
-	defer os.Remove(file.Name())
-	_, err = file.Write(t.note)
-	if cerr := file.Close(); err != nil || cerr != nil {
-		s.unverified = true
-		return false
-	}
-	cmd := s.g.tool(s.ctx, s.verify.Attest, "verify", "--note", file.Name(),
-		"--known-keys", s.verify.Keys, "--signer", s.verify.Signer,
-		"--repo", s.repoDir(), "--rev", t.landed)
-	if err := finished(cmd.Run()); err != nil {
-		// attest refusing the note is an answer. Failing to run it is not.
-		var exit *exec.ExitError
-		if !errors.As(err, &exit) {
-			s.unverified = true
-		}
-		return false
-	}
-	return true
 }
 
 // reached is what a commit reaches, as one rev-list read it.

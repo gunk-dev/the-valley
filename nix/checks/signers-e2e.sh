@@ -469,9 +469,10 @@ expect "$second" landed-recorded 'after two runs at once'
 # Every signing key is revoked. The registry in the instance repository
 # keeps the integrator's key but no longer lets it sign, and nobody else
 # signs either, so the compiler renders a known-signers file with no key
-# in it. The host publishes that file all the same. A fresh client then
-# verifies no transfer statement, so both landings proved only by one
-# read uncertain, not landed-recorded.
+# in it. The host publishes that file all the same. A fresh clone, with
+# the cache the last client filled as it verified the landing signed
+# with the rotated key, then verifies no transfer statement, so both
+# landings proved only by one read uncertain, not landed-recorded.
 public() { cut -d' ' -f1,2 < "$keys/$1.pub"; }
 mkdir -p "$w/seed/identity"
 cat > "$w/seed/identity/registry.cue" << CUE
@@ -504,7 +505,9 @@ revoked="$(git -C "$instance" rev-parse refs/the-valley/signers)"
 [ "$revoked" != "$rotated" ] || fail 'the signers file with no key was not published'
 git -C "$instance" cat-file blob "$revoked:known-signers" | cmp -s - "$signers" \
   || fail 'the publication does not hold the signers file with no key'
+warm="$XDG_CACHE_HOME"
 client
+export XDG_CACHE_HOME="$warm"
 changes
 expect "$second" uncertain 'after every signing key is revoked'
 expect "$lands" uncertain 'after every signing key is revoked'

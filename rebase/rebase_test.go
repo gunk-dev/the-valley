@@ -227,7 +227,7 @@ func (w *world) refs() string {
 // capture reads a snapshot and the family a selection names.
 func (w *world) capture(sel Selection) *Family {
 	w.t.Helper()
-	s, err := ReadSnapshot(context.Background(), w.g, Verifier{Attest: "attest"})
+	s, err := ReadSnapshot(context.Background(), w.g, Verifier{})
 	if err != nil {
 		w.t.Fatal(err)
 	}

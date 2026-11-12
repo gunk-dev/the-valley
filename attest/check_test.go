@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"the-valley/note/statement"
 )
 
 // buildChecks builds checks side by side and decides each one from its own
@@ -132,7 +134,7 @@ func TestEachBuildDecidesOnlyItsOwnChecks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	output := treeDigest(entries)
+	output := statement.TreeDigest(entries)
 	for i, check := range []struct {
 		passed bool
 		log    string

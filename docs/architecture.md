@@ -170,7 +170,7 @@ neither. A host that restricts signers to projects (see
 signer projects file the controllers read. A signer that file names, a worker or another controller,
 is never this host's integrator. So while it names the integrator name a client uses, the client
 verifies no transfer statement, and a publication whose `signer-projects` does not read is not used
-(`status/signers.go`, `rebase/snapshot.go`). The restacker applies the same rule to the file it is
+(`status/signers.go`, `rebase/transfer.go`). The restacker applies the same rule to the file it is
 given as `--signer-projects`. Approval reads the published file too: it reuses a note only when one
 of its signers counts in the project (`status/coverage.go`).
 
@@ -849,12 +849,10 @@ defaults to every Git-enabled project with a protection block (see
 
 It is a git client of origin. It reads origin into a scratch repository under `--state`, with hooks
 off and no system or user git configuration, so no filter driver is defined. Nothing is ever checked
-out in the scratch repository's work tree. The work tree exists because `attest`, which verifies the
-integrator's transfer statements, reads only a repository that has one. Its flags name origin
-(`--repo`), the principal it pushes as (`--principal`), the landing verifier (`--known-signers`,
-`--integrator-name`, `--attest`), and the floor, which it finds as the integrator does:
-`--instance-repo` with `--instance-ref` and `--instance-policy`, or a materialized `--instance`. The
-project layer is read from `main`'s tip.
+out in the scratch repository's work tree. Its flags name origin (`--repo`), the principal it pushes
+as (`--principal`), the landing verifier (`--known-signers`, `--integrator-name`), and the floor,
+which it finds as the integrator does: `--instance-repo` with `--instance-ref` and
+`--instance-policy`, or a materialized `--instance`. The project layer is read from `main`'s tip.
 
 git in the scratch repository commits under the identity that `--commit-name` and `--commit-email`
 give. By default that is the principal's name and `restacker@the-valley.invalid`. The restacker sets
@@ -1876,11 +1874,12 @@ passed. Checked by `attest-e2e`, through integrator-e2e's stand-in for nix, and 
 by the tests in `attest/run_test.go`. A nix build has no daemon to build with, so those tests run
 under `go test` on a machine with nix, and skip elsewhere.
 
-A statement is line-based text that opens with `the-valley/attestation/v1` (`attest/text.go`,
-`schema/attestation.cue`). Its subject is the tree digest. A pure statement records the derivation,
-its inputs digest and the output. An effectful statement records the environment and the time of the
-observation. The envelope is a signed note: the `sumdb/note` format with Ed25519, implemented in
-`note/note.go`. Checked by `attest-e2e`, `attest-conformance`, `attest-schema` and `note-unit`.
+A statement is line-based text that opens with `the-valley/attestation/v1`
+(`note/statement/text.go`, `schema/attestation.cue`). Its subject is the tree digest. A pure
+statement records the derivation, its inputs digest and the output. An effectful statement records
+the environment and the time of the observation. The envelope is a signed note: the `sumdb/note`
+format with Ed25519, implemented in `note/note.go`. Checked by `attest-e2e`, `attest-conformance`,
+`attest-schema` and `note-unit`.
 
 The integrator reads evidence at the head's tree and verifies each note with `attest verify`
 (`integrator/evidence.go`). It does not run the checks itself. A tree may hold several notes about
@@ -2945,9 +2944,16 @@ restacker all read a change this way, and say which version it landed as. An act
 head descends from that landing was made on a `main` that holds it, and is the change's next round:
 the change reads unlanded until that version lands.
 
-The client checks a transfer statement with `attest verify`. The signature must be by the
-integrator's signing name, under a key in a known-signers file. The client takes each of these two
-values from the first source that gives it (`status/signers.go`):
+The client checks a transfer statement in its own process, making the checks
+`attest verify --repo --rev` makes with the same code (`rebase/transfer.go`, `implemented`). It
+reads only the attestation refs named for a key the known-signers file holds under the integrator's
+signing name. The note must open under that file's keys with a signature by that name. Its text must
+be the one written form of a transfer (`note/statement`), and the fields a landing is decided on
+must have the schema's form. Its subject must be the `valley-tree-v1` digest of `L`'s tree. The
+client does not vet the statement against `schema/attestation.cue` again: the integrator vets every
+transfer statement before it signs one (`integrator/transfer.go`). The client takes the
+known-signers file and the signing name each from the first source that gives it
+(`status/signers.go`):
 
 1. a flag: `--known-signers <file>` or `--integrator-name <name>`;
 2. the environment: `VALLEY_KNOWN_SIGNERS` or `VALLEY_INTEGRATOR_SIGNER`;
@@ -2955,14 +2961,25 @@ values from the first source that gives it (`status/signers.go`):
    [The signers publication](#the-signers-publication)). The client finds the instance repository
    the way `--all` does, below.
 
-The client reads the publication only when a statement needs verifying, and only for a value that no
-flag or variable gives. A value from a flag or a variable is used whatever the host publishes.
-Before the two values are used, the client checks that the file reads as verifier keys and holds a
-key under the name. When it does not, the command says so on stderr, naming where each value came
-from, and verifies no statement. Without both values, no transfer statement is believed: a version
-that only a statement could show landed reads as `uncertain` or `not-landed`, and the command says
-so on stderr. `status`, `stack`, `rebase`, `brings`, `pending` and `plan` read a landing the same
-way. Checked by `signers-e2e`.
+The client reads the publication only when the integrator's records bind a version to a landing, so
+that a statement could prove it, and only for a value that no flag or variable gives. A value from a
+flag or a variable is used whatever the host publishes. Before the two values are used, the client
+checks that the file reads as verifier keys and holds a key under the name. When it does not, the
+command says so on stderr, naming where each value came from, and verifies no statement. Without
+both values, no transfer statement is believed: a version that only a statement could show landed
+reads as `uncertain` or `not-landed`, and the command says so on stderr. `status`, `stack`,
+`rebase`, `brings`, `pending` and `plan` read a landing the same way. Checked by `signers-e2e`.
+
+A statement that passes every content check is remembered in `valley/transfers` under the user's
+cache directory (`os.UserCacheDir`, which honours `$XDG_CACHE_HOME`; `rebase/cache.go`,
+`implemented`). The entry is keyed by the note's exact bytes, `L`, the head, the request name, the
+signing key and the version of the checks, and each tree's `valley-tree-v1` digest is remembered by
+its git tree ID. So each landing's digests and merge are computed once per machine. On every read,
+the client still opens the note under the current known-signers file, matches the integrator's
+records and finds `L` on `main`, so removing a key stops its statements counting at once. A
+version's landing evidence is never remembered. An entry that does not read is verified again, and a
+cache that cannot be written leaves the work to every command. The restacker remembers under its own
+cache directory: the host module sets its `HOME` to its state directory.
 
 Without `--all`, the commands list the current repository. With `--all`, they list every project the
 serving host publishes at `refs/the-valley/projects`. The client reads the instance repository's URL

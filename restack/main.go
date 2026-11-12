@@ -45,8 +45,8 @@
 // second pass on the same directory fails while one runs; run holds it
 // for as long as it runs. The directory belongs to one repository, target
 // and principal, the first a pass used it for, and a pass for any other
-// is refused. Every git, cue and attest a pass runs is killed, with what
-// it started, once the pass's --timeout passes. A pass whose output
+// is refused. Every git and cue a pass runs is killed, with what it
+// started, once the pass's --timeout passes. A pass whose output
 // nobody reads ends then too. once then lets go of the lock; run keeps
 // it, and starts its next pass after the wait. A message of its
 // own that nobody reads, such as the error it ends with, is given up on
@@ -119,13 +119,15 @@ flags:
                         (default 15s)
   --timeout DURATION    the longest a pass may run, writing its output
                         included; what it runs is killed then (default 10m)
-  --known-signers FILE  verifier keys, for landings proved by integrator evidence
+  --known-signers FILE  verifier keys, for landings proved by integrator evidence.
+                        What a pass verified is remembered in valley/transfers
+                        under the user's cache directory (XDG_CACHE_HOME,
+                        else ~/.cache)
   --integrator-name N   the name the integrator signs under
   --signer-projects F   the signer projects file the integrator reads; while
                         it names the --integrator-name, no landing is proved
                         by integrator evidence. A file that does not read
                         stops the pass
-  --attest PATH         the attest helper that checks a note (default: attest on PATH)
   --instance-repo URL   the repository carrying the group's floor
   --instance-ref REF    the ref whose tip carries the floor, a full ref name
                         read by that exact name (refs/heads/main)
@@ -220,7 +222,6 @@ func parse(name string, args []string, errOut io.Writer) (c config, reportOnly b
 	fs.DurationVar(&c.timeout, "timeout", 10*time.Minute, "")
 	fs.StringVar(&c.verify.Keys, "known-signers", "", "")
 	fs.StringVar(&c.verify.Signer, "integrator-name", "", "")
-	fs.StringVar(&c.verify.Attest, "attest", "", "")
 	signerProjects := fs.String("signer-projects", "", "")
 	fs.StringVar(&c.instanceRepo, "instance-repo", "", "")
 	fs.StringVar(&c.floor.Ref, "instance-ref", "refs/heads/main", "")
@@ -270,9 +271,7 @@ func parse(name string, args []string, errOut io.Writer) (c config, reportOnly b
 	if c.instanceRepo != "" && !strings.HasPrefix(c.floor.Ref, "refs/") {
 		return c, false, fmt.Errorf("--instance-ref %s is not a full ref name; name it whole, as refs/heads/main", c.floor.Ref)
 	}
-	if c.verify.Attest == "" {
-		c.verify.Attest, _ = exec.LookPath("attest")
-	}
+	c.verify.Cache = rebase.CacheDir()
 	if *signerProjects != "" {
 		data, err := os.ReadFile(*signerProjects)
 		if err != nil {
@@ -458,7 +457,7 @@ func checkIdentity(name, email string) error {
 // ahead of the configuration. So a pass passes on no GIT_* variable but
 // the ones that say how to reach origin over ssh, and no EMAIL. It drops
 // them from its own environment as it starts (controlEnvironment), so
-// cue, attest and the git that composes the policy run without them too.
+// cue and the git that composes the policy run without them too.
 var passedOn = map[string]bool{"GIT_SSH": true, "GIT_SSH_COMMAND": true, "GIT_SSH_VARIANT": true}
 
 // passes reports whether a pass passes on the environment variable named.
@@ -503,11 +502,6 @@ func controlEnvironment() {
 // rebase takes the author from the commit it picks. git there is
 // unattended: it never asks a question, and every git it runs is killed
 // whole once ctx is done.
-//
-// The repository has a work tree, though nothing is ever checked out in
-// it: attest, which digests a version's tree and verifies the
-// integrator's transfer statements, reads only a repository with a work
-// tree.
 func scratchRepo(ctx context.Context, c config) (rebase.Git, error) {
 	dir := filepath.Join(c.state, "scratch")
 	var env []string

@@ -3,6 +3,7 @@ package rebase
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os/exec"
@@ -192,6 +193,78 @@ func (g Git) blobs(ctx context.Context, names []string) map[string]string {
 		out = out[size+1:]
 	}
 	return found
+}
+
+// treeEntry is one entry of a tree object: its mode as the object writes
+// it less any leading zeros (40000 for a tree, which an object may also
+// write as 040000), its name, and the object it names.
+type treeEntry struct {
+	mode, name, oid string
+}
+
+// trees reads tree objects with one `git cat-file --batch`: for each full
+// object ID that names a tree, its entries in the object's order. An ID
+// that names no tree, or a tree that does not parse, is left out.
+func (g Git) trees(ctx context.Context, oids []string) map[string][]treeEntry {
+	found := map[string][]treeEntry{}
+	var asked []string
+	var stdin bytes.Buffer
+	for _, oid := range oids {
+		if IsObjectID(oid) {
+			asked = append(asked, oid)
+			stdin.WriteString(oid + "\n")
+		}
+	}
+	if len(asked) == 0 {
+		return found
+	}
+	cmd := g.command(ctx, "cat-file", "--batch")
+	cmd.Stdin = &stdin
+	out, err := cmd.Output()
+	if finished(err) != nil {
+		return found
+	}
+	for _, oid := range asked {
+		header, rest, ok := bytes.Cut(out, []byte("\n"))
+		if !ok {
+			break
+		}
+		out = rest
+		fields := strings.Fields(string(header))
+		if len(fields) != 3 {
+			continue
+		}
+		size, err := strconv.Atoi(fields[2])
+		if err != nil || size < 0 || size >= len(out) {
+			break
+		}
+		if entries, ok := parseTree(out[:size], len(oid)/2); fields[1] == "tree" && ok {
+			found[oid] = entries
+		}
+		out = out[size+1:]
+	}
+	return found
+}
+
+// parseTree reads a tree object's entries: each is its mode, a space, its
+// name, a NUL, and the raw object ID, of size bytes. git reads a mode as
+// an octal number, so it walks a tree written 040000 as one written 40000;
+// the leading zeros are dropped here, so each mode is compared in one form.
+func parseTree(data []byte, size int) ([]treeEntry, bool) {
+	var entries []treeEntry
+	for len(data) > 0 {
+		space, nul := bytes.IndexByte(data, ' '), bytes.IndexByte(data, 0)
+		if space < 0 || nul < space || len(data) < nul+1+size {
+			return nil, false
+		}
+		entries = append(entries, treeEntry{
+			mode: strings.TrimLeft(string(data[:space]), "0"),
+			name: string(data[space+1 : nul]),
+			oid:  hex.EncodeToString(data[nul+1 : nul+1+size]),
+		})
+		data = data[nul+1+size:]
+	}
+	return entries, true
 }
 
 // succeeds reports whether git exits zero. A failure to run git at all is

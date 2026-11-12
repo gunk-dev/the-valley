@@ -190,7 +190,8 @@ memo() {
 }
 
 # transfer <change> <head> <landed> <key> <name> [single]: a transfer
-# statement, as the integrator composes, signs and stores one, at
+# statement, as the integrator composes, signs and stores one under the
+# landed tree and its signer's key hash, at
 # transfer.d/<2 hex>/<2 hex>/<rest>.note, split from the landed commit's
 # ID. With single, it is stored as the one transfer.note at the top of the
 # tree, the layout of a ref the integrator wrote before it kept one
@@ -216,7 +217,7 @@ transfer() {
     tree="$(printf '040000 tree %s\t%s\n' "$tree" "${at:0:2}" | git -C "$data/open.git" mktree)"
     tree="$(printf '040000 tree %s\ttransfer.d\n' "$tree" | git -C "$data/open.git" mktree)"
   fi
-  git -C "$data/open.git" update-ref "refs/the-valley/attestations/$ldigest/$(printf '%08x' "${#name}")" "$tree"
+  git -C "$data/open.git" update-ref "refs/the-valley/attestations/$ldigest/$(attest key --key "$key" --name "$name" | cut -d+ -f2)" "$tree"
 }
 memo reparent "$(git rev-parse reparent)" land
 transfer reparent "$(git rev-parse reparent)" "$landed" "$w/integrator.key" integrator single

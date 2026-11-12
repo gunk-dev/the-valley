@@ -276,9 +276,11 @@ rec {
 
   # The Phase 2 attestation helper (dcr-0de694f). Go, standard library
   # only, note format included, and hence no module fetch at build time.
-  # Its unit tests need git and ssh-keygen. It reads signed notes with the
-  # note module (../note), the one reading of the envelope shared by the
-  # programs that write, verify and admit attestations. The conformance
+  # Its unit tests need git and ssh-keygen. It reads signed notes, and
+  # writes and reads the statements in them and the valley-tree-v1 digests
+  # they name, with the note module (../note), the one reading of the
+  # envelope and its statement shared by the programs that write, verify
+  # and admit attestations. The conformance
   # vectors (attest/conformance/) are attest-conformance's, and no Go test
   # reads them.
   attest-unwrapped = goModule {
@@ -841,13 +843,17 @@ rec {
 
   # The rebase engine (rebase/): a family of stacked changes captured from
   # one snapshot of origin, rebased in a throwaway worktree, and published
-  # as one atomic branch push and one record append per change. Its tests
-  # run against real repositories, real pushes and real git, with go vet
-  # after them. Go, standard library only, so no module is fetched.
+  # as one atomic branch push and one record append per change. It verifies
+  # the integrator's transfer statements with the note module (../note).
+  # Its tests run against real repositories, real pushes and real git, with
+  # go vet after them. Go, standard library only, so no module is fetched.
   rebase = goModule {
     pname = "valley-rebase";
     dir = ../rebase;
-    modules = [ ../change ];
+    modules = [
+      ../change
+      ../note
+    ];
     preBuild = readsGoMod;
     tests = {
       nativeCheckInputs = [ pkgs.git ];
@@ -1021,9 +1027,9 @@ rec {
     meta.mainProgram = "valley-restacker";
   };
 
-  # The shipping form: git to read origin, cue to compose the policy, and
-  # attest to check a transfer statement, all pinned to this flake's
-  # nixpkgs, with the packaged verification schema as the default.
+  # The shipping form: git to read origin and cue to compose the policy,
+  # both pinned to this flake's nixpkgs, with the packaged verification
+  # schema as the default.
   valley-restacker =
     pkgs.runCommand "valley-restacker"
       {
@@ -1037,7 +1043,6 @@ rec {
             lib.makeBinPath [
               pkgs.git
               pkgs.cue
-              attest
             ]
           } \
           --set-default VALLEY_VERIFICATION_SCHEMA ${../schema/verification.cue}

@@ -202,28 +202,38 @@ project: {
 		requires: "valley-go-unit": true
 	}
 
-	// The note envelope. The hook and attest both read notes through it,
-	// the identity compiler reads its approval files back with it, and the
-	// web export's manifest is a note, which the web server builds with,
-	// so a change to it requires their tests as well as its own.
+	// The note envelope, and the written form and tree digest of the
+	// statement inside it (note/statement/), which the attest class covers
+	// too. The hook and attest both read notes through it, the identity
+	// compiler reads its approval files back with it, the web export's
+	// manifest is a note, which the web server builds with, the vectors
+	// attest-conformance holds are signed notes, and the rebase engine
+	// verifies transfer statements with all of it, as signers-e2e drives
+	// end to end. So a change to it requires their tests as well as its
+	// own.
 	classes: note: {
-		paths: "note/**":            true
-		requires: "note-unit":       true
-		requires: "valleyhook-unit": true
-		requires: "protect-e2e":     true
-		requires: "attest-unit":     true
-		requires: "attest-e2e":      true
-		requires: "identity-unit":   true
-		requires: "approval-unit":   true
-		requires: "web-unit":        true
-		requires: "web-server-unit": true
+		paths: "note/**":               true
+		requires: "note-unit":          true
+		requires: "valleyhook-unit":    true
+		requires: "protect-e2e":        true
+		requires: "attest-unit":        true
+		requires: "attest-conformance": true
+		requires: "attest-e2e":         true
+		requires: "identity-unit":      true
+		requires: "approval-unit":      true
+		requires: "web-unit":           true
+		requires: "web-server-unit":    true
+		requires: "rebase-unit":        true
+		requires: "signers-e2e":        true
 	}
 
-	// The attestation helper, and the conformance vectors under
-	// attest/conformance/ that hold its written form fixed. restack-e2e
-	// signs the changes' evidence with attest run.
+	// The attestation helper, the written form and tree digest it writes
+	// and verifies statements with (note/statement/), and the conformance
+	// vectors under attest/conformance/ that hold the written form fixed.
+	// restack-e2e signs the changes' evidence with attest run.
 	classes: attest: {
 		paths: "attest/**":             true
+		paths: "note/statement/**":     true
 		requires: "attest-unit":        true
 		requires: "attest-conformance": true
 		requires: "attest-e2e":         true
@@ -470,7 +480,8 @@ project: {
 	// What a client verifies an integrator's transfer statement with: the
 	// host's publisher and the default name it publishes, the unit that
 	// runs it, the client's reading of the signers, the instance discovery
-	// it reads them through, and the snapshot that asks for them.
+	// it reads them through, the snapshot that asks for them, and the
+	// verifier and cache it checks statements with.
 	// signers-e2e drives them together over the real integrator.
 	classes: signers: {
 		paths: "integrator/signers.go": true
@@ -479,6 +490,8 @@ project: {
 		paths: "status/signers.go":     true
 		paths: "status/list.go":        true
 		paths: "rebase/snapshot.go":    true
+		paths: "rebase/transfer.go":    true
+		paths: "rebase/cache.go":       true
 		requires: "signers-e2e":        true
 	}
 

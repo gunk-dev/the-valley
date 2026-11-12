@@ -708,8 +708,11 @@ func (v *testValley) landByIntegration(key, name string) {
 	note := v.runInput("", v.run("", "attest", "render", path), "attest", "sign", "--key", key, "--name", name)
 	blob := v.runInput("", note, "git", "-C", bare, "hash-object", "-w", "--stdin")
 	tree := v.runInput("", "100644 blob "+strings.TrimSpace(blob)+"\ttransfer.note\n", "git", "-C", bare, "mktree")
+	// The ref is named for the signer's key hash, as the integrator names
+	// its own.
+	hash := strings.Split(strings.TrimSpace(v.run("", "attest", "key", "--key", key, "--name", name)), "+")[1]
 	v.run("", "git", "-C", bare, "update-ref",
-		fmt.Sprintf("refs/the-valley/attestations/%s/%08x", digest(landed), len(name)), strings.TrimSpace(tree))
+		fmt.Sprintf("refs/the-valley/attestations/%s/%s", digest(landed), hash), strings.TrimSpace(tree))
 }
 
 // The CLI the publisher runs verifies a landing with the signers the

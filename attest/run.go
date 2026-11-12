@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"the-valley/telemetry"
+
+	"the-valley/note/statement"
 )
 
 // cmdRun is the whole protocol in order: digest the subject tree, run the
@@ -273,7 +275,7 @@ func cmdRun(args []string) (err error) {
 		if err := vetStatement(schema, doc); err != nil {
 			return fmt.Errorf("%s: %w\nnothing published", out.spec.name, err)
 		}
-		if texts[i], err = renderJSON(doc); err != nil {
+		if texts[i], err = statement.RenderJSON(doc); err != nil {
 			return fmt.Errorf("%s: %w\nnothing published", out.spec.name, err)
 		}
 	}
@@ -335,7 +337,7 @@ func composeSubject(root, rev string) (subject, error) {
 	if err != nil {
 		return subject{}, err
 	}
-	subj := subject{Primary: treeScheme, Digest: map[string]string{treeScheme: treeDigest(entries)}}
+	subj := subject{Primary: statement.TreeScheme, Digest: map[string]string{statement.TreeScheme: statement.TreeDigest(entries)}}
 	switch len(commit) {
 	case 40:
 		subj.Digest["git-sha1"] = commit
@@ -347,12 +349,12 @@ func composeSubject(root, rev string) (subject, error) {
 	return subj, nil
 }
 
-func composeStatement(subj subject, out checkOutcome, environment string, prov json.RawMessage) statement {
+func composeStatement(subj subject, out checkOutcome, environment string, prov json.RawMessage) document {
 	result := "failed"
 	if out.passed {
 		result = "passed"
 	}
-	st := statement{
+	st := document{
 		StatementType: statementType,
 		Subject:       subj,
 		Provenance:    prov,
@@ -370,7 +372,7 @@ func composeStatement(subj subject, out checkOutcome, environment string, prov j
 		st.PredicateType = predicatePure
 		st.Predicate.Inputs = map[string]string{inputsScheme: out.inputs}
 		st.Predicate.Derivation = map[string]string{"sha256": out.derivation}
-		st.Predicate.Output = map[string]string{treeScheme: out.output}
+		st.Predicate.Output = map[string]string{statement.TreeScheme: out.output}
 	} else {
 		st.PredicateType = predicateEffect
 		st.Predicate.Environment = environment

@@ -8,6 +8,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+
+	"the-valley/note/statement"
 )
 
 const usage = `usage: attest <command> [flags]
@@ -226,7 +228,7 @@ func cmdDigest(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%s:%s\n", treeScheme, treeDigest(entries))
+	fmt.Printf("%s:%s\n", statement.TreeScheme, statement.TreeDigest(entries))
 	return nil
 }
 

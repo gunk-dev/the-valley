@@ -8,7 +8,9 @@ require (
 )
 
 // The note envelope is shared with the pre-receive hook (../valleyhook), so
-// both read a note the same way. A run's progress is recorded in the
+// both read a note the same way, and the written form of a statement and
+// the valley-tree-v1 scheme with the rebase engine (../rebase), which
+// verifies transfer statements with them (../note/statement). A run's progress is recorded in the
 // telemetry streams (../telemetry) the collector reads. Both live in this
 // repository and are never fetched.
 replace (

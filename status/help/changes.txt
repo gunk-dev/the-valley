@@ -43,7 +43,7 @@ usage: valley changes --json [--all] [--repo <name>] [--checks] [-v] [--known-si
                    the integrator's outcome record for that name saying
                    land at the version's head; and the integrator's merge
                    of the head onto the landed commit's parent giving the
-                   landed tree. attest verifies the statement with the
+                   landed tree. the statement is verified with the
                    registry's known-signers file and the integrator's
                    signing name. each is taken from the first of these
                    that gives it: --known-signers FILE or
@@ -53,4 +53,5 @@ usage: valley changes --json [--all] [--repo <name>] [--checks] [-v] [--known-si
                    repository, read only when a statement needs
                    verifying. a file that does not read, or holds no key
                    under the name, is reported on stderr, and then no
-                   statement is verified.
+                   statement is verified. a statement that passed is
+                   remembered under $XDG_CACHE_HOME/valley/transfers.

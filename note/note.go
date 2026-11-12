@@ -1,9 +1,10 @@
 // Package note is the envelope a valley attestation travels in: a signed
 // note, in the format golang.org/x/mod/sumdb/note defines, around statement
 // text. It is the one reading of that envelope. attest writes notes with
-// it, attest verify opens them with it, and the pre-receive hook checks
-// pushed ones with it, so a note one of them accepts is a note all of them
-// accept.
+// it, attest verify and the rebase engine open them with it, and the
+// pre-receive hook checks pushed ones with it, so a note one of them
+// accepts is a note all of them accept. The text's written form is
+// note/statement's.
 //
 // A note is the text, a blank line, and one or more signature lines. Each
 // signature line is an em-dash, a space, the signer's name, a space, and
@@ -359,8 +360,7 @@ type Subject struct {
 // the subject.digest.<scheme> line for the scheme subject.primary names.
 //
 // This is the part of a statement every reader needs before anything else
-// — which tree it is about. attest reads the rest of the text, and vets it
-// against the attestation schema.
+// — which tree it is about. note/statement reads the whole text.
 func StatementSubject(text []byte) (Subject, error) {
 	if err := CheckText(text); err != nil {
 		return Subject{}, err

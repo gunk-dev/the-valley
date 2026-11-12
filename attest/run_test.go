@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"the-valley/note/statement"
 )
 
 // These tests run attest against the machine's real nix: they evaluate and
@@ -185,7 +187,7 @@ func sequentialOutcome(t *testing.T, tree string, spec checkSpec) checkOutcome {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return checkOutcome{spec: spec, passed: true, derivation: c.derivation, inputs: c.inputs, output: treeDigest(entries)}
+	return checkOutcome{spec: spec, passed: true, derivation: c.derivation, inputs: c.inputs, output: statement.TreeDigest(entries)}
 }
 
 // checkLine is the line run prints for a pure check with a result.
@@ -199,7 +201,7 @@ func statementText(t *testing.T, subj subject, out checkOutcome) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text, err := renderJSON(doc)
+	text, err := statement.RenderJSON(doc)
 	if err != nil {
 		t.Fatal(err)
 	}

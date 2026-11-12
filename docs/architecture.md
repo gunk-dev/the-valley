@@ -1695,26 +1695,29 @@ and an empty list derives a change that requires nothing. The integrator believe
 changed paths only when git agrees that the two trees are the same. Checked by `policy-deriver`,
 `valley-request` and `integrator-unit`.
 
-The deriver is written in Go (`derive/`). `valley checks`, `valley pending`, approval, the check
-worker and the integrator run it. It reads the whole composed policy through `composed.Read`
-(`composed/model.go`): every class's paths, requirements and carry mode, the `unclassified` set, and
-each check's runner, cost and validity. It asks cue whether each requirement is mandatory by vetting
-the layers with a document setting that requirement to `false`. It reads a diff with renames counted
-on both sides, and keeps every path whole, whatever bytes it holds, so a path holding a newline is
-one path. It refuses a policy in which a class requires a check the composed policy does not define,
-a class added by refining `policy` included, which the schema's cross-check misses because it reads
-only the layers. A class named `unclassified` is kept apart from the `unclassified` set: a path in
-the class requires the class's checks, and a path no class covers requires the set's. Checked by
-`derive-unit`.
+The deriver is written in Go (`derive/`). `valley checks`, `valley pending`, review, approval, the
+check worker and the integrator run it. It reads the whole composed policy (`composed/model.go`):
+every class's paths, requirements and carry mode, the `unclassified` set, and each check's runner,
+cost and validity. The report and document of `valley checks` print whether each requirement is
+mandatory, so they read through `composed.Read`, which asks cue by vetting the layers with a
+document setting that requirement to `false`, one `cue vet` per requirement. No other reader prints
+or decides anything by that pin, so each reads through `composed.ReadUnpinned`: the same model,
+digest and refusals from a few `cue` processes, however many requirements the policy has.
+`valley pending` and `valley changes --checks` read it once for each project they list
+(`implemented`, `status/pending.go`). It reads a diff with renames counted on both sides, and keeps
+every path whole, whatever bytes it holds, so a path holding a newline is one path. It refuses a
+policy in which a class requires a check the composed policy does not define, a class added by
+refining `policy` included, which the schema's cross-check misses because it reads only the layers.
+A class named `unclassified` is kept apart from the `unclassified` set: a path in the class requires
+the class's checks, and a path no class covers requires the set's. Checked by `derive-unit`.
 
-The integrator reads the composed policy through `composed.ReadUnpinned`, which asks cue nothing
-about whether a requirement is mandatory, because the integrator never reads that. It reads it once
-for each request it evaluates. The request's own derivation, the derivation of what intervening
-landings touched, the check definitions and the policy digest its landing records all come from that
-one model (`implemented`, `integrator/policy.go`, `integrator/refs.go`). A path no class covers
-reads, in the integrator's derivation, as the class `unclassified`, and a class the policy names
-`unclassified` folds into that name. That only widens what an intervening landing touched, so it can
-stop an effectful observation transferring and never let one through. Checked by `integrator-unit`.
+The integrator reads the composed policy unpinned, once for each request it evaluates. The request's
+own derivation, the derivation of what intervening landings touched, the check definitions and the
+policy digest its landing records all come from that one model (`implemented`,
+`integrator/policy.go`, `integrator/refs.go`). A path no class covers reads, in the integrator's
+derivation, as the class `unclassified`, and a class the policy names `unclassified` folds into that
+name. That only widens what an intervening landing touched, so it can stop an effectful observation
+transferring and never let one through. Checked by `integrator-unit`.
 
 `derive-unit` runs the deriver over this repository's own policy and the example policies under
 `examples/policy/`, with the layers in directories named like glob patterns and changes drawn from a

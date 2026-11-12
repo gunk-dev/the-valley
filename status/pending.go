@@ -33,10 +33,11 @@
 //	  ✗ xzus v3  restack: a conflict rebasing xzus onto main at a1b2c3d
 //
 // Checks are counted as valley changes --checks reads them
-// (versionchecks.go), which costs seconds for each project with a ready
-// change and nothing for one without. When nothing waits on an approval,
-// one line says so in place of needs you, and moving is left out when
-// nothing moves. Older versions of a change are never listed.
+// (versionchecks.go): for each project with a ready change, one read of
+// the policy and an attest verify for each note, and nothing for a
+// project without one. When nothing waits on an approval, one line says
+// so in place of needs you, and moving is left out when nothing moves.
+// Older versions of a change are never listed.
 //
 // A last line counts the drafts and the branches on origin that no change
 // is on, with the flags that list them in full. --drafts and --branches
@@ -205,7 +206,7 @@ func (l listed) addCarried(view *jsonRepo, stderr io.Writer) {
 		h, err := historyOf(s.g, s.o, s.all, len(s.unread) > 0, c.ChangeID)
 		verdict := ""
 		if err == nil {
-			_, verdict, _, _, err = carryBetween(s.g, h, from, c.Active, func() (*composed.Model, error) { return s.model(true) })
+			_, verdict, _, _, err = carryBetween(s.g, h, from, c.Active, s.model)
 		}
 		if err != nil {
 			fmt.Fprintf(stderr, "valley: %s: whether the approval of %s v%d carries to v%d did not read, so it waits on an approval: %v\n",
@@ -503,7 +504,7 @@ func (r listed) mainState(h handleMap, c *costs, stderr io.Writer, t terminal, n
 		fmt.Fprintf(stderr, "valley: %s: the policy at main did not read, so main's state is not shown: %v\n", r.name, err)
 		return nil
 	}
-	model, err := r.snap.model(false)
+	model, err := r.snap.model()
 	walk := mainWalk{}
 	if err == nil {
 		walk, err = mainFollows(r.g, r.snap.tip, model, io.Discard)
@@ -818,7 +819,7 @@ func (s *snapshot) checks(head string) string {
 	if err != nil {
 		return "requires ? (no merge base with main)"
 	}
-	model, err := s.model(false)
+	model, err := s.model()
 	if err != nil {
 		return "requires ? (the policy did not derive)"
 	}
@@ -850,17 +851,17 @@ func (s *snapshot) checks(head string) string {
 }
 
 // tipPolicy is the policy at main's tip on origin, read once for every
-// reader of a snapshot: mainState, the version checks and the check
-// counts. Nothing is read until a reader asks, and a failure is kept, so
-// each reader says it its own way.
+// reader of a snapshot: mainState, the carry verdicts, the version checks
+// and the check counts. Nothing is read until a reader asks, and a failure
+// is kept, so each reader says it its own way.
 type tipPolicy struct {
-	read     bool
-	src      layerSource
-	done     func()
-	err      error
-	pinned   *composed.Model
-	unpinned *composed.Model
-	failed   map[bool]error
+	read      bool
+	src       layerSource
+	done      func()
+	err       error
+	modelRead bool
+	model     *composed.Model
+	modelErr  error
 }
 
 // layers are the two policy layers at main's tip.
@@ -873,42 +874,28 @@ func (s *snapshot) layers() (layerSource, error) {
 	return p.src, p.err
 }
 
-// model is the policy the layers at main's tip compose. pinned asks for
-// each requirement's pin (policyModel); a model read pinned serves a
-// reader that does not ask for pins too.
-func (s *snapshot) model(pinned bool) (*composed.Model, error) {
+// model is the policy the layers at main's tip compose, read without
+// asking which requirements are mandatory (composed.ReadUnpinned): what
+// each reader of a snapshot prints or decides comes from which checks a
+// change requires, how each runs and what it costs, and the carry mode,
+// never from a requirement's pin.
+func (s *snapshot) model() (*composed.Model, error) {
 	p := &s.policy
-	switch {
-	case p.pinned != nil:
-		return p.pinned, nil
-	case !pinned && p.unpinned != nil:
-		return p.unpinned, nil
-	case p.failed[pinned] != nil:
-		return nil, p.failed[pinned]
+	if !p.modelRead {
+		p.modelRead = true
+		p.model, p.modelErr = func() (*composed.Model, error) {
+			src, err := s.layers()
+			if err != nil {
+				return nil, err
+			}
+			schema, err := schemaFile(s.g, "")
+			if err != nil {
+				return nil, err
+			}
+			return policyModel(schema, src.instance, src.project, false)
+		}()
 	}
-	m, err := func() (*composed.Model, error) {
-		src, err := s.layers()
-		if err != nil {
-			return nil, err
-		}
-		schema, err := schemaFile(s.g, "")
-		if err != nil {
-			return nil, err
-		}
-		return policyModel(schema, src.instance, src.project, pinned)
-	}()
-	switch {
-	case err != nil:
-		if p.failed == nil {
-			p.failed = map[bool]error{}
-		}
-		p.failed[pinned] = err
-	case pinned:
-		p.pinned = m
-	default:
-		p.unpinned = m
-	}
-	return m, err
+	return p.model, p.modelErr
 }
 
 // close removes the layers the snapshot read.

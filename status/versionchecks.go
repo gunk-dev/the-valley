@@ -25,13 +25,14 @@ package main
 // VALLEY_KNOWN_SIGNERS does not narrow what is read here: the listing says
 // what the integrator would judge.
 //
-// It is behind --checks because it costs seconds a repository: reading
-// the policy with cue is most of it, and attest verify for each note the
-// rest. The reads are batched by repository: the policy is read once,
-// origin's attestation refs for every head are listed in one ls-remote and
-// fetched in one fetch, and the host's signers are read once. A read that fails
-// leaves the changes it was for without check state, and says so on
-// stderr; it never reads as no evidence.
+// It is behind --checks because it costs each repository a read of the
+// policy with cue and an attest verify for each note. The reads are
+// batched by repository: the policy is read once, without asking cue
+// which requirements are mandatory, since nothing here shows or decides
+// by a pin; origin's attestation refs for every head are listed in one
+// ls-remote and fetched in one fetch; and the host's signers are read
+// once. A read that fails leaves the changes it was for without check
+// state, and says so on stderr; it never reads as no evidence.
 //
 // Each nix check also says what it cost the host's check worker to build
 // for this version, against what it recently cost (checkcost.go), when
@@ -133,7 +134,7 @@ func (l listed) addChecks(view *jsonRepo, c *costs, stderr io.Writer) {
 		warn("%v, so no ready change lists its checks", err)
 		return
 	}
-	model, err := l.snap.model(true)
+	model, err := l.snap.model()
 	if err != nil {
 		warn("the policy at main did not read, so no ready change lists its checks: %v", err)
 		return

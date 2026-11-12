@@ -96,7 +96,9 @@ func carryBetween(g git, h *history, from, to int, model func() (*composed.Model
 	return c, verdict, reason, offer, err
 }
 
-// tipModel is the policy at main's tip, as carry reads it on its own.
+// tipModel is the policy at main's tip, as carry reads it on its own. A
+// carry verdict reads the classes and carry mode alone, so it asks cue no
+// requirement's pin.
 func tipModel(g git, tip string) (*composed.Model, error) {
 	instance, project, done, err := policyLayers(g, tip)
 	defer done()
@@ -107,7 +109,7 @@ func tipModel(g git, tip string) (*composed.Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	return policyModel(schema, instance, project, true)
+	return policyModel(schema, instance, project, false)
 }
 
 // carryVerdict says whether an answer about version from carries to

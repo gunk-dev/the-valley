@@ -20,8 +20,9 @@ usage: valley changes --json [--all] [--repo <name>] [--checks] [-v] [--known-si
                    check also gives its build time for this version, and
                    the median of its recent builds, from the host's
                    worker telemetry; when that cannot be read, those
-                   fields are left out and stderr says why. it costs a
-                   few seconds for each project with such a change.
+                   fields are left out and stderr says why. for each
+                   project with such a change, it reads the policy once
+                   and runs attest verify for each note.
                    handles are unique across
                    everything listed: a change id recorded in more than
                    one repository listed has the handle <repo>:<prefix>

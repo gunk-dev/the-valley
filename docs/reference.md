@@ -238,9 +238,10 @@ moving (3)
   after it says `on <base>`. A block also says `includes <handle>` for an unlanded change its head
   contains that is not listed, such as a `withdrawn` one, `uncertain` when the version may have
   landed without its evidence being stored, and what a current restack report says.
-- **Cost:** Reading the checks costs a few seconds for each project with a ready change, and nothing
-  for a project without one. `valley pending` also writes the shell-completion handle cache for the
-  current repository at `<git-common-dir>/valley/handles`.
+- **Cost:** For each project with a ready change, reading the checks reads the policy once, lists
+  and fetches the evidence on `origin` once, and runs `attest verify` for each note. It costs
+  nothing for a project without one. `valley pending` also writes the shell-completion handle cache
+  for the current repository at `<git-common-dir>/valley/handles`.
 
 ```sh
 valley pending
@@ -297,8 +298,7 @@ valley changes --json [--all] [--repo <name>] [--checks] [-v] [--known-signers <
   - `--checks`: Adds a [`checks`](#version-checks) object to the active version of each ready change
     whose active version has not landed. It says which of the checks the policy requires passed,
     failed or are pending, and what each nix check cost to build ([build times](#build-times)). It
-    costs a few seconds for each project that has such a change. Most of that time goes to reading
-    the policy with `cue`, and the rest to `attest verify` for each note.
+    costs what [`valley pending`](#valley-pending) costs to read the checks.
 
 ### `valley status`
 

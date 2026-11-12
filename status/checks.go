@@ -302,7 +302,8 @@ func joinOrNone(list []string) string {
 // derivedChecks is the valley-checks/v1 document for the change between
 // two commits, under the schema and the two layers named. An empty schema
 // is the packaged one, or else the one in this repository's tree. The
-// check worker (worker.go) calls it as checks does.
+// check worker (worker.go) calls it for the checks to build, and reads no
+// requirement's pin, so each pin is unknown.
 func derivedChecks(g git, schema, instance, project, baseRev, headRev string) (jsonChecks, error) {
 	if !g.succeeds(true, "rev-parse", "--git-dir") {
 		return jsonChecks{}, failure("not a git repository")
@@ -319,7 +320,7 @@ func derivedChecks(g git, schema, instance, project, baseRev, headRev string) (j
 		}
 		commits[i] = oid
 	}
-	model, err := policyModel(schema, instance, project, true)
+	model, err := policyModel(schema, instance, project, false)
 	if err != nil {
 		return jsonChecks{}, err
 	}
@@ -347,9 +348,9 @@ func schemaFile(g git, schema string) (string, error) {
 
 // policyModel is the policy the schema and the two layers compose, read
 // once for every change derived under it. pinned asks cue which
-// requirements are mandatory (composed.Read); a reader of paths and
-// follows alone leaves them unknown (composed.ReadUnpinned), which is
-// much quicker.
+// requirements are mandatory (composed.Read), one cue vet each, for the
+// readers that print a pin: valley checks' report and its document. Every
+// other reader leaves them unknown (composed.ReadUnpinned).
 func policyModel(schema, instance, project string, pinned bool) (*composed.Model, error) {
 	if _, err := exec.LookPath("cue"); err != nil {
 		return nil, failure("this verb needs the cue CLI; nix run .#valley bundles it")

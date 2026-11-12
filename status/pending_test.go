@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -134,6 +135,127 @@ func TestFitCountsColumns(t *testing.T) {
 	} {
 		if got := fit(c.s, c.n); got != c.want || columns(got) > c.n {
 			t.Errorf("fit(%q, %d) = %q, %d columns; want %q", c.s, c.n, got, columns(got), c.want)
+		}
+	}
+}
+
+// pending reads the policy at main's tip once for a project, and asks cue
+// no requirement's pin: the cue processes it starts, with --checks or
+// without, are as many for a class requiring nine checks and four ready
+// heads as for one requiring three and one head.
+func TestPendingStartsCueOncePerProject(t *testing.T) {
+	cue, err := exec.LookPath("cue")
+	if err != nil {
+		if os.Getenv("VALLEY_TEST_TOOLS") == "required" {
+			t.Fatal("no cue on PATH, and VALLEY_TEST_TOOLS=required")
+		}
+		t.Skip("no cue to compose a policy with; the nix check provides one")
+	}
+	schema, err := filepath.Abs(filepath.Join("..", "schema", "verification.cue"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("VALLEY_KNOWN_SIGNERS", "")
+	t.Setenv("VALLEY_VERIFICATION_SCHEMA", schema)
+	// cue on PATH logs each start and runs the real cue.
+	bin, starts := filepath.Join(dir, "bin"), filepath.Join(dir, "cue-starts")
+	shim := fmt.Sprintf("#!/bin/sh\necho cue >> '%s'\nexec '%s' \"$@\"\n", starts, cue)
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "cue"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// project is a repository with its own origin, whose floor has one
+	// class requiring checks c-1 to c-<checks>, and heads ready changes
+	// touching that class. It returns what each listing printed and how
+	// many cue processes it started.
+	project := func(checks, heads int) (printed map[string]string, started map[string]int) {
+		t.Helper()
+		root := filepath.Join(dir, fmt.Sprintf("%d-%d", checks, heads))
+		origin, work := filepath.Join(root, "origin.git"), filepath.Join(root, "work")
+		sh := func(args ...string) {
+			t.Helper()
+			cmd := exec.Command("git", args...)
+			cmd.Dir = work
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+			}
+		}
+		if out, err := exec.Command("git", "init", "--quiet", "--bare", "--initial-branch=main", origin).CombinedOutput(); err != nil {
+			t.Fatalf("git init: %v\n%s", err, out)
+		}
+		if out, err := exec.Command("git", "clone", "--quiet", origin, work).CombinedOutput(); err != nil {
+			t.Fatalf("git clone: %v\n%s", err, out)
+		}
+		sh("config", "user.name", "operator")
+		sh("config", "user.email", "operator@example.org")
+		sh("config", "valley.principal", "operator")
+		sh("checkout", "--quiet", "-b", "main")
+		var floor strings.Builder
+		floor.WriteString("package verification\nfloor: {\n")
+		for i := 1; i <= checks; i++ {
+			fmt.Fprintf(&floor, "\tchecks: \"c-%d\": {runner: \"nix\", attribute: \"c-%d\"}\n", i, i)
+			fmt.Fprintf(&floor, "\tclasses: src: {paths: \"src/**\": true, requires: \"c-%d\": true}\n", i)
+		}
+		floor.WriteString("\tunclassified: \"c-1\": true\n}\n")
+		if err := os.MkdirAll(filepath.Join(work, "policy", "instance"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(work, "policy", "instance", "floor.cue"), []byte(floor.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		sh("add", ".")
+		sh("commit", "--quiet", "-m", "base")
+		sh("push", "--quiet", "origin", "main")
+		t.Chdir(work)
+		var stdout, stderr bytes.Buffer
+		for i := 1; i <= heads; i++ {
+			branch := fmt.Sprintf("head-%d", i)
+			sh("checkout", "--quiet", "-b", branch, "main")
+			if err := os.MkdirAll(filepath.Join(work, "src"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(work, "src", branch), []byte(branch+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			sh("add", ".")
+			sh("commit", "--quiet", "-m", branch)
+			sh("push", "--quiet", "origin", branch)
+			id := strings.Repeat(string(rune('p'+i)), 32)
+			if code := run([]string{"ready", "--change", id, branch}, &stdout, &stderr, os.Exit); code != 0 {
+				t.Fatalf("ready: %s", stderr.String())
+			}
+		}
+		printed, started = map[string]string{}, map[string]int{}
+		for _, args := range [][]string{{"pending"}, {"pending", "--checks"}} {
+			listing := strings.Join(args, " ")
+			os.Remove(starts)
+			stdout.Reset()
+			stderr.Reset()
+			if code := run(args, &stdout, &stderr, os.Exit); code != 0 {
+				t.Fatalf("%s: %s", listing, stderr.String())
+			}
+			log, _ := os.ReadFile(starts)
+			printed[listing], started[listing] = stdout.String(), strings.Count(string(log), "cue\n")
+		}
+		return printed, started
+	}
+
+	_, small := project(3, 1)
+	out, large := project(9, 4)
+	if want := "requires 9 quick checks, 0 slow"; strings.Count(out["pending --checks"], want) != 4 {
+		t.Fatalf("pending --checks does not say %q of each of four heads:\n%s", want, out["pending --checks"])
+	}
+	for listing, n := range small {
+		if n == 0 || large[listing] != n {
+			t.Errorf("%s started %d cue processes for three checks and one head, and %d for nine and four heads", listing, n, large[listing])
 		}
 	}
 }

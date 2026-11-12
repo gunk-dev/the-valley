@@ -63,5 +63,6 @@ usage: valley pending [--all] [--repo <name>] [--checks] [--drafts] [--branches]
                      --known-signers FILE, --integrator-name NAME
                                   what a transfer statement is verified
                                   with (see changes below)
-                   reading the checks costs seconds for each project
-                   with a ready change.
+                   for each project with a ready change, reading the
+                   checks reads the policy once and runs attest verify
+                   for each note.

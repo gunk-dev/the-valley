@@ -33,11 +33,12 @@
 //	  ✗ xzus v3  restack: a conflict rebasing xzus onto main at a1b2c3d
 //
 // Checks are counted as valley changes --checks reads them
-// (versionchecks.go): for each project with a ready change, one read of
-// the policy and an attest verify for each note, and nothing for a
-// project without one. When nothing waits on an approval, one line says
-// so in place of needs you, and moving is left out when nothing moves.
-// Older versions of a change are never listed.
+// (versionchecks.go): for each project with a ready change, or with a
+// draft that --drafts --checks lists, one read of the policy and an
+// attest verify for each note, and nothing for a project without one.
+// When nothing waits on an approval, one line says so in place of needs
+// you, and moving is left out when nothing moves. Older versions of a
+// change are never listed.
 //
 // A last line counts the drafts and the branches on origin that no change
 // is on, with the flags that list them in full. --drafts and --branches
@@ -99,7 +100,10 @@
 // the checks that grew against their recent cost on the same capacity
 // (checkcost.go): "checks: 21 passed in 9m10s (eval 24s); worker-e2e
 // 431s, +68s against its recent 363s". -v gives the full check state
-// with or without --checks.
+// with or without --checks. With --drafts and --checks, a draft's block
+// carries the same two lines, and its name line says its checks in a
+// row's words: "checks 18/18", "2 checks pending", or "✗ valley-request
+// failed". A draft's checks are read only when it is listed.
 //
 // Several projects, as --all or --repo lists them, make one listing: each
 // main line and each row names its project, and the rows of every project
@@ -113,7 +117,8 @@
 // With --json it prints valley-pending/v1: valley-changes/v1's shape, with
 // the pending changes alone in changes, each marked approved or not, the
 // drafts in an array of their own, drafts, and the same branches. --checks
-// gives each pending change its checks object.
+// gives each pending change its checks object, and with --drafts each
+// draft that has not landed too.
 
 package main
 
@@ -242,7 +247,7 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 			view := r.pendingView(h)
 			r.addCarried(&view, stderr)
 			if l.checks {
-				r.addChecks(&view, c, stderr)
+				r.addChecks(&view, l.drafts, c, stderr)
 			}
 			utf8Branches(&view, stderr)
 			doc.Repos = append(doc.Repos, view)
@@ -770,13 +775,23 @@ func prefixed(lead string, lines []string) []string {
 	return out
 }
 
-// nameLine is an entry's first line: its name, in bold on a terminal, and
-// the head's age and author at the right margin. When that leaves too
-// little room, the author is cut short. When even that leaves too little,
-// the age and author go on a line of their own, indented as rest is.
+// nameLine is an entry's first line: its name, in bold on a terminal,
+// then, for a draft whose checks were read, what they are as a row says a
+// ready change's (draftChecks), cut short to fit, and the head's age and
+// author at the right margin. When that leaves too little room, the
+// author is cut short. When even that leaves too little, the age and
+// author go on a line of their own, indented as rest is.
 func (t terminal) nameLine(lead, name string, e *entry, rest string) []string {
 	left := lead + t.strong(name)
 	used := columns(lead + name)
+	if glyph, says := draftChecks(e); says != "" {
+		left, used = left+"  ", used+2
+		if glyph != "" {
+			left, used = left+t.tint(colourRefused, glyph)+" ", used+columns(glyph)+1
+		}
+		says = fit(says, t.width-used)
+		left, used = left+says, used+columns(says)
+	}
 	if e.age == "" && e.author == "" {
 		return []string{left}
 	}
@@ -789,6 +804,21 @@ func (t terminal) nameLine(lead, name string, e *entry, rest string) []string {
 		right = e.age + " · " + fit(e.author, short)
 	}
 	return []string{left + strings.Repeat(" ", t.width-used-columns(right)) + right}
+}
+
+// draftChecks is a draft's checks as its name line says them, in the
+// words a ready change's row uses: passed out of required, or how many
+// are pending (checkCount), or, with the glyph ✗, the checks that
+// failed. says is "" for another entry, or a draft whose checks were not
+// read.
+func draftChecks(e *entry) (glyph, says string) {
+	switch {
+	case e.section != "drafts" || e.state == nil:
+		return "", ""
+	case e.state.State == checkFailed:
+		return "✗", failedNames(e.state) + " failed"
+	}
+	return "", checkCount(e.state)
 }
 
 // branchName is a branch's name as printed: as it is, or, when it holds a

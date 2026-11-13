@@ -721,8 +721,8 @@ grep -qF "open's plan graph could not be read, so no change shows a knot" "$w/er
 git -C "$data/open.git" update-ref refs/the-valley/knots "$graph_tip"
 
 # ----------------------------------------------------------------------
-# --checks: each ready change's required checks, passed, failed or
-# pending by the note the integrator would judge each by. The host
+# --checks: each ready change's and draft's required checks, passed,
+# failed or pending by the note the integrator would judge each by. The host
 # publishes its signers in the instance, as its publisher writes them,
 # and a check worker's key is among them. The floor requires prose-format
 # of each change here. The worker's note for one head's tree records a
@@ -770,6 +770,20 @@ ready "$K2" chk-fail
 evidence chk-fail failed
 branch chk-none origin/main chk-none
 ready "$K3" chk-none
+# Three drafts, read from the same notes: one whose check passed, one
+# whose check failed, and one with none.
+D3="$(id mkmk)" D4="$(id mlml)" D5="$(id mnmn)"
+branch dchk-pass origin/main dchk-pass
+ready "$D3" dchk-pass
+evidence dchk-pass passed
+branch dchk-fail origin/main dchk-fail
+ready "$D4" dchk-fail
+evidence dchk-fail failed
+branch dchk-none origin/main dchk-none
+ready "$D5" dchk-none
+ok valley unready "$D3"
+ok valley unready "$D4"
+ok valley unready "$D5"
 
 ok valley changes --json --checks
 checks() { printf '.repos[0].changes[] | select(.change_id == "%s") | .versions[.active-1].checks' "$1"; }
@@ -779,10 +793,17 @@ holds "$(checks "$K1") | .state == \"passed\" and .tree == \"$(tree_digest chk-p
   "$(checks "$K2") | .required[0] | .name == \"prose-format\" and .state == \"failed\" and .signer == \"worker+$workerhash\"" \
   "$(checks "$K2") | .required[0].why | contains(\"predicate.result\")" \
   "$(checks "$K3") | .state == \"pending\" and .required == [{name: \"prose-format\", state: \"pending\"}]" \
-  '[.repos[0].changes[] | select(.state != "ready") | .versions[] | select(has("checks"))] == []' \
+  "$(checks "$D3") | .state == \"passed\" and .required == [{name: \"prose-format\", state: \"passed\", signer: \"worker+$workerhash\"}]" \
+  "$(checks "$D4") | .state == \"failed\" and .required[0].name == \"prose-format\" and .required[0].signer == \"worker+$workerhash\"" \
+  "$(checks "$D4") | .required[0].why | contains(\"predicate.result\")" \
+  "$(checks "$D5") | .state == \"pending\" and .required == [{name: \"prose-format\", state: \"pending\"}]" \
+  '[.repos[0].changes[] | select(.state == "withdrawn") | .versions[] | select(has("checks"))] == []' \
   '[.repos[0].changes[] | .versions[] | select(.landing == "landed" or .landing == "landed-recorded") | select(has("checks"))] == []'
 ok valley pending --json --checks
-holds "$(checks "$K2") | .state == \"failed\""
+holds "$(checks "$K2") | .state == \"failed\"" '[.repos[0].drafts[].versions[] | select(has("checks"))] == []'
+ok valley pending --json --drafts --checks
+holds "$(checks "$K2") | .state == \"failed\"" \
+  "[.repos[0].drafts[] | [.handle, .versions[.active-1].checks.required[0].state]] == [[\"lmlm\", \"pending\"], [\"mkmk\", \"passed\"], [\"mlml\", \"failed\"], [\"mnmn\", \"pending\"], [\"qqqq\", \"pending\"], [\"zzzz\", \"pending\"]]"
 # Each row counts its checks, passed out of required when all passed, and
 # otherwise how many are pending. A change whose check failed moves, and
 # says which. The rows are in landing order: pppp, U and H became ready
@@ -799,6 +820,28 @@ ok valley pending --checks
 after '^  4  klkl v1  ' '^     chk-pass$' '^     requires 1 quick check, 0 slow$' '^     checks: 1 passed$'
 after '^  ✗ kmkm v1  prose-format failed$' '^    requires 1 quick check, 0 slow$' '^    checks: 1 failed \(prose-format\)$'
 after '^  5  knkn v1  ' '^     chk-none$' '^     requires 1 quick check, 0 slow$' '^     checks: 1 pending$'
+no_line '(mkmk|mlml|mnmn) v1'
+# With --drafts, a draft's block says its checks in a ready row's words.
+ok valley pending --drafts --checks
+after '^mkmk v1 on dchk-pass  checks 1/1  ' '^  dchk-pass$' '^  1 commit · ' \
+  '^  requires 1 quick check, 0 slow$' '^  checks: 1 passed$'
+after '^mlml v1 on dchk-fail  ✗ prose-format failed  ' '^  dchk-fail$' '^  1 commit · ' \
+  '^  requires 1 quick check, 0 slow$' '^  checks: 1 failed \(prose-format\)$'
+after '^mnmn v1 on dchk-none  1 check pending  ' '^  dchk-none$' '^  1 commit · ' \
+  '^  requires 1 quick check, 0 slow$' '^  checks: 1 pending$'
+# review shows a draft's checks line, and still offers no approve.
+printf 'a\ns\n' | ok env VALLEY_REVIEW_CHECKS_WAIT=120 valley review "$D4"
+grep -qx 'mlml v1 · checks: 1 failed (prose-format) · draft (its owner, alice, has not readied it)' "$w/out" \
+  || fail "review's prompt did not carry the draft's checks line"
+line 'answer v or s$'
+no_line '\[a\]pprove'
+# Readied at the same head, the draft lists the same check states.
+ready "$D4" dchk-fail
+ok valley changes --json --checks
+holds "$(checks "$D4") | .state == \"failed\" and .tree == \"$(tree_digest dchk-fail)\" and (.required | length) == 1" \
+  "$(checks "$D4") | .required[0] | .state == \"failed\" and .signer == \"worker+$workerhash\" and (.why | contains(\"predicate.result\"))"
+ok valley pending
+line '^  ✗ mlml v1  prose-format failed$'
 
 # --checks with the host's worker telemetry: each nix check's build time
 # for the version, the median of its recent uncached, passing builds in

@@ -3156,16 +3156,17 @@ another section is marked with it, as `(ready)` marks a ready change inside a br
 A change also says `includes <handle>` for a change its head contains that is not an entry, such as
 a withdrawn one, and `uncertain` when that applies. It says `restack:` and what its restack report
 says when that report is current. A historical report is left out. `--checks` adds the checks each
-change requires, by cost, as `valley checks` derives them. Within a section, the stack with the
-latest commit comes first. Every line fits the terminal's width, or 80 columns when stdout is not a
-terminal. A title is cut short with `…`, and a handle or a branch never is. On a terminal, names are
-bold, unless `NO_COLOR` is set.
+change requires, by cost, as `valley checks` derives them, and their state. A draft's are read only
+when `--drafts` lists it, in the same batch as the ready changes', and its name line counts them as
+a ready row does. Within a section, the stack with the latest commit comes first. Every line fits
+the terminal's width, or 80 columns when stdout is not a terminal. A title is cut short with `…`,
+and a handle or a branch never is. On a terminal, names are bold, unless `NO_COLOR` is set.
 
 `valley pending --json` prints `valley-pending/v1`. It has the shape of `valley-changes/v1`, with
 the human view's sections. `changes` holds only the ready changes that have not landed. Each
 repository has a `drafts` array as well, holding the drafts, with the same entry shape, including
-`knots`. `branches` is the same as in `valley-changes/v1`. Its `includes` counts only changes that
-have not landed.
+`knots`, and with `--drafts --checks` the `checks` of each draft that has not landed. `branches` is
+the same as in `valley-changes/v1`. Its `includes` counts only changes that have not landed.
 
 Each change in `changes` has `approved`: `true` when its active version has an integration request
 at its head, or when an earlier version's request carries its approval to the active version, as

@@ -789,7 +789,7 @@ func runChanges(g git, args []string, stdout, stderr io.Writer) error {
 	for _, r := range repos {
 		view := r.repoView(h, everyChange, unlanded)
 		if l.checks {
-			r.addChecks(&view, c, stderr)
+			r.addChecks(&view, true, c, stderr)
 		}
 		utf8Branches(&view, stderr)
 		doc.Repos = append(doc.Repos, view)

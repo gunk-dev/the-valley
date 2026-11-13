@@ -1,15 +1,20 @@
 package main
 
 // The check state valley changes --checks and valley pending --checks
-// list for the active version of each ready change whose active version
-// has not landed: the checks the policy requires of it, and for each the
-// state of the note the integrator would judge it by.
+// list for the active version of each ready change and each draft that
+// has not landed as any version: the checks the policy requires of it,
+// and for each the state of the note the integrator would judge it by.
+// valley pending reads a draft's only when it lists the drafts, with
+// --drafts, and valley review reads it for the change it shows.
 //
-// The required checks are derived as the check worker derives them
-// (worker.go): over the head's merge base with main, under both policy
-// layers read at main's tip on origin. Each nix check's note is read as
-// coverage reads it (coverage.go), from origin's attestation refs for the
-// head's tree, verified under the host's published known-signers file:
+// A draft's checks are read exactly as a ready change's. The required
+// checks are derived as the check worker derives them (worker.go): over
+// the head's merge base with main, under both policy layers read at
+// main's tip on origin. Each nix check's note is read as coverage reads
+// it (coverage.go), from origin's attestation refs for the head's tree,
+// verified under the host's published known-signers file. A note is
+// about a tree, not a change's state, so a draft made ready at the same
+// head lists the same states:
 //
 //   - passed: the note judged is one coverage would reuse;
 //   - failed: the note judged verifies, is signed by a signer who counts
@@ -27,12 +32,13 @@ package main
 //
 // It is behind --checks because it costs each repository a read of the
 // policy with cue and an attest verify for each note. The reads are
-// batched by repository: the policy is read once, without asking cue
-// which requirements are mandatory, since nothing here shows or decides
-// by a pin; origin's attestation refs for every head are listed in one
-// ls-remote and fetched in one fetch; and the host's signers are read
-// once. A read that fails leaves the changes it was for without check
-// state, and says so on stderr; it never reads as no evidence.
+// batched by repository, over the ready changes and drafts together: the
+// policy is read once, without asking cue which requirements are
+// mandatory, since nothing here shows or decides by a pin; origin's
+// attestation refs for every head are listed in one ls-remote and fetched
+// in one fetch; and the host's signers are read once. A read that fails
+// leaves the changes it was for without check state, and says so on
+// stderr; it never reads as no evidence.
 //
 // Each nix check also says what it cost the host's check worker to build
 // for this version, against what it recently cost (checkcost.go), when
@@ -90,26 +96,39 @@ type jsonCheckState struct {
 	Grown         bool `json:"grown,omitempty"`
 }
 
+// unlandedDraft is a draft that has not landed as any version.
+func unlandedDraft(s *snapshot, n recorded) bool {
+	return n.record.State == change.Draft && !s.isLanded(n)
+}
+
 // addChecks gives the active version of each pending change in view its
-// check state, and its build times from the host's worker telemetry,
-// read through c, or none when c is nil. view is this repository's.
-func (l listed) addChecks(view *jsonRepo, c *costs, stderr io.Writer) {
+// check state, and, with drafts, that of each draft in view that has not
+// landed, whether view lists it in changes or in drafts. Each also gets
+// its build times from the host's worker telemetry, read through c, or
+// none when c is nil. view is this repository's.
+func (l listed) addChecks(view *jsonRepo, drafts bool, c *costs, stderr io.Writer) {
 	if l.err != nil {
 		return
 	}
-	pending := map[[2]string]bool{}
+	wanted := map[[2]string]bool{}
 	for _, n := range l.snap.all {
-		if pendingChange(l.snap, n) {
-			pending[[2]string{n.record.Target, n.id}] = true
+		if pendingChange(l.snap, n) || drafts && unlandedDraft(l.snap, n) {
+			wanted[[2]string{n.record.Target, n.id}] = true
 		}
+	}
+	lists := []*[]jsonChange{&view.Changes}
+	if view.Drafts != nil {
+		lists = append(lists, view.Drafts)
 	}
 	var heads []*jsonVersion
 	changeOf := map[*jsonVersion]string{}
-	for i := range view.Changes {
-		ch := &view.Changes[i]
-		if pending[[2]string{ch.Target, ch.ChangeID}] {
-			heads = append(heads, &ch.Versions[ch.Active-1])
-			changeOf[heads[len(heads)-1]] = ch.ChangeID
+	for _, list := range lists {
+		for i := range *list {
+			ch := &(*list)[i]
+			if wanted[[2]string{ch.Target, ch.ChangeID}] {
+				heads = append(heads, &ch.Versions[ch.Active-1])
+				changeOf[heads[len(heads)-1]] = ch.ChangeID
+			}
 		}
 	}
 	if len(heads) == 0 {
@@ -119,7 +138,7 @@ func (l listed) addChecks(view *jsonRepo, c *costs, stderr io.Writer) {
 		fmt.Fprintf(stderr, "valley: %s: %s\n", l.name, fmt.Sprintf(format, args...))
 	}
 	if l.snap.tip == "" {
-		warn("origin has no main to read the policy at, so no ready change lists its checks")
+		warn("origin has no main to read the policy at, so no change lists its checks")
 		return
 	}
 	var reading *costRead
@@ -127,16 +146,16 @@ func (l listed) addChecks(view *jsonRepo, c *costs, stderr io.Writer) {
 		reading = c.start(l.g)
 	}
 	if _, err := l.snap.layers(); err != nil {
-		warn("the policy at main did not read, so no ready change lists its checks: %v", err)
+		warn("the policy at main did not read, so no change lists its checks: %v", err)
 		return
 	}
 	if _, err := schemaFile(l.g, ""); err != nil {
-		warn("%v, so no ready change lists its checks", err)
+		warn("%v, so no change lists its checks", err)
 		return
 	}
 	model, err := l.snap.model()
 	if err != nil {
-		warn("the policy at main did not read, so no ready change lists its checks: %v", err)
+		warn("the policy at main did not read, so no change lists its checks: %v", err)
 		return
 	}
 	repo := l.g.dir
@@ -189,7 +208,7 @@ func (l listed) addChecks(view *jsonRepo, c *costs, stderr io.Writer) {
 	// The evidence origin holds for every head, listed and fetched at once.
 	o, err := listOrigin(l.g, patterns...)
 	if err != nil {
-		warn("could not list the evidence origin holds, so no ready change lists its checks")
+		warn("could not list the evidence origin holds, so no change lists its checks")
 		return
 	}
 	var oids []string
@@ -198,7 +217,7 @@ func (l listed) addChecks(view *jsonRepo, c *costs, stderr io.Writer) {
 	}
 	if len(oids) > 0 {
 		if err := fetch(l.g, oids...); err != nil {
-			warn("could not fetch the evidence origin holds, so no ready change lists its checks")
+			warn("could not fetch the evidence origin holds, so no change lists its checks")
 			return
 		}
 	}
@@ -303,8 +322,8 @@ func checksLine(c *jsonVersionChecks) string {
 //
 //	<change ID>	checks: 21 passed in 9m10s (eval 24s)
 //
-// A change that is not ready, or whose active version has landed, has no
-// check state, and so no line. What could not be read is said on stderr,
+// A ready change and a draft each have one. A withdrawn change, or one
+// that has landed as any version, has no check state, and so no line. What could not be read is said on stderr,
 // as valley pending --checks says it, and leaves the line out.
 func runCheckLine(g git, args []string, stdout, stderr io.Writer) error {
 	for _, a := range args {
@@ -329,9 +348,10 @@ func runCheckLine(g git, args []string, stdout, stderr io.Writer) error {
 	return err
 }
 
-// activeChecks is each change named that is ready and has not landed, in
-// this repository, with its active version's check state, as valley pending
-// --checks reads it, and with build times read through c when it is given.
+// activeChecks is each change named that is ready or a draft and has not
+// landed, in this repository, with its active version's check state, as
+// valley pending --drafts --checks reads it, and with build times read
+// through c when it is given.
 func activeChecks(g git, ids []string, c *costs, stderr io.Writer) ([]jsonChange, error) {
 	wanted := map[string]bool{}
 	for _, id := range ids {
@@ -347,8 +367,10 @@ func activeChecks(g git, ids []string, c *costs, stderr io.Writer) ([]jsonChange
 	if r.err != nil {
 		return nil, r.err
 	}
-	named := func(s *snapshot, n recorded) bool { return wanted[n.id] && pendingChange(s, n) }
+	named := func(s *snapshot, n recorded) bool {
+		return wanted[n.id] && (pendingChange(s, n) || unlandedDraft(s, n))
+	}
 	view := r.repoView(handles(repos), named, unlanded)
-	r.addChecks(&view, c, stderr)
+	r.addChecks(&view, true, c, stderr)
 	return view.Changes, nil
 }

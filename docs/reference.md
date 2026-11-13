@@ -238,10 +238,11 @@ moving (3)
   after it says `on <base>`. A block also says `includes <handle>` for an unlanded change its head
   contains that is not listed, such as a `withdrawn` one, `uncertain` when the version may have
   landed without its evidence being stored, and what a current restack report says.
-- **Cost:** For each project with a ready change, reading the checks reads the policy once, lists
-  and fetches the evidence on `origin` once, and runs `attest verify` for each note. It costs
-  nothing for a project without one. `valley pending` also writes the shell-completion handle cache
-  for the current repository at `<git-common-dir>/valley/handles`.
+- **Cost:** For each project with a ready change, or with a draft that `--drafts --checks` lists,
+  reading the checks reads the policy once, lists and fetches the evidence on `origin` once for
+  every head, and runs `attest verify` for each note. It costs nothing for a project without one.
+  `valley pending` also writes the shell-completion handle cache for the current repository at
+  `<git-common-dir>/valley/handles`.
 
 ```sh
 valley pending
@@ -266,8 +267,11 @@ valley pending [--all] [--repo <name>] [--checks] [--drafts] [--branches] [--jso
     [build times](#build-times): the total, the evaluation, and each check that grew against its
     baseline, as in
     `checks: 21 passed in 9m10s (eval 24s); worker-e2e 431s, +100s against its recent 331s`. With
-    `--json`, the active version of each ready change carries the same [`checks`](#version-checks)
-    object.
+    `--drafts`, each draft's block carries the same two lines, and its name line says its checks in
+    a row's words: `checks 18/18`, `2 checks pending`, or `✗ valley-request failed`. A draft's
+    checks are read only when `--drafts` lists it. With `--json`, the active version of each ready
+    change carries the same [`checks`](#version-checks) object, and with `--drafts` so does that of
+    each draft that has not landed.
   - `--drafts`, `--branches`: List the drafts, or the branches no change is on, as blocks in place
     of their count. Each listing stacks its own entries.
   - `--json`: Emits [`valley-pending/v1`](#valley-changesv1-and-valley-pendingv1) JSON. Each change
@@ -296,9 +300,10 @@ valley changes --json [--all] [--repo <name>] [--checks] [-v] [--known-signers <
   `valley pending` for human output), `--all`, `--repo <name>`, `-v`, `--known-signers <file>` and
   `--integrator-name <name>` (as for [`valley pending`](#valley-pending)).
   - `--checks`: Adds a [`checks`](#version-checks) object to the active version of each ready change
-    whose active version has not landed. It says which of the checks the policy requires passed,
-    failed or are pending, and what each nix check cost to build ([build times](#build-times)). It
-    costs what [`valley pending`](#valley-pending) costs to read the checks.
+    and each draft that has not landed as any version. It says which of the checks the policy
+    requires passed, failed or are pending, and what each nix check cost to build
+    ([build times](#build-times)). It costs what [`valley pending`](#valley-pending) costs to read
+    the checks.
 
 ### `valley status`
 
@@ -327,12 +332,12 @@ valley status [--json] [-v] [--known-signers <file>] [--integrator-name <name>] 
 
 `valley review` pages a change's diff (or a stack layer by layer from bottom to top), shows linked
 knots and comparison against any prior approved version, and prompts to approve, rebase, view the
-full diff, reject the remote branch, or skip. Just before the prompt, a ready change shows the state
-of its checks and their [build times](#build-times) on one line, as `valley pending --checks` shows
-it. `valley review` reads them in the background while it shows the diff and never waits for them: a
-line not ready at the prompt is left out. `VALLEY_REVIEW_CHECKS_WAIT` sets how many seconds to wait
-for it. With no change, it reviews each change that needs the operator in turn (see
-[the walk](#the-walk)).
+full diff, reject the remote branch, or skip. Just before the prompt, a ready change or a draft
+shows the state of its checks and their [build times](#build-times) on one line, as
+`valley pending --checks` shows it. `valley review` reads them in the background while it shows the
+diff and never waits for them: a line not ready at the prompt is left out.
+`VALLEY_REVIEW_CHECKS_WAIT` sets how many seconds to wait for it. With no change, it reviews each
+change that needs the operator in turn (see [the walk](#the-walk)).
 
 ```sh
 valley review kqxm
@@ -2697,8 +2702,9 @@ Five `--json` commands emit versioned JSON documents for scripts and front ends.
     `active`.
   - `versions` (`array` of
     `{ "n", "head" (40-hex OID without git-sha1: prefix), "title", "branch", "uploader", "landing" ("landed"|"landed-recorded"|"uncertain"|"not-landed"), "landed_commit" (<oid or null>), "request" ({"ref","commit"} or null), "outcome" ({"decision","head","tip"} or null) }`).
-    With `--checks`, the active version of a ready change that has not landed also carries
-    [`checks`](#version-checks).
+    With `--checks`, the active version of a ready change or a draft that has not landed as any
+    version also carries [`checks`](#version-checks); in `valley-pending/v1`, a draft's only with
+    `--drafts`.
   - `landed_version` (`int` or `null`) and `landed_commit` (`<oid>` or `null`): The version the
     change landed as, and that version's `landed_commit`, with the meaning of `valley-status/v1`'s
     `landed_version`. The change has landed as the newest version whose `landing` is `landed` or
@@ -2717,9 +2723,10 @@ Five `--json` commands emit versioned JSON documents for scripts and front ends.
 
 ##### Version checks
 
-`checks` says whether the checks a ready change's active version requires have passed. It is the
-state of the evidence the integrator would judge each check by. A client reads it to see a failed
-check as soon as the host's check worker records it.
+`checks` says whether the checks a ready change's or a draft's active version requires have passed.
+It is the state of the evidence the integrator would judge each check by. A client reads it to see a
+failed check as soon as the host's check worker records it. Evidence is about a tree, so a draft
+readied at the same head carries the same `checks`.
 
 ```json
 "checks": {

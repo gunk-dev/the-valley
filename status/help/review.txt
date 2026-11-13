@@ -27,8 +27,8 @@ usage: valley review [-v] [--build-here] <change>
                    graph that links the change, as `does oc-6335749 (open):
                    <title>`. a missing or unreadable graph
                    shows no knots; -v warns on stderr. before the prompt, a
-                   ready change shows the state of its checks and what
-                   they cost the host's check worker to build, as pending
+                   ready change or a draft shows the state of its checks and
+                   what they cost the host's check worker to build, as pending
                    --checks shows it: `checks: 21 passed in 9m10s (eval
                    24s); worker-e2e 431s, +100s against its recent 331s`.
                    review reads them while it shows the diff and never

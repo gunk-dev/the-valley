@@ -84,8 +84,10 @@ func (r listed) queue(view jsonRepo, h handleMap, l listing, measured bool) (wai
 // as valley pending and valley review's walk (walk.go) both read it: the
 // rows that wait on an approval and the moving rows, each in landing
 // order. A change's checks are read before it is classed, so a change
-// whose check failed is moving rather than waiting. each, when it is not
-// nil, is given every repository's view as it is read.
+// whose check failed is moving rather than waiting. With --drafts and
+// --checks, the drafts' checks are read with them, in the same batch.
+// each, when it is not nil, is given every repository's view as it is
+// read.
 func operatorQueue(repos []listed, h handleMap, l listing, c *costs, stderr io.Writer, each func(listed, jsonRepo)) (waiting, moving []*entry) {
 	for _, r := range repos {
 		if r.err != nil {
@@ -96,7 +98,7 @@ func operatorQueue(repos []listed, h handleMap, l listing, c *costs, stderr io.W
 		r.addCarried(&view, stderr)
 		end()
 		end = phase("checks")
-		r.addChecks(&view, c, stderr)
+		r.addChecks(&view, l.drafts && l.checks, c, stderr)
 		end()
 		wa, mo := r.queue(view, h, l, l.verbose)
 		waiting, moving = append(waiting, wa...), append(moving, mo...)
@@ -193,7 +195,7 @@ func (r listed) changeEntry(section string, c jsonChange, h handleMap, l listing
 		name := func(id string) string { return h[handleKey{r.name, c.Target, id}] }
 		e.notes = append(e.notes, "restack: "+readable(restackSays(c.Restack.Report, name)))
 	}
-	if l.checks && section != "drafts" {
+	if l.checks {
 		e.requires = r.snap.checks(v.Head)
 	}
 	if v.Checks != nil {

@@ -33,8 +33,12 @@ usage: valley pending [--all] [--repo <name>] [--checks] [--drafts] [--branches]
                                   derives them, and its full check state,
                                   naming the checks that failed and what
                                   they cost the host's check worker to
-                                  build. with --json, give each pending
-                                  change its checks object
+                                  build. with --drafts, give each
+                                  draft's block the same lines, its name
+                                  line saying its checks as a row does.
+                                  with --json, give each pending change,
+                                  and with --drafts each draft, its
+                                  checks object
                      --drafts     list the drafts in full, in place of
                                   their count
                      --branches   list the branches no change is on in
@@ -63,6 +67,6 @@ usage: valley pending [--all] [--repo <name>] [--checks] [--drafts] [--branches]
                      --known-signers FILE, --integrator-name NAME
                                   what a transfer statement is verified
                                   with (see changes below)
-                   for each project with a ready change, reading the
-                   checks reads the policy once and runs attest verify
-                   for each note.
+                   for each project with a ready change, or a draft
+                   --drafts --checks lists, reading the checks reads the
+                   policy once and runs attest verify for each note.

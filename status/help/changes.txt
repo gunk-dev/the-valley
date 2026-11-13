@@ -12,13 +12,13 @@ usage: valley changes --json [--all] [--repo <name>] [--checks] [-v] [--known-si
                    (valley:<project>/<change id>, active first), and
                    the branches no change is on. -v warns on stderr when a
                    plan graph is missing or unreadable. --checks adds
-                   checks to the active version of each ready change that
-                   has not landed: each check the policy requires of it,
-                   passed, failed or pending by the note the integrator
-                   would judge it by on origin, and other for a check the
-                   host's worker does not run (docs/reference.md). each nix
-                   check also gives its build time for this version, and
-                   the median of its recent builds, from the host's
+                   checks to the active version of each ready change and
+                   each draft that has not landed: each check the policy
+                   requires of it, passed, failed or pending by the note the
+                   integrator would judge it by on origin, and other for a
+                   check the host's worker does not run (docs/reference.md).
+                   each nix check also gives its build time for this version,
+                   and the median of its recent builds, from the host's
                    worker telemetry; when that cannot be read, those
                    fields are left out and stderr says why. for each
                    project with such a change, it reads the policy once

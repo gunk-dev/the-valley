@@ -552,8 +552,9 @@ grep -A1 "^$ph v1 on drafts/paused  .* ago · " "$w/out" | grep -qx '  paused' |
 if grep -qE '(^|└ |├ )drafts/paused  ' "$w/out"; then fail 'pending listed a draft among the branches'; fi
 
 # A draft is not approved or rebased. review says so on the first line it
-# shows, above the diff, and again in place of its prompt, which offers
-# only [v]iew full diff and [s]kip: no [a]pprove, no [b]ase, and no
+# shows, above the diff, and again in place of its prompt, after the
+# draft's checks line, and the prompt offers only [v]iew full diff and
+# [s]kip: no [a]pprove, no [b]ase, and no
 # [r]eject, which would delete the branch its owner may be working on. An
 # answer it does not offer is answered with what it does, and acts on
 # nothing.
@@ -564,7 +565,7 @@ if git -C "$origin" rev-parse --verify --quiet "$request_ref" > /dev/null; then
 fi
 unchanged "$pid" refused "change $ph v1 is draft, not ready; nothing rebased" as requester valley rebase "$ph"
 drafted="$ph v1 is a draft: its owner (contributor) hasn't marked it ready, so it can't be approved yet."
-draft_header="$ph v1 · draft (its owner, contributor, has not readied it)"
+draft_header="$ph v1 · checks: none required · draft (its owner, contributor, has not readied it)"
 # review_draft <name>: review the draft by that name, answering a, b and
 # r before s. A prompt ends with no newline, so what follows it is on its
 # line.
@@ -727,7 +728,7 @@ fi
 # Shown as a draft from the start, the change is offered no [a]pprove,
 # and is not said to be behind main.
 printf 'b\ns\n' | as requester valley review "$rh" > "$w/out" 2> "$w/err" || fail "review of the draft $rh failed"
-grep -qxF "$rh v1 · draft (its owner, contributor, has not readied it)" "$w/out" \
+grep -qxF "$rh v1 · checks: none required · draft (its owner, contributor, has not readied it)" "$w/out" \
   && grep -qF '[v]iew diff  [s]kip: answer v or s' "$w/out" \
   || fail 'review of a stale draft did not say it is a draft in place of its prompt'
 if grep -qF -e '[a]pprove' -e '[b]ase' "$w/out"; then fail 'review offered a stale draft [a]pprove or [b]ase'; fi

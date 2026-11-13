@@ -132,7 +132,8 @@ valley status greeting
 `ready` prints a handle and version, such as `demo kqxm v1 ready`. Use the handle it actually prints
 in later commands. The handle identifies the change even when its commit changes. `status` reports
 readiness, any request, and the latest integration result. `valley pending` counts each ready
-change's checks; `valley pending --checks` names the ones that failed and what they cost.
+change's checks; `valley pending --checks` names the ones that failed and what they cost, and
+`valley pending --drafts --checks` shows a draft's checks the same way.
 
 If the commit already carries a `Change-Id` trailer or a jj `change-id` header, push it first and
 run `valley ready` without `--stamp`:

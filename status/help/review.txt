@@ -30,7 +30,9 @@ usage: valley review [-v] [--build-here] <change>
                    ready change or a draft shows the state of its checks and
                    what they cost the host's check worker to build, as pending
                    --checks shows it: `checks: 21 passed in 9m10s (eval
-                   24s); worker-e2e 431s, +100s against its recent 331s`.
+                   24s); worker-e2e 431s, +100s against its recent 331s`,
+                   or `checks: 20 passed, 1 pending (worker-e2e failed in
+                   the worker's build, 5m ago)`.
                    review reads them while it shows the diff and never
                    waits for them: a line not read by the prompt is not
                    shown, unless VALLEY_REVIEW_CHECKS_WAIT=<seconds> says

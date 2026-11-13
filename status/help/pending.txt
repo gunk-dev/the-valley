@@ -10,8 +10,10 @@ usage: valley pending [--all] [--repo <name>] [--checks] [--drafts] [--branches]
                    oldest ready first, as the check worker builds them,
                    then by project and change id. a row gives the
                    handle and active version, its checks as passed out of
-                   required (or how many are pending), and how long it
-                   has been ready, with its title under it. a stack of
+                   required (or how many are pending, or ✗ the pending
+                   checks whose newest build by the host's check worker
+                   failed, and when), and how long it has been ready,
+                   with its title under it. a stack of
                    such changes is one row, its top's, saying `stack of
                    N`: approving the top lands every layer. moving holds
                    the ready changes that need no approval now, one line
@@ -31,9 +33,14 @@ usage: valley pending [--all] [--repo <name>] [--checks] [--drafts] [--branches]
                      --checks     add to each row the checks the policy
                                   requires of it, by cost, as checks
                                   derives them, and its full check state,
-                                  naming the checks that failed and what
-                                  they cost the host's check worker to
-                                  build. with --drafts, give each
+                                  naming the checks that failed, the
+                                  pending checks that failed in the
+                                  worker's build, and what they cost the
+                                  host's check worker to build, with a
+                                  see: line that reads the worker's
+                                  report of a failure. that report is
+                                  diagnostic: a check's state comes from
+                                  notes alone. with --drafts, give each
                                   draft's block the same lines, its name
                                   line saying its checks as a row does.
                                   with --json, give each pending change,

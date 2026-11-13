@@ -970,6 +970,16 @@ ok valley pending --checks
 after '^  4  klkl v1  ' '^     chk-pass$' '^     requires 1 quick check, 0 slow$' \
   '^     checks: 1 passed in 1m40s \(eval 24s\)$'
 
+# A check a note records as passed shows as passed, though the worker's
+# build of it failed. A check no note decides carries the worker's report.
+{
+  build 1 open "$K1" 1 "$t1" failed 100000 24000 20 false
+  build 2 open "$K3" 1 "$(tree_digest chk-none)" failed 1000 24000 20 false
+} > "$tel/worker.jsonl"
+ok valley changes --json --checks
+holds "$(pf "$K1") | .state == \"passed\" and (has(\"worker\") | not)" \
+  "$(pf "$K3") | .state == \"pending\" and .worker.result == \"failed\" and .worker.run == \"r2\""
+
 # A host that refuses leaves every build time out, says why once, and
 # lists the check states all the same.
 touch "$tel/refuse"

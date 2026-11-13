@@ -1,16 +1,21 @@
 package main
 
 // What each check of a version cost the host to build, against what the
-// same check recently cost, for valley changes --checks, valley pending
-// --checks and valley review.
+// same check recently cost, and whether the host's newest build of it
+// failed, for valley changes --checks, valley pending --checks and valley
+// review.
 //
 // The numbers are the host's check worker's own: each attest run a pass
 // starts records a check.result for each check it builds, in the worker's
 // telemetry stream (workertelemetry.go), naming the project, change,
-// version and tree. Its build_ms is how long the check's nix build took,
-// and its eval_ms how long the run's shared evaluation took. These are
-// diagnostics, never evidence: nothing here is signed, and nothing judges
-// a change by them.
+// version and tree. Its result is passed, failed, or error when attest
+// could not decide the check, as when it did not evaluate. Its build_ms is
+// how long the check's nix build took, and its eval_ms how long the run's
+// shared evaluation took. A check that did not evaluate records no
+// build_ms, and no cost counts it. The worker records the end of each batch
+// too, with its result and its attest run. These are diagnostics, never
+// evidence: nothing here is signed, and neither approve, the integrator,
+// nor a check's or a version's state reads them.
 //
 // A listing reads the worker source once for each host it lists, with the
 // same command valley telemetry read runs (telemetry.go). The newest page
@@ -40,6 +45,21 @@ package main
 // A record from an attest that does not say whether the output was
 // cached counts as cached when its build wrote no log: nix writes the
 // builder's output to the log, and building nothing writes none.
+//
+// attest publishes nothing when any check of its batch fails, so a check
+// the worker built and that failed has no note, and its state is pending.
+// The worker's report tells it from a check not built yet:
+//
+//   - a check whose state is not passed carries worker, the result, time
+//     and attest run of the newest build of the check for the version's
+//     tree, when that build did not pass. The build may be any change's
+//     or version's with the same tree, since a check is about a tree. A
+//     record from an attest that names no tree counts only for its own
+//     change and version;
+//   - when a check is pending, the version carries worker, the time and
+//     attest run of the newest batch for its tree, when that batch failed
+//     and no check.result names its attest run: it failed before any
+//     check ran, as when the evaluation or attest itself failed.
 
 import (
 	"bufio"
@@ -97,17 +117,32 @@ func median(ms []int64) int64 {
 }
 
 // checkBuild is one check.result record of the worker's: one check built
-// for one version or main's tip, or on main's tip one that did not
-// evaluate.
+// for one version or main's tip, or one that did not evaluate.
 type checkBuild struct {
 	time, run       string
 	project, change string
 	version         int
 	tree, check     string
 	result          string
+	unevaluated     bool // the check did not evaluate, so nothing was built
 	buildMS, evalMS int64
 	cached          bool
 	capacity        string
+}
+
+// forTree reports whether b built a check for tree, or, when its record
+// names no tree, for version n of the change changeID.
+func (b *checkBuild) forTree(tree, changeID string, n int) bool {
+	return b.tree == tree || b.tree == "" && b.change == changeID && b.version == n
+}
+
+// batchEnd is the end of a batch the worker ran for a change's version:
+// when it ended, its attest run, the project and tree it was for, and its
+// result, passed, failed or cancelled.
+type batchEnd struct {
+	time, run     string
+	project, tree string
+	result        string
 }
 
 // costs reads the worker's telemetry of each host a listing serves, once
@@ -119,10 +154,11 @@ type costs struct {
 }
 
 type costRead struct {
-	done   chan struct{}
-	builds []checkBuild // newest first
-	mains  []mainRun    // the batches run on main tips (mainstate.go)
-	why    string       // why there are none, when the read failed
+	done    chan struct{}
+	builds  []checkBuild // newest first
+	mains   []mainRun    // the batches run on main tips (mainstate.go)
+	batches []batchEnd   // the ends of the batches run for changes, newest first
+	why     string       // why there are none, when the read failed
 }
 
 func newCosts() *costs {
@@ -147,17 +183,17 @@ func (c *costs) start(g git) *costRead {
 	c.reads[dest.identity()] = r
 	go func() {
 		defer close(r.done)
-		r.builds, r.mains, r.why = readBuilds(dest)
+		r.builds, r.mains, r.batches, r.why = readBuilds(dest)
 	}()
 	return r
 }
 
-// wait is what a read found, once it has ended, and whether it read. The
-// reason a read failed is said on stderr the first time it is met.
-func (c *costs) wait(r *costRead, warn func(format string, args ...any)) ([]checkBuild, bool) {
+// wait waits for a read to end, and reports whether it read. The reason a
+// read failed is said on stderr the first time it is met.
+func (c *costs) wait(r *costRead, warn func(format string, args ...any)) bool {
 	<-r.done
 	if r.why == "" {
-		return r.builds, true
+		return true
 	}
 	c.mu.Lock()
 	said := c.said[r.why]
@@ -166,16 +202,17 @@ func (c *costs) wait(r *costRead, warn func(format string, args ...any)) ([]chec
 	if !said {
 		warn("no check lists its build times: %s", r.why)
 	}
-	return nil, false
+	return false
 }
 
 // readBuilds reads up to costRecords of the newest records of the worker
 // source at dest, and returns the check builds among them, newest first,
-// and the starts and ends of the batches run on main tips.
-func readBuilds(dest sshDest) ([]checkBuild, []mainRun, string) {
+// the starts and ends of the batches run on main tips, and the ends of the
+// batches run for changes, newest first.
+func readBuilds(dest sshDest) ([]checkBuild, []mainRun, []batchEnd, string) {
 	first, err := readPage(dest, "")
 	if err != nil {
-		return nil, nil, err.Error()
+		return nil, nil, nil, err.Error()
 	}
 	pages := []workerPage{first}
 	var mu sync.Mutex
@@ -209,6 +246,7 @@ func readBuilds(dest sshDest) ([]checkBuild, []mainRun, string) {
 	seen := map[string]bool{}
 	var builds []checkBuild
 	var mains []mainRun
+	var batches []batchEnd
 	for _, page := range pages {
 		mains = append(mains, page.mains...)
 		for _, b := range page.builds {
@@ -217,16 +255,29 @@ func readBuilds(dest sshDest) ([]checkBuild, []mainRun, string) {
 				builds = append(builds, b.checkBuild)
 			}
 		}
+		for _, e := range page.batches {
+			if key := e.key; !seen[key] {
+				seen[key] = true
+				batches = append(batches, e.batchEnd)
+			}
+		}
 	}
 	sort.SliceStable(builds, func(i, j int) bool { return builds[i].time > builds[j].time })
-	return builds, mains, ""
+	sort.SliceStable(batches, func(i, j int) bool { return batches[i].time > batches[j].time })
+	return builds, mains, batches, ""
 }
 
 // workerPage is one answer to a read of the worker source.
 type workerPage struct {
-	cursor telemetry.Cursor
-	builds []keyedBuild
-	mains  []mainRun
+	cursor  telemetry.Cursor
+	builds  []keyedBuild
+	mains   []mainRun
+	batches []keyedBatch
+}
+
+type keyedBatch struct {
+	batchEnd
+	key string // the record's stream and number
 }
 
 type keyedBuild struct {
@@ -324,18 +375,22 @@ func parsePage(r io.Reader) (page workerPage, refused string, err error) {
 				page.mains = append(page.mains, run)
 				continue
 			}
+			if m.Type == "batch.end" {
+				e := batchEnd{time: m.Time, project: m.Project, tree: m.Tree}
+				e.run, _ = m.Data["attest_run"].(string)
+				e.result, _ = m.Data["result"].(string)
+				page.batches = append(page.batches, keyedBatch{e, fmt.Sprintf("%s#%d", m.Stream, m.Seq)})
+				continue
+			}
 			if m.Type != "check.result" {
 				continue
 			}
-			build, ok := m.Data["build_ms"].(float64)
-			if !ok && m.Change != "" {
-				continue // a check that did not evaluate built nothing
-			}
-			// A check on main that did not evaluate is kept as a run that
-			// failed, which main's state reads (mainstate.go). It passed
-			// no build, so no cost counts it.
+			// A check that did not evaluate is kept as a run that failed,
+			// which main's state and a version's worker report read. It
+			// built nothing, so no cost counts it.
+			build, built := m.Data["build_ms"].(float64)
 			b := checkBuild{time: m.Time, run: m.Run, project: m.Project, change: m.Change, version: m.Version,
-				tree: m.Tree, check: m.Check, buildMS: int64(build)}
+				tree: m.Tree, check: m.Check, unevaluated: !built, buildMS: int64(build)}
 			b.result, _ = m.Data["result"].(string)
 			if eval, ok := m.Data["eval_ms"].(float64); ok {
 				b.evalMS = int64(eval)
@@ -372,7 +427,7 @@ func addCosts(out *jsonVersionChecks, required []jsonRequired, project, changeID
 		var own *checkBuild
 		for j := range builds {
 			b := &builds[j]
-			if b.project == project && b.check == s.Name && b.change == changeID && b.version == n && (b.tree == "" || b.tree == out.Tree) {
+			if !b.unevaluated && b.project == project && b.check == s.Name && b.change == changeID && b.version == n && (b.tree == "" || b.tree == out.Tree) {
 				own = b
 				break
 			}
@@ -381,7 +436,7 @@ func addCosts(out *jsonVersionChecks, required []jsonRequired, project, changeID
 		other := false
 		for j := range builds {
 			b := &builds[j]
-			if b.project != project || b.check != s.Name {
+			if b.unevaluated || b.project != project || b.check != s.Name {
 				continue
 			}
 			if b.change == changeID || b.cached || b.result != checkPassed {
@@ -416,6 +471,54 @@ func addCosts(out *jsonVersionChecks, required []jsonRequired, project, changeID
 		eval += ms
 	}
 	out.BuildMS, out.EvalMS = &total, &eval
+}
+
+// addWorkerReports gives each nix check of a version that no note makes
+// passed the worker's report of its newest build for the version's tree,
+// when that build failed, whatever change or version it was built for.
+// When a nix check is pending, the version also gets the report of the
+// worker's newest batch for its tree, when that batch failed and recorded
+// no check's result: it failed before any check ran. builds and batches
+// are newest first.
+func addWorkerReports(out *jsonVersionChecks, required []jsonRequired, project, changeID string, n int, builds []checkBuild, batches []batchEnd) {
+	runner := map[string]string{}
+	for _, q := range required {
+		runner[q.Name] = q.Runner
+	}
+	ran := map[string]bool{} // the attest runs that recorded a check's result
+	for i := range builds {
+		ran[builds[i].run] = true
+	}
+	pending := false
+	for i := range out.Required {
+		s := &out.Required[i]
+		if runner[s.Name] != "nix" || s.State == checkPassed {
+			continue
+		}
+		pending = pending || s.State == checkPending
+		for j := range builds {
+			b := &builds[j]
+			if b.project != project || b.check != s.Name || !b.forTree(out.Tree, changeID, n) {
+				continue
+			}
+			if b.result != checkPassed {
+				s.Worker = &jsonWorkerReport{Result: b.result, Time: b.time, Run: b.run}
+			}
+			break
+		}
+	}
+	if !pending {
+		return
+	}
+	for _, e := range batches {
+		if e.project != project || e.tree != out.Tree {
+			continue
+		}
+		if e.result == checkFailed && e.run != "" && !ran[e.run] {
+			out.Worker = &jsonWorkerReport{Result: e.result, Time: e.time, Run: e.run}
+		}
+		break
+	}
 }
 
 // costLine is what checksLine adds about a version's build times: its

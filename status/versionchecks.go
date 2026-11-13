@@ -45,12 +45,28 @@ package main
 // the host's worker telemetry can be read. That read runs while the
 // policy is read. When it cannot be read, the fields are left out, stderr
 // says why once, and the check states are listed all the same.
+//
+// The same read tells a check the worker built and that failed from one
+// not built yet. attest publishes no note when any check of its batch
+// fails, so such a check reads as pending. When the worker's newest build
+// of a check for the head's tree failed and no note makes the check
+// passed, the check carries the worker's report: its result, when it
+// ended, and its attest run (checkcost.go). When a check is pending and
+// the worker's newest batch for the tree failed before any check ran, the
+// version carries that batch's report. A row and the checks line name a
+// pending check as failed in the worker's build, in words apart from a
+// failure a note records, and with --checks a see: line names the command
+// that reads the worker's records and logs. This is diagnostic, never
+// evidence: nothing in it is signed, a check's state and the version's
+// come from notes alone, and neither approve nor the integrator reads it.
+// When the telemetry cannot be read, nothing is claimed.
 
 import (
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"the-valley/change"
 )
@@ -74,6 +90,19 @@ type jsonVersionChecks struct {
 	// built them, when the worker's telemetry holds any (checkcost.go).
 	BuildMS *int64 `json:"build_ms,omitempty"`
 	EvalMS  *int64 `json:"eval_ms,omitempty"`
+	// Worker is the worker's report of its newest batch for this tree,
+	// when a nix check is pending and that batch failed before any check
+	// ran (addWorkerReports). It is diagnostic: State does not count it.
+	Worker *jsonWorkerReport `json:"worker,omitempty"`
+}
+
+// jsonWorkerReport is what the worker's telemetry records of a build or a
+// batch of its that failed: its result, when it ended, and the attest run
+// whose records and logs say why.
+type jsonWorkerReport struct {
+	Result string `json:"result"`
+	Time   string `json:"time"`
+	Run    string `json:"run"`
 }
 
 // jsonCheckState is one required check and the state of its note.
@@ -94,6 +123,11 @@ type jsonCheckState struct {
 	// other capacity.
 	OtherCapacity bool `json:"other_capacity,omitempty"`
 	Grown         bool `json:"grown,omitempty"`
+	// Worker is the worker's report of its newest build of the check for
+	// this tree, when that build failed and no note makes the check
+	// passed (addWorkerReports). It is diagnostic: State does not count
+	// it.
+	Worker *jsonWorkerReport `json:"worker,omitempty"`
 }
 
 // unlandedDraft is a draft that has not landed as any version.
@@ -229,11 +263,7 @@ func (l listed) addChecks(view *jsonRepo, drafts bool, c *costs, stderr io.Write
 	if p != nil {
 		here = counting{project: project(l.g), integrator: p.name, projects: p.projects}
 	}
-	var builds []checkBuild
-	timed := false
-	if c != nil {
-		builds, timed = c.wait(reading, warn)
-	}
+	timed := c != nil && c.wait(reading, warn)
 
 	for _, h := range read {
 		stored := storedFor(h.digest, o.refs)
@@ -248,7 +278,8 @@ func (l listed) addChecks(view *jsonRepo, drafts bool, c *costs, stderr io.Write
 		}
 		h.v.Checks = checkStates(h.digest, h.required, judged, unsigned, unjudged)
 		if timed {
-			addCosts(h.v.Checks, h.required, l.name, h.change, h.v.N, builds)
+			addCosts(h.v.Checks, h.required, l.name, h.change, h.v.N, reading.builds)
+			addWorkerReports(h.v.Checks, h.required, l.name, h.change, h.v.N, reading.builds, reading.batches)
 		}
 	}
 }
@@ -289,8 +320,11 @@ func checkStates(digest string, required []jsonRequired, judged map[string]judgm
 }
 
 // checksLine is valley pending's line for a version's check state, with
-// what its checks cost to build when that is known (costLine):
-// "checks: 18 passed, 1 failed (valley-request) in 9m10s (eval 24s)".
+// what the worker reports of the pending checks' failed builds
+// (workerSays), and what its checks cost to build when that is known
+// (costLine): "checks: 18 passed, 1 failed (valley-request) in 9m10s
+// (eval 24s)", or "checks: 18 passed, 1 pending (valley-request failed in
+// the worker's build, 5m ago)".
 func checksLine(c *jsonVersionChecks) string {
 	if len(c.Required) == 0 {
 		return "checks: none required"
@@ -303,6 +337,7 @@ func checksLine(c *jsonVersionChecks) string {
 			failed = append(failed, q.Name)
 		}
 	}
+	worker := workerSays(c)
 	var parts []string
 	for _, state := range []string{checkPassed, checkFailed, checkPending, checkOther} {
 		if count[state] == 0 {
@@ -312,9 +347,71 @@ func checksLine(c *jsonVersionChecks) string {
 		if state == checkFailed {
 			part += " (" + strings.Join(failed, ", ") + ")"
 		}
+		if state == checkPending && worker != "" {
+			part += " (" + worker + ")"
+		}
 		parts = append(parts, part)
 	}
 	return "checks: " + strings.Join(parts, ", ") + costLine(c)
+}
+
+// workerSays is what the worker reports of a version's pending checks, in
+// words that tell it from a failure a note records: the checks whose
+// newest build failed, and when the newest of those builds ended, then
+// the batch that failed before any check ran, and when: "valley-request
+// failed in the worker's build, 5m ago; the worker's batch failed, 1m
+// ago". It is "" when the worker reports neither.
+func workerSays(c *jsonVersionChecks) string {
+	var names []string
+	newest := ""
+	for _, q := range c.Required {
+		if q.State == checkPending && q.Worker != nil {
+			names = append(names, q.Name)
+			newest = max(newest, q.Worker.Time)
+		}
+	}
+	var says []string
+	switch len(names) {
+	case 0:
+	case 1:
+		says = append(says, names[0]+" failed in the worker's build"+agoText(newest))
+	default:
+		says = append(says, firstFew(names)+" failed in the worker's builds"+agoText(newest))
+	}
+	if c.Worker != nil {
+		says = append(says, "the worker's batch failed"+agoText(c.Worker.Time))
+	}
+	return strings.Join(says, "; ")
+}
+
+// agoText is ", 5m ago" for a record's time, or "" when it does not read.
+func agoText(stamp string) string {
+	at, err := time.Parse(time.RFC3339, stamp)
+	if err != nil {
+		return ""
+	}
+	return ", " + ago(time.Now().Unix(), at.Unix()) + " ago"
+}
+
+// rowChecks is a version's checks as a row says them: in checkCount's
+// words, or, when no note records a failure and the worker reports one,
+// with the glyph ✗, what it reports (workerSays).
+func rowChecks(c *jsonVersionChecks) (glyph, says string) {
+	if c != nil && c.State == checkPending {
+		if w := workerSays(c); w != "" {
+			return "✗", w
+		}
+	}
+	return "", checkCount(c)
+}
+
+// workerSee is the line under a version's checks line that reads what the
+// worker reports, when it reports a failure (workerSays), or "".
+func workerSee(c *jsonVersionChecks) string {
+	if c == nil || workerSays(c) == "" {
+		return ""
+	}
+	return "see: valley telemetry read --source worker --logs"
 }
 
 // runCheckLine prints valley pending's checks line for the active version

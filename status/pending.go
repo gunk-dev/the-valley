@@ -99,11 +99,19 @@
 // holds the version's builds, the line goes on with what they cost and
 // the checks that grew against their recent cost on the same capacity
 // (checkcost.go): "checks: 21 passed in 9m10s (eval 24s); worker-e2e
-// 431s, +68s against its recent 363s". -v gives the full check state
-// with or without --checks. With --drafts and --checks, a draft's block
-// carries the same two lines, and its name line says its checks in a
-// row's words: "checks 18/18", "2 checks pending", or "✗ valley-request
-// failed". A draft's checks are read only when it is listed.
+// 431s, +68s against its recent 363s". When no note records a failure
+// and the worker's newest build of a pending check failed, the row says
+// "✗ valley-request failed in the worker's build, 5m ago" in place of its
+// count, an approved row says it after approved, the line says it after
+// the pending count, "checks: 18 passed, 1 pending (valley-request failed
+// in the worker's build, 5m ago)", and a line under it reads the worker's
+// report: "see: valley telemetry read --source worker --logs"
+// (versionchecks.go). -v gives the full check state with or without
+// --checks. With --drafts and --checks, a draft's block carries the same
+// lines, and its name line says its checks in a row's words: "checks
+// 18/18", "2 checks pending", "✗ valley-request failed in the worker's
+// build, 5m ago", or "✗ valley-request failed". A draft's checks are read
+// only when it is listed.
 //
 // Several projects, as --all or --repo lists them, make one listing: each
 // main line and each row names its project, and the rows of every project
@@ -275,6 +283,7 @@ type entry struct {
 	notes    []string           // uncertain and restack
 	requires string             // with --checks, the checks the policy requires of it, by cost
 	checks   string             // the check state line of a ready change
+	see      string             // the line under checks that reads the worker's report of a failure, if any
 	state    *jsonVersionChecks // the check state its row counts, or nil when its checks were not read
 
 	glyph, colour, says string // for a moving change, its glyph and what its row says
@@ -400,13 +409,23 @@ func (t terminal) rows(waiting, moving []*entry, l listing, named bool) []string
 	for i, e := range waiting {
 		num := fmt.Sprintf("  %*d  ", digits, i+1)
 		under := strings.Repeat(" ", columns(num))
-		says := checkCount(e.state)
+		glyph, says := rowChecks(e.state)
 		if len(e.below) > 0 {
 			says = strings.TrimPrefix(says+" · stack of "+strconv.Itoa(len(e.below)+1), " · ")
 		}
-		left := num + lead(e) + "  " + says
-		used := columns(num) + width + 2 + columns(says)
+		left := num + lead(e) + "  "
+		used := columns(num) + width + 2
 		age := ago(now, e.since)
+		if glyph != "" {
+			// What the worker reports is cut short to leave the age room.
+			left, used = left+t.tint(colourRefused, glyph)+" ", used+columns(glyph)+1
+			room := t.width - used
+			if e.since > 0 {
+				room -= 2 + columns(age)
+			}
+			says = fit(says, room)
+		}
+		left, used = left+says, used+columns(says)
 		if pad := t.width - used - columns(age); pad >= 2 && e.since > 0 {
 			left += strings.Repeat(" ", pad) + age
 		} else if e.since > 0 {
@@ -444,6 +463,9 @@ func (t terminal) details(e *entry, under string, l listing) []string {
 			if s != "" {
 				lines = append(lines, under+t.fit(s, under))
 			}
+		}
+		if e.see != "" {
+			lines = append(lines, under+"  "+t.fit(e.see, under+"  "))
 		}
 	}
 	return lines
@@ -745,6 +767,9 @@ func (t terminal) drawStack(top *entry, lead string, named bool) []string {
 				lines = append(lines, rest+t.fit(note, rest))
 			}
 		}
+		if e.see != "" {
+			lines = append(lines, rest+"  "+t.fit(e.see, rest+"  "))
+		}
 		if i == 0 && len(top.below) > 0 {
 			lands := fmt.Sprintf("approving it lands the %d below too", len(top.below))
 			if len(top.below) == 1 {
@@ -807,10 +832,10 @@ func (t terminal) nameLine(lead, name string, e *entry, rest string) []string {
 }
 
 // draftChecks is a draft's checks as its name line says them, in the
-// words a ready change's row uses: passed out of required, or how many
-// are pending (checkCount), or, with the glyph ✗, the checks that
-// failed. says is "" for another entry, or a draft whose checks were not
-// read.
+// words a ready change's row uses: passed out of required, how many are
+// pending, or, with the glyph ✗, what the worker reports of a pending
+// check's failed build (rowChecks), or the checks that failed. says is ""
+// for another entry, or a draft whose checks were not read.
 func draftChecks(e *entry) (glyph, says string) {
 	switch {
 	case e.section != "drafts" || e.state == nil:
@@ -818,7 +843,7 @@ func draftChecks(e *entry) (glyph, says string) {
 	case e.state.State == checkFailed:
 		return "✗", failedNames(e.state) + " failed"
 	}
-	return "", checkCount(e.state)
+	return rowChecks(e.state)
 }
 
 // branchName is a branch's name as printed: as it is, or, when it holds a

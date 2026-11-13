@@ -3158,9 +3158,15 @@ a withdrawn one, and `uncertain` when that applies. It says `restack:` and what 
 says when that report is current. A historical report is left out. `--checks` adds the checks each
 change requires, by cost, as `valley checks` derives them, and their state. A draft's are read only
 when `--drafts` lists it, in the same batch as the ready changes', and its name line counts them as
-a ready row does. Within a section, the stack with the latest commit comes first. Every line fits
-the terminal's width, or 80 columns when stdout is not a terminal. A title is cut short with `…`,
-and a handle or a branch never is. On a terminal, names are bold, unless `NO_COLOR` is set.
+a ready row does. A check's state comes from notes alone. `attest run` publishes no note when any
+check of its batch fails, so the listing also reads the worker's telemetry, which it reads for build
+times anyway. When the worker's newest build of a pending check for the head's tree failed, the row,
+the checks line and the JSON say so, apart from a failure a note records, with a line naming
+`valley telemetry read --source worker --logs` (`implemented`, `status/checkcost.go`). That report
+is diagnostic: approve and the integrator never read it. Within a section, the stack with the latest
+commit comes first. Every line fits the terminal's width, or 80 columns when stdout is not a
+terminal. A title is cut short with `…`, and a handle or a branch never is. On a terminal, names are
+bold, unless `NO_COLOR` is set.
 
 `valley pending --json` prints `valley-pending/v1`. It has the shape of `valley-changes/v1`, with
 the human view's sections. `changes` holds only the ready changes that have not landed. Each

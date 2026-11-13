@@ -266,9 +266,16 @@ valley pending [--all] [--repo <name>] [--checks] [--drafts] [--branches] [--jso
     host's worker telemetry holds the version's builds, the line goes on with their
     [build times](#build-times): the total, the evaluation, and each check that grew against its
     baseline, as in
-    `checks: 21 passed in 9m10s (eval 24s); worker-e2e 431s, +100s against its recent 331s`. With
-    `--drafts`, each draft's block carries the same two lines, and its name line says its checks in
-    a row's words: `checks 18/18`, `2 checks pending`, or `✗ valley-request failed`. A draft's
+    `checks: 21 passed in 9m10s (eval 24s); worker-e2e 431s, +100s against its recent 331s`. When no
+    note records a failure and the worker's newest build of a pending check failed
+    ([worker reports](#worker-reports)), the line names it after the pending count, as
+    `checks: 18 passed, 1 pending (valley-request failed in the worker's build, 5m ago)`, and a line
+    under it names the command that reads the worker's report:
+    `see: valley telemetry read --source worker --logs`. The row says the same in place of its
+    count, as `✗ valley-request failed in the worker's build, 5m ago`, with or without `--checks`.
+    With `--drafts`, each draft's block carries the same lines, and its name line says its checks in
+    a row's words: `checks 18/18`, `2 checks pending`,
+    `✗ valley-request failed in the worker's build, 5m ago`, or `✗ valley-request failed`. A draft's
     checks are read only when `--drafts` lists it. With `--json`, the active version of each ready
     change carries the same [`checks`](#version-checks) object, and with `--drafts` so does that of
     each draft that has not landed.
@@ -301,9 +308,10 @@ valley changes --json [--all] [--repo <name>] [--checks] [-v] [--known-signers <
   `--integrator-name <name>` (as for [`valley pending`](#valley-pending)).
   - `--checks`: Adds a [`checks`](#version-checks) object to the active version of each ready change
     and each draft that has not landed as any version. It says which of the checks the policy
-    requires passed, failed or are pending, and what each nix check cost to build
-    ([build times](#build-times)). It costs what [`valley pending`](#valley-pending) costs to read
-    the checks.
+    requires passed, failed or are pending, what each nix check cost to build
+    ([build times](#build-times)), and whether the worker's newest build of a check that has not
+    passed failed ([worker reports](#worker-reports)). It costs what
+    [`valley pending`](#valley-pending) costs to read the checks.
 
 ### `valley status`
 
@@ -334,10 +342,11 @@ valley status [--json] [-v] [--known-signers <file>] [--integrator-name <name>] 
 knots and comparison against any prior approved version, and prompts to approve, rebase, view the
 full diff, reject the remote branch, or skip. Just before the prompt, a ready change or a draft
 shows the state of its checks and their [build times](#build-times) on one line, as
-`valley pending --checks` shows it. `valley review` reads them in the background while it shows the
-diff and never waits for them: a line not ready at the prompt is left out.
-`VALLEY_REVIEW_CHECKS_WAIT` sets how many seconds to wait for it. With no change, it reviews each
-change that needs the operator in turn (see [the walk](#the-walk)).
+`valley pending --checks` shows it, including a pending check that failed in the worker's build.
+`valley review` reads them in the background while it shows the diff and never waits for them: a
+line not ready at the prompt is left out. `VALLEY_REVIEW_CHECKS_WAIT` sets how many seconds to wait
+for it. With no change, it reviews each change that needs the operator in turn (see
+[the walk](#the-walk)).
 
 ```sh
 valley review kqxm
@@ -2826,6 +2835,37 @@ a change makes its project's checks slower, before it is approved.
 - **Failures:** When the telemetry cannot be read, because the remote is not reached over `ssh`, the
   principal holds no `observe` grant, or the host serves no worker telemetry, these fields are left
   out. `stderr` says why once, and the check states are listed all the same.
+
+##### Worker reports
+
+`attest run` publishes nothing when any check of its batch fails, so a check the host's check worker
+built and that failed has no note, and its `state` is `pending`. The worker's report, read from the
+same telemetry as [build times](#build-times), tells it from a check not built yet. A client waiting
+on a version reads it to learn of a failure without reading telemetry itself.
+
+```json
+"checks": {
+  "state": "pending",
+  "tree": "<valley-tree-v1 digest of the head's tree>",
+  "required": [
+    {"name": "valley-request", "state": "pending", "worker": {"result": "failed", "time": "2026-11-13T02:31:07.120Z", "run": "r20261113T022204-9f3a1c22"}},
+    {"name": "web-unit", "state": "pending"}
+  ]
+}
+```
+
+- **Fields:**
+  - `worker` (on a check, omitted otherwise): The worker's newest build of the check for this
+    version's tree did not pass, and no note makes the check `passed`. The build may be for any
+    change or version with the same tree. `result` is `failed`, or `error` when attest could not
+    decide the check, as when it did not evaluate; `time` is when the build ended; `run` is the
+    attest run whose records and logs say why.
+  - `worker` (on `checks`, omitted otherwise): A check is `pending`, and the worker's newest batch
+    for this tree failed before any check ran, as when its evaluation or attest itself failed. Its
+    `result` is `failed`, `time` is when the batch ended, and `run` its attest run.
+- **Not evidence:** A worker report is diagnostic. Nothing in it is signed, a check's `state` and
+  `checks.state` come from notes alone, and neither approve nor the integrator reads it. When the
+  telemetry cannot be read, no report is given.
 
 #### `valley-plan/v1`
 

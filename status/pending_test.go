@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	"the-valley/telemetry"
 )
 
 // pending fits its text to 80 columns when stdout is no terminal: a long
@@ -351,5 +355,158 @@ func TestPendingReadsDraftChecksOnlyWhenListed(t *testing.T) {
 	}
 	if n := strings.Count(out, "\n  checks: 2 pending\n"); n != 2 {
 		t.Errorf("pending --drafts --checks gives %d drafts their checks line, not 2:\n%s", n, out)
+	}
+}
+
+// pending --checks says when the worker's newest build of a pending
+// check failed, for a ready change and for a draft alike, apart from a
+// check whose failed build a later one passed and a check never built, and
+// says where the worker's report is read. With --json, the check's state
+// stays pending and the worker's report is beside it. A batch that failed
+// before any check ran is said the same way. A host whose telemetry does
+// not read leaves the listing as it is with no worker records.
+func TestPendingSaysWhenTheWorkersBuildFailed(t *testing.T) {
+	dir := t.TempDir()
+	toolsOnPath(t, dir, "git", "cue")
+	// attest only digests each head's tree, since origin holds no
+	// evidence, and gives every head one digest: the worker's records
+	// about that tree are about the ready change's and the draft's. ssh
+	// answers the worker's read from a file, as the host would.
+	answer := filepath.Join(dir, "answer")
+	for tool, script := range map[string]string{
+		"attest": "#!/bin/sh\necho valley-tree-v1:0123\n",
+		"ssh":    fmt.Sprintf("#!/bin/sh\ncat '%s'\n", answer),
+	} {
+		if err := os.WriteFile(filepath.Join(dir, "bin", tool), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sh, head := policyProject(t, filepath.Join(dir, "origin"), 3)
+	sh("config", "valley.telemetry.remote", "ssh://git@valley-host/origin.git")
+	ready, draft := strings.Repeat("p", 32), strings.Repeat("q", 32)
+	head("ready-1", ready)
+	head("draft-1", draft)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"unready", draft}, &stdout, &stderr, os.Exit); code != 0 {
+		t.Fatalf("unready: %s", stderr.String())
+	}
+
+	// records makes the host's answer: one page of the worker's records.
+	records := func(lines ...string) {
+		t.Helper()
+		page := `{"kind":"header","host":"valley-host","format":"valley-telemetry/v1"}` + "\n"
+		for i, l := range lines {
+			page += fmt.Sprintf(`{"kind":"record","stream":"worker","seq":%d,%s}`+"\n", i+1, l)
+		}
+		page += fmt.Sprintf(`{"kind":"end","cursor":"worker=0123456789abcdef:%d","truncated":false}`+"\n", len(lines))
+		if err := os.WriteFile(answer, []byte(page), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	at := func(ago time.Duration) string { return telemetry.Stamp(time.Now().Add(-ago)) }
+	// build is a check.result of the draft's version, as attest records
+	// one.
+	build := func(when, run, tree, check, result string) string {
+		return fmt.Sprintf(`"type":"check.result","time":%q,"run":%q,"project":"origin","change":%q,"version":1,"tree":%q,"check":%q,`+
+			`"data":{"result":%q,"build_ms":1000,"eval_ms":4000,"log_bytes":10,"cached":false}`, when, run, draft, tree, check, result)
+	}
+	ages := regexp.MustCompile(`(?m) +[0-9]+[smhd]$| +[0-9]+ [a-z]+ ago · operator$`)
+	pending := func(args ...string) (string, string) {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		if code := run(append([]string{"pending", "--checks", "--drafts"}, args...), &stdout, &stderr, os.Exit); code != 0 {
+			t.Fatalf("pending: %s", stderr.String())
+		}
+		return ages.ReplaceAllString(stdout.String(), ""), stderr.String()
+	}
+	checksOf := func() map[string]*jsonVersionChecks {
+		t.Helper()
+		out, _ := pending("--json")
+		var doc jsonChanges
+		if err := json.Unmarshal([]byte(out), &doc); err != nil || len(doc.Repos) != 1 || doc.Repos[0].Drafts == nil {
+			t.Fatalf("pending --json printed no listing of one project (%v):\n%s", err, out)
+		}
+		checks := map[string]*jsonVersionChecks{}
+		for _, c := range append(doc.Repos[0].Changes, *doc.Repos[0].Drafts...) {
+			checks[c.ChangeID] = c.Versions[c.Active-1].Checks
+		}
+		if len(checks) != 2 {
+			t.Fatalf("pending --json lists %d changes, not the ready change and the draft:\n%s", len(checks), out)
+		}
+		return checks
+	}
+	see := "  see: valley telemetry read --source worker --logs"
+
+	records()
+	plain, _ := pending()
+
+	// c-1's newest build failed; c-2 failed, then passed; c-3 was built
+	// only for another tree.
+	failed := at(5*time.Minute + 10*time.Second)
+	records(build(at(20*time.Minute), "r1", "0123", "c-1", "failed"), build(at(20*time.Minute), "r1", "0123", "c-2", "failed"),
+		build(failed, "r2", "0123", "c-1", "failed"), build(at(5*time.Minute), "r2", "0123", "c-2", "passed"),
+		build(at(time.Minute), "r3", "4567", "c-3", "failed"))
+	out, _ := pending()
+	says := "c-1 failed in the worker's build, 5m ago"
+	for _, want := range []string{
+		"\n  1  pppp v1  ✗ " + says + "\n     ready-1\n     requires 3 quick checks, 0 slow\n" +
+			"     checks: 3 pending (" + says + ")\n     " + see + "\n",
+		"\nqqqq v1 on draft-1  ✗ " + says + "\n",
+		"\n  requires 3 quick checks, 0 slow\n  checks: 3 pending (" + says + ") in 2s (eval 4s)\n  " + see + "\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("pending --checks --drafts does not say\n%s\nin:\n%s", want, out)
+		}
+	}
+	for id, c := range checksOf() {
+		if c == nil || c.State != checkPending || c.Worker != nil || len(c.Required) != 3 {
+			t.Fatalf("%s's checks are not three, pending, with no batch reported: %+v", id, c)
+		}
+		if q := c.Required[0]; q.State != checkPending || q.Worker == nil || *q.Worker != (jsonWorkerReport{Result: checkFailed, Time: failed, Run: "r2"}) {
+			t.Errorf("%s's c-1 is not pending with the worker's report of r2's failure: %+v", id, q)
+		}
+		for _, q := range c.Required[1:] {
+			if q.State != checkPending || q.Worker != nil {
+				t.Errorf("%s's %s is not pending with no worker's report: %+v", id, q.Name, q)
+			}
+		}
+	}
+
+	// A batch that failed before any check ran recorded no check's result.
+	ended := at(time.Minute + 10*time.Second)
+	records(build(at(20*time.Minute), "r1", "0123", "c-1", "passed"),
+		fmt.Sprintf(`"type":"batch.end","time":%q,"run":"p1","project":"origin","change":%q,"version":1,"tree":"0123",`+
+			`"data":{"result":"failed","attest_run":"r4","reason":"attest run r4: exit status 1"}`, ended, ready))
+	out, _ = pending()
+	says = "the worker's batch failed, 1m ago"
+	if want := "\n  1  pppp v1  ✗ " + says + "\n     ready-1\n     requires 3 quick checks, 0 slow\n" +
+		"     checks: 3 pending (" + says + ")\n     " + see + "\n"; !strings.Contains(out, want) {
+		t.Errorf("pending --checks does not say\n%s\nin:\n%s", want, out)
+	}
+	for id, c := range checksOf() {
+		if c.Worker == nil || *c.Worker != (jsonWorkerReport{Result: checkFailed, Time: ended, Run: "r4"}) || c.State != checkPending {
+			t.Errorf("%s's checks do not carry the worker's report of the failed batch: %+v", id, c)
+		}
+	}
+
+	// A host that refuses: the listing is as it is with no worker records.
+	if err := os.WriteFile(answer, []byte(`{"kind":"error","error":"operator holds no observe grant"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, errs := pending()
+	if out != plain {
+		t.Errorf("with the worker's telemetry refused, pending printed:\n%s\nand with no worker records:\n%s", out, plain)
+	}
+	if n := strings.Count(errs, "no check lists its build times"); n != 1 {
+		t.Errorf("a refusing host was said %d times on stderr, not once:\n%s", n, errs)
+	}
+	for id, c := range checksOf() {
+		reported := c.Worker != nil
+		for _, q := range c.Required {
+			reported = reported || q.Worker != nil
+		}
+		if reported {
+			t.Errorf("with the worker's telemetry refused, %s carries a worker's report: %+v", id, c)
+		}
 	}
 }

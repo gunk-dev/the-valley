@@ -61,7 +61,7 @@ func (r listed) queue(view jsonRepo, h handleMap, l listing, measured bool) (wai
 			}
 		case c.Approved != nil && *c.Approved:
 			e.glyph, e.colour, e.says = "◐", colourWorking, "approved"
-			if n := checkCount(v.Checks); n != "" {
+			if _, n := rowChecks(v.Checks); n != "" {
 				e.says += " · " + n
 			}
 		default:
@@ -199,7 +199,7 @@ func (r listed) changeEntry(section string, c jsonChange, h handleMap, l listing
 		e.requires = r.snap.checks(v.Head)
 	}
 	if v.Checks != nil {
-		e.state, e.checks = v.Checks, checksLine(v.Checks)
+		e.state, e.checks, e.see = v.Checks, checksLine(v.Checks), workerSee(v.Checks)
 	}
 	return e
 }

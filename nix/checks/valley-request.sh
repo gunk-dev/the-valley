@@ -2442,24 +2442,34 @@ built nothing
 integrated "c-$id" "$r/worker.projects"
 
 # 21f. Origin already holds the worker's own ref for a tree, without one of
-#      the checks the change requires. A worker publishes a tree's
-#      evidence once, so the pass says so and builds nothing. approve without
-#      --build-here files the request at once, naming the missing check,
-#      and builds nothing. The real integrator holds that request as stale
-#      for want of evidence, and keeps it. approve --build-here then builds
-#      the rest under the operator's key and publishes the evidence alone,
-#      since the request already stands at that head. The integrator,
-#      judging again because evidence arrived, lands it on the two signers'
-#      evidence.
+#      the checks the change requires. The worker adds the missing check's
+#      note to that ref, through the protected hook, which takes the ref
+#      with every note it held kept, and approve reuses both and runs
+#      nothing. For a second change with such a ref, no pass runs before
+#      approve: approve without --build-here files the request at once,
+#      naming the missing check, and builds nothing. The real integrator
+#      holds that request as stale for want of evidence, and keeps it.
+#      approve --build-here then builds the rest under the operator's key
+#      and publishes the evidence alone, since the request already stands
+#      at that head. The integrator, judging again because evidence
+#      arrived, lands it on the two signers' evidence.
+readied worker-extends docs/readme.md src/main.txt
+extendsref="refs/the-valley/attestations/$(attest digest --rev worker-extends | cut -d: -f2)/$workerhash"
+attest run --rev worker-extends --key "$r/keys/worker" --name "$workername" --check prose-format > "$r/worker-extends-attest.out" 2>&1
+git push --quiet origin "$extendsref:$extendsref"
+fresh
+working worker-extends
+said worker-extends "$line: added code-build to $extendsref on origin"
+built code-build
+pushed "$extendsref"
+approving worker-extends env -u VALLEY_ATTEST_KEY valley approve -v --head "$head" "$handle"
+grep -qE "^  code-build +signed by $workername\+$workerhash\$" "$w/worker-extends.out"
+built nothing
+integrated "c-$id" "$r/worker.projects"
 readied worker-occupied docs/readme.md src/main.txt
 occupiedref="refs/the-valley/attestations/$(attest digest --rev worker-occupied | cut -d: -f2)/$workerhash"
 attest run --rev worker-occupied --key "$r/keys/worker" --name "$workername" --check prose-format > "$r/worker-occupied-attest.out" 2>&1
 git push --quiet origin "$occupiedref:$occupiedref"
-fresh
-working worker-occupied
-said worker-occupied "$line: origin already holds $occupiedref, this worker's evidence for its tree, and it does not cover code-build. A worker publishes a tree's evidence once, so approve --build-here builds the rest (bd-7b7d58f)"
-built nothing
-pushed none
 approving worker-occupied-filed valley approve -v --head "$head" "$handle"
 grep -q "^◐ $handle v1  approved · lands when 1 check passes ([0-9]*/[0-9]* passed)$" "$w/worker-occupied-filed.out"
 grep -qx '  missing  code-build' "$w/worker-occupied-filed.out"
@@ -2732,6 +2742,42 @@ git init --quiet "$interrupted"
 : > "$interrupted/.git/config.lock"
 recovered half-made
 [ ! -e "$interrupted/.git/config.lock" ]
+
+# 21n. A check request lands nothing, and its evidence serves the change
+#      readied later at the same head. The author of a draft files a
+#      request for its head. With no ready change to build for, the worker
+#      builds the nix checks the head requires, as it builds a ready
+#      head's, and publishes them under its key, and the integrator lands
+#      nothing. Readied again, the change finds that evidence on origin:
+#      the worker builds nothing, approve reuses it and runs nothing, and
+#      the integrator lands it.
+readied asked docs/readme.md
+VALLEY_PRINCIPAL=requester valley unready "$id" > "$r/asked.unready" 2>&1
+askedref="refs/the-valley/attestations/$(attest digest --rev asked | cut -d: -f2)/$workerhash"
+request=refs/the-valley/check-requests/requester/0123456789abcdef/0000000000000001
+VALLEY_PRINCIPAL=requester git push --quiet origin "$head:$request"
+fresh
+working asked-1
+said asked-1 "project: request requester/0123456789abcdef/0000000000000001 at ${head:0:7}: building prose-format"
+said asked-1 "project: request requester/0123456789abcdef/0000000000000001 at ${head:0:7}: published $askedref"
+built prose-format
+pushed "$askedref"
+main="$(git -C "$served" rev-parse main)"
+integrator reconcile --repo "$served" --key "$r/keys/integrator" --name "$integratorname" \
+  --known-signers "$r/known-signers" --signer-projects "$r/worker.projects" --instance "$r/floor" --schema "$schemaFile" \
+  --attest-schema "$attestSchema" --event-schema "$eventSchema" > "$r/asked.integrator" 2>&1
+[ "$(git -C "$served" rev-parse main)" = "$main" ]
+VALLEY_PRINCIPAL=requester valley ready --change "$id" asked > "$r/asked.ready" 2>&1
+fresh
+working asked-2
+said asked-2 "$line: origin holds evidence for every nix check it requires"
+built nothing
+pushed none
+approving asked env -u VALLEY_ATTEST_KEY valley approve -v --head "$head" "$handle"
+grep -qE "^  prose-format +signed by $workername\+$workerhash\$" "$w/asked.out"
+built nothing
+integrated "c-$id" "$r/worker.projects"
+VALLEY_PRINCIPAL=requester git push --quiet origin ":$request"
 
 worktrees="$(git worktree list --porcelain | grep -c '^worktree ' || true)"
 if [ "$worktrees" != 1 ]; then

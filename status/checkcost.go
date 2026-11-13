@@ -364,7 +364,10 @@ func parsePage(r io.Reader) (page workerPage, refused string, err error) {
 			return page, "", nil
 		case "record":
 			if m.Change == "" && (m.Type == "batch.start" || m.Type == "batch.end") {
+				// A follow run or a request; its class tells which
+				// (mainstate.go).
 				run := mainRun{project: m.Project, tree: m.Tree, ended: m.Type == "batch.end"}
+				run.class, _ = m.Data["class"].(string)
 				run.run, _ = m.Data["attest_run"].(string)
 				checks, _ := m.Data["checks"].([]any)
 				for _, c := range checks {

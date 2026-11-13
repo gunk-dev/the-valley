@@ -184,18 +184,30 @@ func (w mainWalk) landings(h handleMap, project string) []string {
 	return named
 }
 
-// mainRun is one batch the worker ran on a main tip, as its telemetry
-// records it: its start, or its end.
+// mainRun is one batch the worker ran for no change, as its telemetry
+// records it: its start, or its end. It is a follow run on a main tip,
+// or a check request's batch, as its class says.
 type mainRun struct {
 	project, tree, run string
 	checks             []string
 	ended              bool
+	class              string // "follow" or "request", or "" from a worker that names no class
 }
+
+// follow reports whether the run is a follow run. A worker that named no
+// class ran no request, so a run with no class is a follow run.
+func (r mainRun) follow() bool { return r.class != classNames[classRequest] }
 
 // mainLines is a project's main state as valley pending's first lines,
 // the first led by lead: the state, and a see: line when a check failed.
 // h names the landings covered, and builds and runs are the worker's
-// telemetry, newest first.
+// telemetry, newest first. A check's build counts by the tree it is
+// about: one at a tree the walk read is a run on main, whichever batch
+// built it, and any other is not. A check.result names no batch class,
+// and the batch records that do can fall outside what was read. Each
+// check is judged tree by tree, by its newest run at each tree, so a run
+// at an older commit's tree, however recent, hides no failure at a newer
+// one.
 func (t terminal) mainLines(w mainWalk, lead, project string, h handleMap, builds []checkBuild, runs []mainRun) []string {
 	index := map[string]int{}
 	for i, c := range w.walked {
@@ -209,7 +221,7 @@ func (t terminal) mainLines(w mainWalk, lead, project string, h handleMap, build
 	}
 	running := map[string]bool{}
 	for _, r := range runs {
-		if !r.ended && !ended[r.run] && r.project == project && r.tree == w.tip {
+		if r.follow() && !r.ended && !ended[r.run] && r.project == project && r.tree == w.tip {
 			for _, c := range r.checks {
 				running[c] = true
 			}
@@ -222,18 +234,23 @@ func (t terminal) mainLines(w mainWalk, lead, project string, h handleMap, build
 		if q.passed != "" && (newest == "" || index[q.passed] < index[newest]) {
 			newest = q.passed
 		}
+		judged := map[string]bool{} // the trees whose newest run of the check has been read
+		failing := ""               // the newest commit whose tree's newest run of the check failed since its pass
 		for _, b := range builds {
-			if b.project != project || b.change != "" || b.check != q.name {
+			at, ok := w.trees[b.tree]
+			if b.project != project || b.change != "" || b.check != q.name || !ok || judged[b.tree] {
 				continue
 			}
-			at, ok := w.trees[b.tree]
-			if b.result != "passed" && ok && (q.passed == "" || index[at] < index[q.passed]) {
-				failed = append(failed, q.name)
-				if failedAt == "" || index[at] < index[failedAt] {
-					failedAt = at
-				}
+			judged[b.tree] = true
+			if b.result != "passed" && (q.passed == "" || index[at] < index[q.passed]) && (failing == "" || index[at] < index[failing]) {
+				failing = at
 			}
-			break // the check's newest run on main
+		}
+		if failing != "" {
+			failed = append(failed, q.name)
+			if failedAt == "" || index[failing] < index[failedAt] {
+				failedAt = failing
+			}
 		}
 		if q.due {
 			state := " due"

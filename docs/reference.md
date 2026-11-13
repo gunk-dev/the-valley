@@ -1052,9 +1052,9 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
       project's `policy/valley` names.
     - `--key <path>` and `--name <name>`: The worker's signing key and signing name, passed to
       `attest run`. The name defaults as `attest`'s does.
-    - `--state <dir>`: The directory holding the lock, the record of failed batches and pushes, the
-      evaluation reservations and the record of evaluation peaks (default
-      `${XDG_STATE_HOME:-$HOME/.local/state}/valley/worker`).
+    - `--state <dir>`: The directory holding the lock, the record of failed batches and pushes and
+      of check requests whose batch failed, the evaluation reservations and the record of evaluation
+      peaks (default `${XDG_STATE_HOME:-$HOME/.local/state}/valley/worker`).
     - `--wake <dir>`: A wake directory (see
       [The worker's wakeups](architecture.md#the-workers-wakeups)). Before it reads anything, the
       pass takes `<dir>/lock` and renames `<dir>/due` to `<dir>/claimed`. While it runs, it looks
@@ -1067,9 +1067,10 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
       share one process. It is a positive integer. Without it, `attest`'s default applies. On a
       host, `services.valley.worker.buildSlots` sets it.
     - `--batches <n>`: The most batches the pass runs at once, a positive integer (default `1`). A
-      batch is one `attest run` that builds one ready change's missing checks. Batches overlap their
-      builds, and their evaluations are admitted by the evaluation budget (`--eval-budget`). On a
-      host, `services.valley.worker.batches` sets it.
+      batch is one `attest run` that builds the missing checks of one ready change, one follow run
+      on `main`, or one check request. Batches overlap their builds, and their evaluations are
+      admitted by the evaluation budget (`--eval-budget`). On a host,
+      `services.valley.worker.batches` sets it.
     - `--interval <span>`: How often a pass whose batches still run reads every project again, as a
       systemd time span such as `1m`, `15s`, `5min`, `1h 30min` or `2months` (default `1m`). It
       reads every span a systemd timer reads, units and `infinity` included. A span under a second
@@ -1115,13 +1116,22 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
   - A pass is a loop. It reads every project, starts the batches it found, and reads every project
     again when a batch ends, when a wake mark arrives, and every `--interval` while batches run. It
     ends when no batch runs and a read finds nothing to start.
+    - Each read queues one class of work, the first it finds of ready changes, follow runs and check
+      requests, so changes waiting to land come first. A read reaches check requests only after
+      every project's ready changes and follow run, when none needs a batch and no batch of theirs
+      runs. A check request's batch runs to its end beside one that starts later.
     - It starts batches in the order their versions became ready. Change records carry no time, so
       this is the order in which the pass first saw each version ready. Versions first seen in the
-      same read go by project name, then by change ID.
+      same read go by project name, then by change ID. Check requests go by the read that first
+      listed each at its commit, then by project name, then by ref name.
     - One batch at a time builds the evidence for one attestation ref: the project, the tree and the
       worker's key hash. Changes whose heads hold the same tree share that batch. Right before a
       batch starts, the pass reads the head's evidence on `origin` and the refs stored locally
       again, so evidence that arrived since the last read is not built again.
+    - When `origin` already holds the worker's ref for a head's tree and the ref lacks a check the
+      head requires, the batch builds the checks it lacks and adds their notes to that ref
+      (`attest run --push origin --ref-only`), keeping every note it holds. A check the ref holds a
+      note for that does not count, as one for another attribute, is not built again.
     - A version that a later read does not find ready, or finds superseded, is dropped if its batch
       has not started. A batch that has started runs to its end, and its evidence is published,
       because it is about the head's tree.
@@ -1131,28 +1141,57 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
       the batch once it has read the project whole: it kills that `attest run`, whose `nix`
       processes die with it, and publishes nothing. The batch's `batch.end` says `cancelled`, with
       the reason. It is not a failure and does not back off. Its slot goes to the queue.
+    - A check request's running batch is stopped the same way when a read lists its ref gone or
+      naming another commit, unless a ready change's active version holds its tree.
     - When a batch ends, the pass starts the next queued batch at once, and reads every project
       again after that. So a version superseded since the last read can start a batch, which that
-      read stops.
+      read stops. A queued check request waits for that read instead, which finds any ready change
+      or follow run that came meanwhile.
     - A failed batch or push is recorded in `failures.json` at once. When its wait ends while the
-      pass is still busy, the pass's next read starts it again.
+      pass is still busy, the pass's next read starts it again. A check request whose batch failed
+      waits for no time: `failures.json` marks its ref with the commit it names, and no pass builds
+      it again until a listing finds the ref gone or naming another commit. A new ref for the same
+      commit builds at once. A request is marked the same way when the worker's ref for its tree on
+      `origin` holds a note that does not count for every check it lacks, or when its commit shares
+      no history with `main`, its checks do not derive, or its evidence does not read for what the
+      commit holds, such as a submodule. The marker is read again each time the request is assessed.
+    - Only a failed read of `origin` ends a read of every project. A ready change or follow run
+      whose evidence does not read for what its head holds is said, and builds nothing, and leaves
+      its project unread: no failure there is forgotten, no batch there is stopped, and its `main`
+      tip is not recorded as quiet. While a project lists check requests, a failed push there is
+      kept until its requests are read.
     - Stopping the unit stops the pass and every `attest` it started.
   - Prints lines of the form `<project>: <handle> v<n> at <short-head>: <what>` for the ready
-    changes in a project whose policy at `main` loads. A change it builds or publishes gets one line
-    for each step, with what `attest run` prints between them. The lines of batches that run at once
-    interleave; the worker's telemetry tells each batch's progress apart by its attest run. A line
-    about how a change stands is not printed again in the same pass until the pass does something
-    with the change. `<what>` is usually one of these. Errors print their own messages.
+    changes in a project whose policy at `main` loads, and
+    `<project>: request <principal>/<worktree>/<attempt> at <short-commit>: <what>` for its check
+    requests. A change it builds or publishes gets one line for each step, with what `attest run`
+    prints between them. The lines of batches that run at once interleave; the worker's telemetry
+    tells each batch's progress apart by its attest run. A line about how a change stands is not
+    printed again in the same pass until the pass does something with the change. `<what>` is
+    usually one of these. Errors print their own messages.
     - `requires no nix check`
     - `origin holds evidence for every nix check it requires`
     - `building <check>, <check>`, then what `attest run` prints, then `published <ref>`
-    - `the batch for <handle> v<n> builds the same tree`
-    - `origin already holds <ref>, this worker's evidence for its tree, and it does not cover <checks>. …`
+    - `the batch for <handle> v<n> builds the same tree`, or
+      `the batch for request <principal>/<worktree>/<attempt> builds the same tree`
+    - `added <check>, <check> to <ref> on origin`, for a batch whose tree `origin` holds this
+      worker's ref for, which adds the checks the ref lacks to it, as a follow run's does
+    - `origin holds <ref>, this worker's evidence for its tree, with a note for <checks> that does not count, …`
     - `an earlier pass stored <ref>, and origin does not hold it`, then the line for publishing it
     - `its batch <checks> failed <n> times in a row, so it is not built again before <time>`
     - `the batch did not pass (<reason>); it is not built again before <time>`
     - `stopping the batch: v<n> supersedes it, and no ready change's active version holds its tree`,
-      then `the batch stopped; nothing is published`
+      or for a request
+      `stopping the batch: its ref names <short-commit> now, and no ready change's active version holds its tree`
+      or `stopping the batch: its ref is gone, …`, then `the batch stopped; nothing is published`
+    - `the batch did not pass (<reason>); it is not built again until its ref moves or goes`, and on
+      later reads
+      `an earlier batch for it did not end in evidence, so it is not built again until its ref moves or goes`,
+      for a request
+    - `<ref> is not a check request; one is refs/the-valley/check-requests/<principal>/<worktree>/<attempt>. Skipped.`
+    - `<reason>, so it is not built until its ref moves or goes`, for a request whose commit cannot
+      be read, and `its evidence could not be read, so nothing is built: <reason>` for a ready
+      change or follow run
     - `publishing <ref> failed <n> times in a row, so it is not pushed again before <time>`
     - `could not publish <ref>; it is not pushed again before <time>`
   - A project with ready changes gets one line for the whole project instead when `origin` has no
@@ -1793,7 +1832,7 @@ topic branches (`refs/heads/<branch>`), and **project storage** (`refs/the-valle
 
 ### Push-wide bounds
 
-`valleyhook` enforces four repository-wide and push-wide counters before accepting a push:
+`valleyhook` enforces five repository-wide and push-wide counters before accepting a push:
 
 ```sh
 git push --atomic origin topic refs/the-valley/changes/main/nxvpwlkmqtsrzyoukklnpmqrstuvwxyz
@@ -1805,6 +1844,7 @@ git push --atomic origin topic refs/the-valley/changes/main/nxvpwlkmqtsrzyoukkln
 | Change record updates per push (`MaxRecordUpdates`)  | `<= 32`                                                        | Refuses the push if more than 32 `refs/the-valley/changes/*` refs are updated in one push.                                                                                                                                                                              |
 | Change records per repository (`MaxRecords`)         | `<= 2,000` (soft push cap)<br>`<= 4,000` (hard integrator cap) | `valleyhook` refuses creating a new change record when `existingRecords + recordCreates > 2,000` (concurrent pushes can briefly exceed it). The integrator refuses to reconcile any pass if a repository holds more than `4,000` change records (`recordLimit = 4000`). |
 | Restack report updates per push (`MaxReportUpdates`) | `<= 64`                                                        | Refuses the push if more than 64 `refs/the-valley/restack/*` refs are updated in one push.                                                                                                                                                                              |
+| Check requests per principal (`maxCheckRequests`)    | `<= 32` (soft push cap)                                        | `valleyhook` refuses creating a check request when the requests the pushing principal holds in the repository and the ones the push creates under its name together exceed 32 (concurrent pushes can briefly exceed it). Moves and deletes create none.                 |
 
 ### Ref layout, permissions, and object bounds
 
@@ -1827,6 +1867,7 @@ any protected pattern matches a ref in **any** namespace (`refs/heads/*`, `refs/
 | `refs/the-valley/reviews/<target>/<change-id>`                                                            | Review history (`the-valley/review/v1`)                                                                                        | **SSH push:** Nobody (`implemented`): the hook has no rule for the namespace and refuses it. Admitting appends is `not built`; see [Review record](#review-record-the-valleyreviewv1).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | **Commit** whose root **tree** contains a single regular file (`100644`) named `review.json`.                                                                                    | Commit `<= 4 KiB`;<br>Tree `<= 1 KiB`;<br>Blob `review.json` `<= 64 KiB`;<br>`<= 512` reviews per history.                                                                                                                                                                                                                         |
 | `refs/the-valley/attestations/<tree-digest>/<key-hash>`                                                   | Signed check attestations and integrator transfer statements                                                                   | **Create over SSH:** Any pusher, provided `--known-signers` is configured and every note in the tree verifies under a known signer with key hash `<key-hash>` (`[0-9a-f]{8}`) for `<tree-digest>` (`[0-9a-f]{64}`).<br>**Update over SSH:** Adds notes. The new tree meets every rule of a create, keeps every note of the old tree at its path byte for byte, and holds at least one more.<br>**Delete over SSH:** Refused.<br>**Local host write:** `valley-integrator` writes countersigned `<check>/statement.note` and its transfer statement at `transfer.d/<2 hex>/<2 hex>/<rest>.note` under its own `<key-hash>`, in the landing's ref transaction. It keeps every other note the ref holds, and refuses to write a tree past these bounds. | **Tree** object (not a commit) containing `100644` note blobs (such as `<check>/statement.note` and `transfer.d/<2 hex>/<2 hex>/<rest>.note`).                                   | Tree depth `<= 4` (root tree is depth 1);<br>`<= 64` entries per tree object;<br>`<= 256` total entries visited across walk (`>= 1` note blob required);<br>Each tree object `<= 16 KiB` (`16,384` bytes);<br>Each note blob (`100644`) `<= 64 KiB` (`65,536` bytes);<br>Total bytes read in walk `<= 1 MiB` (`1,048,576` bytes).  |
 | `refs/the-valley/integration-requests/<target>/<request>`                                                 | Integration request (approval of a commit)                                                                                     | **Create / replace / delete over SSH:** Principals holding the `approve` grant, also accepted as `request` (`valleyhook` checks the `refs/the-valley/integration-requests/` prefix and the `approve` grant).<br>**Local host delete:** `valley-integrator` deletes the ref (CAS on request head) when a change lands or when voiding a `withdrawn` change's request.                                                                                                                                                                                                                                                                                                                                                                                 | **Commit** object (written by `valley approve` and required by `valley-integrator` at `refs/the-valley/integration-requests/main/<request>`, where `<request>` contains no `/`). | Must resolve to a commit object in the repository for the integrator to consider it.                                                                                                                                                                                                                                               |
+| `refs/the-valley/check-requests/<principal>/<worktree>/<attempt>`                                         | Check request: a commit whose required `nix` checks the check worker builds, outside any change                                | **Create / replace / delete over SSH:** The named principal `<principal>` alone.<br>**Delete over SSH:** Also principals holding the `approve` grant.<br>Nothing reads it to decide a landing.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | **Commit** object. `<worktree>` and `<attempt>` are tokens the requesting client makes, 16 lowercase hexadecimal digits each.                                                    | At most 32 per principal in a repository (soft; see [Push-wide bounds](#push-wide-bounds)).                                                                                                                                                                                                                                        |
 | `refs/the-valley/integration-outcomes/<target>/<request>`                                                 | Integrator outcome record                                                                                                      | **SSH push:** Nobody (`implemented`).<br>**Local host write:** `valley-integrator` writes after judging a request, and for a landing in the landing's ref transaction.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | **Blob** object (single line of space-separated fields).                                                                                                                         | 4 or 5 whitespace-separated fields terminated by `\n`.                                                                                                                                                                                                                                                                             |
 | `refs/the-valley/integration-landings/<target>/<head>`                                                    | Integrator landing record                                                                                                      | **SSH push:** Nobody (`implemented`).<br>**Local host write:** `valley-integrator` writes one per landed head, in the landing's ref transaction.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | **Commit** object with no parent, whose tree holds one blob, `landing`.                                                                                                          | Three lines, each `<key> <value>\n`: `landed`, `request`, `head`.                                                                                                                                                                                                                                                                  |
 | `refs/the-valley/integration-inputs/<target>/<request>`                                                   | Integrator inputs record                                                                                                       | **SSH push:** Nobody (`implemented`).<br>**Local host write:** `valley-integrator` writes it with the outcome record of the same name, in one ref transaction, except for a landing or a voiding.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | **Blob** object (single line of two space-separated fields).                                                                                                                     | `<inputs-digest> <outcome-blob-oid>\n` (see [Integrator inputs record](#integrator-inputs-record-refsthe-valleyintegration-inputstargetrequest)).                                                                                                                                                                                  |
@@ -3096,9 +3137,18 @@ run's wall time.
 
 The check worker's `batch.start` carries the batch's evaluation estimate and the evaluation budget
 as `eval_estimate_bytes` and `eval_budget_bytes`. Its `batch.end` carries `result`: `passed`,
-`failed`, or `cancelled` for a batch the pass stopped, with `reason` for the last two. A `capacity`
-record says a batch's estimate is larger than the whole budget, so its evaluation runs alone. It
-carries the same two fields and `budget_from`, where the budget came from.
+`failed`, or `cancelled` for a batch the pass stopped, with `reason` for the last two. Its
+`batch.start`, `batch.end`, `publish.start` and `publish.end`, and each attempt in its `state.json`,
+carry `class`: `ready` for a ready change's active version, `follow` for a follow run on `main`'s
+tip, or `request` for a check request. A follow run and a request carry no `change`, so
+`valley pending` tells a running follow run by its class. A `check.result` names no class:
+`valley pending` counts one toward `main`'s state when its tree is one its walk read on `main`,
+whichever batch built it. A record that carries no class comes from a worker that ran no request: it
+is a ready change's when it carries a `change`, and a follow run's otherwise. A check request that
+will not be built again until its ref moves or goes gets one `backoff` with `class` `request`, its
+`ref` and `reason`, and no `retry`. A `capacity` record says a batch's estimate is larger than the
+whole budget, so its evaluation runs alone. It carries the same two fields and `budget_from`, where
+the budget came from.
 
 A `decision` record carries the timing information of the integrator's timing line
 ([architecture](./architecture.md#the-integrator)) in its `data`: `request`, `target`, `tip`,

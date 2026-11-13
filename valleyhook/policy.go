@@ -101,6 +101,11 @@ type policy struct {
 	// counts both before any update is decided, and only when the push
 	// creates a record.
 	recordCreates, existingRecords int
+
+	// requestCreates is how many check requests the push creates under
+	// the pushing principal's name, and existingRequests how many that
+	// principal held before it. preReceive counts both the same way.
+	requestCreates, existingRequests int
 }
 
 // update is one line of what git hands a pre-receive hook.
@@ -118,8 +123,8 @@ type update struct {
 //
 //  1. Some refs no push may write, whatever anything declares: replacement
 //     refs, notes, and the valley's own namespace apart from attestations,
-//     integration requests, change records, restack reports and the plan
-//     graph. The plan graph is one ref, refs/the-valley/knots, matched
+//     integration requests, change records, restack reports, check
+//     requests and the plan graph. The plan graph is one ref, refs/the-valley/knots, matched
 //     exactly: a ref that only begins with its name is in the closed
 //     namespace. Nor may a push create or update a ref named like another
 //     (lookalike), since git would read it in place of that ref when that
@@ -132,6 +137,9 @@ type update struct {
 //     Integration requests take the approve grant. A change record moves
 //     only by the transitions checkRecord allows. A restack report takes
 //     the restack grant, and moves only by the writes checkReport allows.
+//     A check request takes a named principal under its own name, or a
+//     holder of the approve grant deleting it, and points at a commit
+//     (checkCheckRequest).
 //     The plan graph takes a named principal, and moves only by the writes
 //     checkGraph allows.
 //     Every other ref, tags included, takes a named grant that opens it to
@@ -157,7 +165,7 @@ func (p policy) decide(principal string, u update) string {
 		return refuse("write", "refs/notes/ is closed to every push: a note attaches text to an object that every reader's git shows beside it")
 	case strings.HasPrefix(u.ref, valleyPrefix) && !strings.HasPrefix(u.ref, attestationPrefix) &&
 		!strings.HasPrefix(u.ref, requestPrefix) && !strings.HasPrefix(u.ref, change.RefPrefix) &&
-		!strings.HasPrefix(u.ref, change.RestackPrefix) && u.ref != knot.Ref:
+		!strings.HasPrefix(u.ref, change.RestackPrefix) && !strings.HasPrefix(u.ref, change.CheckRequestPrefix) && u.ref != knot.Ref:
 		return refuse("write", fmt.Sprintf("%s is written only by the machinery on the host, and no push may write it", namespace(u.ref)))
 	}
 	if prefix, ok := lookalike(u.ref); ok && !isZero(u.new) {
@@ -206,6 +214,11 @@ func (p policy) decide(principal string, u update) string {
 
 	case strings.HasPrefix(u.ref, change.RestackPrefix):
 		if verb, why := p.checkReport(principal, u); why != "" {
+			return refuse(verb, why)
+		}
+
+	case strings.HasPrefix(u.ref, change.CheckRequestPrefix):
+		if verb, why := p.checkCheckRequest(principal, u); why != "" {
 			return refuse(verb, why)
 		}
 

@@ -718,7 +718,7 @@ in
           idle()
           host.succeed("systemctl is-active valley-worker.path")
 
-      with subtest("a push to the instance, which the worker does not build, marks it due, and knots and bookkeeping do not"):
+      with subtest("a push to the instance, which the worker does not build, and a check request's create, move and delete mark it due, and knots and bookkeeping do not"):
           host.succeed("systemctl stop valley-worker.path")
           host.succeed(
               f"cd /root && rm -rf instance && GIT_SSH_COMMAND={ssh} git clone --quiet git@localhost:instance.git instance",
@@ -731,6 +731,9 @@ in
           host.succeed(f"test ! -e {wake}/due")
           host.succeed(f"cd /root/instance && GIT_SSH_COMMAND={ssh} git push --quiet origin floor-probe")
           host.succeed(f"test -e {wake}/due")
+          request = "refs/the-valley/check-requests/alice/0123456789abcdef/0123456789abcdef"
+          for old, new in [(zero, "1" * 40), ("1" * 40, "2" * 40), ("2" * 40, zero)]:
+              host.succeed(f"rm {wake}/due && echo '{old} {new} {request}' | sudo -u git {hook} && test -e {wake}/due")
 
       with subtest("a signer publication marks the worker due only when it moves the ref"):
           host.succeed(f"rm -f {wake}/due")
@@ -790,6 +793,12 @@ in
 
       with subtest("a floor landed in the instance, which the worker does not build, marks it, and the next pass reads the floor it landed"):
           host.succeed("systemctl stop valley-worker.path")
+          # Each scan reads every ready change, and the new floor's third
+          # check is added to the evidence of each, so the changes earlier
+          # scenarios left ready are withdrawn but one.
+          for branch in ["good", "wake-first"]:
+              host.succeed(f"{contributor} valley withdraw {branch}")
+          host.succeed(f"rm -f {wake}/due")
           floor_base = host.succeed(f"{git} -C /srv/git/instance.git rev-parse refs/heads/main").strip()
           host.succeed(
               "cp ${floorThird} /tmp/instance/policy/instance/floor.cue",
@@ -802,11 +811,11 @@ in
           host.wait_until_succeeds(f"test -e {wake}/due", timeout=10)
           host.succeed("journalctl -u valley-integrator@instance -o cat | grep -q 'wake     the check worker is due'")
           # The pass reads the new floor. A change built before it holds this
-          # worker's evidence for its tree, which admits no addition, so the
-          # pass says the third check is not covered.
+          # worker's evidence for its tree without the third check, so the
+          # pass builds that check and adds its note to the ref.
           host.succeed("systemctl start valley-worker.path")
           host.wait_until_succeeds(
-              "journalctl -u valley-worker -o cat | grep -q 'and it does not cover third'", timeout=120
+              "journalctl -u valley-worker -o cat | grep -q ': added third to refs/the-valley/attestations/'", timeout=120
           )
           idle()
           assert "instance:" not in journal()
@@ -929,7 +938,7 @@ in
       with subtest("a landing that touches a class sets the check that follows it due, which runs on main after the ready change's checks and adds its pass to the worker's ref for main's tree"):
           # Each scan reads every ready change, so the ones earlier
           # scenarios left ready are withdrawn first.
-          for branch in ["good", "wake-first", "hung", "killed", "outage", "broken", "unrelated", "kept", "kept-again"]:
+          for branch in ["hung", "killed", "outage", "broken", "unrelated", "kept", "kept-again"]:
               host.execute(f"{contributor} valley withdraw {branch}")
           host.succeed(
               "cd /root/project && git checkout --quiet -b follows origin/main && mkdir -p policy/project docs",

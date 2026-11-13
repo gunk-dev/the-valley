@@ -17,10 +17,17 @@ package main
 //
 // Batches run at once, so nothing a record says about a batch or a push
 // comes from what else the pass is doing: each names its own project,
-// change, version, head and tree (identity), and a batch's records name
-// its attest run too. The pass's own fields in state.json describe the
-// change it reads during a scan, and otherwise its newest running batch;
-// batches lists every running batch.
+// change, version, head and tree (identity), and its class, and a batch's
+// records name its attest run too. The class is what the batch is for:
+// ready, a ready change's active version; follow, a follow run on main's
+// tip; or request, a check request. A follow run and a request carry no
+// change, so a reader tells their batches apart by the class alone. The
+// check.result records attest writes name no class; a reader judges them
+// by the tree they are about (mainstate.go). Records from a worker that
+// names no class are a ready change's when they carry a change, and a
+// follow run's when they carry none. The pass's own fields in state.json
+// describe the change it reads during a scan, and otherwise its newest
+// running batch; batches lists every running batch.
 //
 // failures.json in the state directory stays what decides a backoff, in
 // its own format; state.json only describes it. A pass that starts and
@@ -85,6 +92,8 @@ type attempt struct {
 	Result   string   `json:"result"` // passed, failed, cancelled or interrupted, or running in batches
 	Reason   string   `json:"reason,omitempty"`
 	Inferred bool     `json:"inferred,omitempty"`
+	// Class is what the batch or push is for: ready, follow or request.
+	Class string `json:"class,omitempty"`
 	// AttestRun is a batch's attest run, which names its progress records.
 	AttestRun string `json:"attest_run,omitempty"`
 }
@@ -192,16 +201,16 @@ func (t *workerTelemetry) settle() {
 	t.save()
 }
 
-// begin says the pass is building or publishing for id, and returns the
-// attempt it makes. A batch names its attest run.
-func (t *workerTelemetry) begin(kind string, id identity, checks []string, attestRun string, data map[string]any) *attempt {
+// begin says the pass is building or publishing for id, of the class
+// given, and returns the attempt it makes. A batch names its attest run.
+func (t *workerTelemetry) begin(kind, class string, id identity, checks []string, attestRun string, data map[string]any) *attempt {
 	if t == nil {
 		return nil
 	}
 	p := t.state.Pass
 	p.Phase, p.Project, p.Change, p.CV, p.Head, p.Tree, p.Checks = kind, id.project, id.change, id.cv, id.head, id.tree, checks
 	a := &attempt{Kind: kind, Run: t.tel.Run(), Project: id.project, Change: id.change, CV: id.cv, Head: id.head, Tree: id.tree,
-		Checks: checks, Started: telemetry.Stamp(time.Now()), AttestRun: attestRun}
+		Checks: checks, Started: telemetry.Stamp(time.Now()), Class: class, AttestRun: attestRun}
 	if kind == "build" {
 		running := *a
 		running.Result = "running"
@@ -211,6 +220,7 @@ func (t *workerTelemetry) begin(kind string, id identity, checks []string, attes
 		data = map[string]any{}
 	}
 	data["checks"] = checks
+	data["class"] = class
 	t.tel.Emit(map[string]string{"build": "batch.start", "push": "publish.start"}[kind], id.record(), data)
 	t.save()
 	return a
@@ -226,7 +236,7 @@ func (t *workerTelemetry) end(a *attempt, result, reason string, key string, f *
 	}
 	id := identity{project: a.Project, change: a.Change, cv: a.CV, head: a.Head, tree: a.Tree}
 	a.Ended, a.Result, a.Reason = telemetry.Stamp(time.Now()), result, reason
-	data := map[string]any{"result": result}
+	data := map[string]any{"result": result, "class": a.Class}
 	if a.AttestRun != "" {
 		data["attest_run"] = a.AttestRun
 	}
@@ -253,6 +263,17 @@ func (t *workerTelemetry) end(a *attempt, result, reason string, key string, f *
 		t.failure(failureState{Project: a.Project, Key: key, Failures: f.Failures, Retry: telemetry.Stamp(f.Retry),
 			FailedAt: a.Ended, Change: a.Change, CV: a.CV, Head: a.Head, Tree: a.Tree, Reason: reason})
 	}
+	t.save()
+}
+
+// spent records that a check request's batch failed, or that no batch can
+// build what it lacks, so the request is not built again until its ref
+// moves or goes: a backoff with no retry, naming the request's ref.
+func (t *workerTelemetry) spent(id identity, ref, reason string) {
+	if t == nil {
+		return
+	}
+	t.tel.Emit("backoff", id.record(), map[string]any{"class": classNames[classRequest], "ref": ref, "reason": reason})
 	t.save()
 }
 

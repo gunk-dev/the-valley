@@ -98,6 +98,12 @@ type evidence struct {
 	failed  map[string]string
 }
 
+// originFailure is a read of origin that failed while coverage read a
+// head's evidence: its listing or its fetch. Any other error coverage
+// returns is about the head itself, such as a tree attest cannot digest,
+// which the check worker (worker.go) holds against that head alone.
+type originFailure struct{ error }
+
 // coverageOf reads the evidence origin holds for a head's tree, and which
 // of the checks asked about it covers. The check worker (worker.go) calls
 // it as coverage does.
@@ -131,7 +137,7 @@ func coverageIn(g git, head string, listed map[string]string, checks []nixCheck,
 	if listed == nil {
 		o, err := listOrigin(g, attestationRefs+digest+"/*")
 		if err != nil {
-			return evidence{}, failure("could not list the evidence origin holds for this tree")
+			return evidence{}, originFailure{failure("could not list the evidence origin holds for this tree")}
 		}
 		listed = o.refs
 	}
@@ -181,7 +187,7 @@ func cover(g git, repo, head string, stored []string, listed map[string]string, 
 		oids = append(oids, listed[ref])
 	}
 	if err := fetch(g, oids...); err != nil {
-		return nil, nil, failure("could not fetch the evidence origin holds for this tree")
+		return nil, nil, originFailure{failure("could not fetch the evidence origin holds for this tree")}
 	}
 	keys, p, why := signers.read(g)
 	if why != "" {

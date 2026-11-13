@@ -47,6 +47,9 @@ type repository interface {
 	// records counts the change records the repository holds now, with
 	// one for-each-ref.
 	records() (int, error)
+	// checkRequests counts the check requests the principal named holds
+	// now, with one for-each-ref (checkrequest.go).
+	checkRequests(principal string) (int, error)
 	// graph opens a reading of the plan graph's objects (knots.go),
 	// within the graph's own bounds.
 	graph() (graphReader, error)

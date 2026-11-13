@@ -551,3 +551,7 @@ func (u unreadable) records() (int, error) {
 	u.t.Error("the records were counted")
 	return 0, errors.New("unread")
 }
+func (u unreadable) checkRequests(string) (int, error) {
+	u.t.Error("the check requests were counted")
+	return 0, errors.New("unread")
+}

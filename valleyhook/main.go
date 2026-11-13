@@ -35,7 +35,7 @@ pre-receive hook answers for the push and not for each ref.
 
 A write is allowed only if every rule that applies to its ref allows it:
 
-  refs/replace/*, refs/notes/*, and refs/the-valley/* other than the five
+  refs/replace/*, refs/notes/*, and refs/the-valley/* other than the six
   namespaces below
                     nobody, whatever a declaration says. A replacement ref
                     makes one object stand in for another wherever git
@@ -85,6 +85,16 @@ A write is allowed only if every rule that applies to its ref allows it:
                     that change. The first has no parent, and each later
                     one has the report it replaces as its one parent. No
                     push deletes one. A push may update at most 64.
+  refs/the-valley/check-requests/<principal>/<worktree>/<attempt>
+                    a check request: a commit the host's check worker
+                    builds the required checks of. The worktree and the
+                    attempt are 16 lowercase hexadecimal digits each. A
+                    named principal may create, replace and delete the
+                    requests under its own name, and a holder of the
+                    approve grant may delete any. A principal may hold at
+                    most 32 in a repository, counted with the requests
+                    the push creates. That bound is soft, as the one on
+                    change records is.
   refs/the-valley/knots
                     the plan graph, that name exactly: any named
                     principal. A create is one commit with no parent, and
@@ -230,8 +240,9 @@ func preReceive(args []string, stdin io.Reader, stderr io.Writer, repo repositor
 		return failClosed(stderr, err)
 	}
 
-	// The bounds on change records and restack reports that are about the
-	// push as a whole are checked before any record or report is read.
+	// The bounds on change records, restack reports and check requests
+	// that are about the push as a whole are checked before any record or
+	// report is read.
 	records := 0
 	for _, u := range updates {
 		if strings.HasPrefix(u.ref, change.RefPrefix) {
@@ -258,6 +269,12 @@ func preReceive(args []string, stdin io.Reader, stderr io.Writer, repo repositor
 	if p.recordCreates > 0 {
 		var err error
 		if p.existingRecords, err = repo.records(); err != nil {
+			return failClosed(stderr, err)
+		}
+	}
+	if p.requestCreates = requestCreates(*principal, updates); p.requestCreates > 0 {
+		var err error
+		if p.existingRequests, err = repo.checkRequests(*principal); err != nil {
 			return failClosed(stderr, err)
 		}
 	}

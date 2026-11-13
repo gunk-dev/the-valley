@@ -142,7 +142,7 @@ components guard it:
   `protection.writers` may push to those refs over SSH; if `protection.refs` matches
   `refs/heads/main` and `protection.writers` is empty, no SSH push may update `main`, whereas a
   project with no `protection` block leaves all branches open. Unprotected topic branches
-  (`refs/heads/*`) are open to any authorized key; outside `refs/heads/*`, the four admitted
+  (`refs/heads/*`) are open to any authorized key; outside `refs/heads/*`, the five admitted
   `refs/the-valley/*` namespaces, and the exact `refs/the-valley/knots` ref, refs (including
   `refs/tags/*`) require a project-level ref grant (`grants.<name>: {refs, writers}` in
   `valley.cue`) unless categorically forbidden. On `refs/the-valley/*`, the hook enforces schema and
@@ -181,9 +181,9 @@ for every ref namespace, write rule, and size limit.
 
 A repository has two parts: **the source** (`main` and release tags) and **project storage** (the
 operational records around the source: change records, check attestations, integration requests,
-integration outcomes, restack reports, and the plan graph). Keeping project storage outside `main`
-means updating a plan item, recording a check attestation, or marking a change ready never dirties
-`main` or triggers source-level rebuilds.
+check requests, integration outcomes, restack reports, and the plan graph). Keeping project storage
+outside `main` means updating a plan item, recording a check attestation, or marking a change ready
+never dirties `main` or triggers source-level rebuilds.
 
 Within project storage, the **plan graph** tracks what the project intends to do and why. Each item
 in the graph is a **knot** — named after the knotted cords used to keep records before writing. A

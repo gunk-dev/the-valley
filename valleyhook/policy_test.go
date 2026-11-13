@@ -53,9 +53,10 @@ func (f fakeRepository) report(string) (fileCommit, error) {
 func (f fakeRepository) hasRecord(string) (bool, error) {
 	return false, errors.New("holds no refs")
 }
-func (f fakeRepository) kind(string) (string, error) { return "", errors.New("holds no objects") }
-func (f fakeRepository) records() (int, error)       { return 0, nil }
-func (f fakeRepository) graph() (graphReader, error) { return nil, errors.New("holds no objects") }
+func (f fakeRepository) kind(string) (string, error)       { return "", errors.New("holds no objects") }
+func (f fakeRepository) records() (int, error)             { return 0, nil }
+func (f fakeRepository) checkRequests(string) (int, error) { return 0, nil }
+func (f fakeRepository) graph() (graphReader, error)       { return nil, errors.New("holds no objects") }
 
 // Every rule that applies to a ref has to allow the write, and none of
 // them can be satisfied by another. Each case here is a declaration that

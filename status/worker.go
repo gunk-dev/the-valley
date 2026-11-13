@@ -1,11 +1,12 @@
 package main
 
 // work is one pass of a check worker. It builds the nix checks that ready
-// changes require before anyone approves them, and publishes the evidence
-// on origin, where approve (approve.go) reuses it instead of building it,
-// and where the integrator finds it for a request approve filed without it.
-// A timer starts a pass, and so does a wake mark. A pass keeps nothing
-// between passes but its record of failures.
+// changes require before anyone approves them, and the ones a check
+// request asks for, and publishes the evidence on origin, where approve
+// (approve.go) reuses it instead of building it, and where the integrator
+// finds it for a request approve filed without it. A timer starts a pass,
+// and so does a wake mark. A pass keeps nothing between passes but its
+// record of failures.
 //
 // A pass reads each project named with --repo, and works out what each
 // of the project's ready changes needs:
@@ -35,12 +36,32 @@ package main
 // its end, and a later scan reads the new tip. It takes a slot, a
 // destination, an evaluation and a backoff as any batch does.
 //
+// A check request (../change/checkrequest.go) asks for a commit's checks
+// outside any change: a ref under refs/the-valley/check-requests/ that
+// names the commit. A scan lists each project's requests on origin,
+// sorted by name, and says and skips a ref there that is not a request's.
+// Once it has read every project's ready changes and follow run, and
+// found none to build and no batch of either running, it reads each
+// request as it reads a ready head: the checks the commit requires over
+// its merge base with main, under both layers at main's tip, never from
+// the commit, then coverage, then one batch, published as a ready
+// change's is. The attest run names no change. Evidence lets nothing
+// land: only a ready version and an approval do, and a request is
+// neither.
+//
 // That read of every project is a scan. A pass is one loop, the
 // scheduler, which runs scans and batches until there is nothing left to
 // do. The loop alone starts batches, publishes, writes the failure record
 // and the telemetry, and claims wake marks. Each batch is one attest run,
 // which a goroutine waits for. When attest ends, the goroutine hands the
 // loop what the batch did, and changes nothing itself.
+//
+// A scan queues one class of work, the first it finds of ready changes,
+// follow runs and check requests, so changes waiting to land always come
+// first. A request batch starts only when no batch of a higher class runs,
+// and only from the queue of a scan that has just found nothing of a
+// higher class. It is never stopped for higher-class work, which takes a
+// free slot beside it, or the next one.
 //
 // Up to --batches batches run at once; without it, one. The loop starts
 // the batches a scan found in the order their versions became ready.
@@ -57,8 +78,10 @@ package main
 // be admitted is recorded apart from its evaluation's.
 // Change records carry no time, so that order is the order in which this
 // pass first saw each version ready. Versions first seen in the same scan
-// go by project name, then by change ID. A pass started by a timer or a
-// mark sees all the versions ready then in its first scan.
+// go by project name, then by change ID. Requests go the same way, by the
+// scan that first listed each at its commit, then by project name, then
+// by name. A pass started by a timer or a mark sees all the versions ready
+// then in its first scan.
 //
 // One batch at a time builds a tree's evidence. A batch's destination is
 // the ref it stores and pushes: the project, the tree's digest and this
@@ -89,29 +112,43 @@ package main
 // finish, so no ref is left half written. A stopped batch publishes
 // nothing and records no failure, and its slot and destination are free
 // once attest has ended. A batch whose tree a ready version still holds,
-// as after a restack that left the tree as it was, runs on.
+// as after a restack that left the tree as it was, runs on. The same scan
+// stops a request batch whose ref it lists gone or naming another commit,
+// unless a ready version holds the tree. Another request with the same
+// tree does not keep it, since only a version that may land keeps work
+// that nobody asks for alive. A client that asks again starts a new batch,
+// whose builds the nix store already holds.
 //
 // When a batch ends, its slot takes the next job from the last scan's
 // queue at once, and the scan comes after. So a version superseded since
 // that scan can start a batch, which the next scan stops as above. A free
-// slot does not wait for a read of every project.
+// slot does not wait for a read of every project, except for a request,
+// which waits for that scan to find no ready change or follow run first.
+// A scan that goes on to read the requests empties the queue before it
+// does, so a slot freed while it reads them starts nothing an earlier
+// scan queued.
 //
-// A scan forgets each version it did not find ready that no batch builds:
-// when the pass first saw it, and the notes said about it. A pass lives as
+// A scan forgets each version it did not find ready, and each request it
+// did not list, that no batch builds: when the pass first saw it, and the
+// notes said about it. A pass lives as
 // long as work keeps arriving, and holds no more than the versions it
 // still meets.
 //
-// The worker publishes the ref a gate batch stores, which holds that
-// batch's notes alone, and origin takes an existing attestation ref only
-// with every note it holds kept. So a gate batch publishes a tree's
-// evidence once,
-// and never builds what it could not publish: when origin already holds
-// this worker's ref for a tree and the ref lacks a required check, the
-// pass reports it and builds nothing. approve --build-here builds the rest
-// under the operator's key (bd-7b7d58f). When the worker's ref is stored
-// here but not on origin, an earlier batch built it and its push was
-// lost, so the pass pushes that same ref again rather than building it
-// again.
+// A batch for a tree origin holds no evidence of this worker's for
+// stores the ref, which holds that batch's notes alone, and the loop
+// publishes it. origin takes an existing attestation ref only with every
+// note it holds kept and at least one added, so when origin already holds
+// this worker's ref for a tree and the ref lacks a check a head there
+// requires, the batch builds the checks it lacks and attest adds their
+// notes to that ref itself (attest run --push origin --ref-only), as a
+// follow run's does. A signer's ref holds one note for each check, so a
+// check the ref holds a note for that does not count, as one for another
+// attribute, is not built again: the pass reports it, approve --build-here
+// builds it under the operator's key (bd-7b7d58f), and a request that
+// lacks nothing else is marked as one whose batch failed, below. When the
+// worker's ref is stored here but not on origin, an earlier batch built it
+// and its push was lost, so the pass pushes that same ref again rather
+// than building it again, and a later scan adds to it what it lacks.
 //
 // A batch that fails is not run again at once, and neither is a push that
 // fails. The pass records each failure in failures.json in the state
@@ -126,11 +163,26 @@ package main
 // now (main.go's clock). Deleting the record lets everything run again at
 // once.
 //
+// A request whose batch fails waits for no time: failures.json marks it
+// by its ref and the commit the ref names, and no pass builds it again
+// until a listing finds the ref gone or naming another commit, which
+// forgets the marker. The pass reads the marker when it lists the request,
+// and again each time it assesses it, since the batch can end while the
+// scan reads. A request is marked the same way when what its commit holds
+// keeps it from being read: it shares no history with main, its checks do
+// not derive, or its evidence does not read, as when attest cannot digest
+// a tree that holds a submodule. A client asks again with a new ref, which builds at
+// once.
+//
 // A scan forgets the failures it did not meet in a project, but only for
 // a project it read whole: every ready change's checks derived and its
-// evidence read. It never forgets the failure key of a batch still
-// running. A scan over other projects, or one that could not read this
-// one, leaves this one's record as it is.
+// evidence read, and the follow run's. It never forgets the failure key of
+// a batch still running. While the project lists check requests, it keeps
+// every failed push until it has read them, since a request's push is met
+// there. A scan over other projects, or one that could not read this one,
+// leaves this one's record as it is. A head whose evidence does not read
+// leaves its project unread: nothing there is forgotten or stopped, and
+// its main tip is not recorded as quiet.
 //
 // Passes that share a state directory take turns: each holds the lock
 // file there while it runs, and a pass that finds it held waits for it.
@@ -141,9 +193,11 @@ package main
 // A read of origin that fails stops the pass, because a read that did not
 // happen must not read as no changes or no evidence. The loop starts
 // nothing more, lets the running batches end, publishes and records what
-// they did, and then fails. Anything else that goes wrong with one change
-// or one batch is reported, and the pass goes on with the rest. The pass
-// exits 1 when anything went wrong.
+// they did, and then fails. Anything else that goes wrong with one change,
+// request or batch is reported, and the pass goes on with the rest: a head
+// whose evidence does not read for what it holds builds nothing, and a
+// request whose does is marked, above. The pass exits 1 when anything went
+// wrong.
 //
 // Given --wake, a pass claims that wake directory's due mark before it
 // reads anything, and claims again each mark made while it runs, before
@@ -164,9 +218,9 @@ package main
 // how the host module names it, a pass says what it is doing as it does
 // it, and keeps its recent attempts, its running batches and the failures
 // waiting out their backoff with what each was about
-// (workertelemetry.go). It hands attest the same stream for each batch's
-// progress, and the capacity it builds on (capacity.go), which each check
-// build's records carry.
+// (workertelemetry.go), each batch and push with its class. It hands
+// attest the same stream for each batch's progress, and the capacity it
+// builds on (capacity.go), which each check build's records carry.
 //
 // Given --keep-outputs, a pass keeps the outputs of the checks it builds
 // alive against nix's garbage collection, so a later batch whose checks
@@ -234,6 +288,17 @@ const defaultInterval = time.Minute
 // mark.
 const markPoll = time.Second
 
+// A job's class: what its batch is for. A scan queues the first class it
+// finds work in, in this order.
+const (
+	classReady   = iota // a ready change's active version
+	classFollow         // a follow run on main's tip
+	classRequest        // a check request
+)
+
+// classNames name the classes in telemetry.
+var classNames = [...]string{"ready", "follow", "request"}
+
 // worker is one pass: the signer it attests as, the lock it holds, what it
 // says, what it has found going wrong, and the scheduler's state. Only the
 // loop reads or changes any of it once the first batch starts.
@@ -258,9 +323,9 @@ type worker struct {
 	capacity string // what the pass builds on (capacity.go), or "" without telemetry
 
 	scans   int                        // the scans so far
-	seen    map[string]int             // the scan that first saw each version ready, by job.version
-	ready   map[string]bool            // the versions the scan under way has found ready, by job.version
-	wanted  map[string]bool            // the destinations of the ready versions the scan under way assessed, by job.dest
+	seen    map[string]int             // the scan that first saw each version ready, or each request listed, by job.version
+	ready   map[string]bool            // the versions the scan under way has found ready, and the requests it listed, by job.version
+	wanted  map[string]bool            // the destinations of the ready versions and follow runs the scan under way assessed, by job.dest
 	running map[string]*batch          // the batches running, by job.dest
 	queue   []*job                     // what the last scan found to build and has not started, in order
 	said    map[string]map[string]bool // the notes said about each version or project since the pass last acted on it
@@ -269,10 +334,12 @@ type worker struct {
 	quiet   *quietMains                // each project's main tip on which a pass found no follow run to start
 	mains   map[string]string          // the failure key of the follow run the pass last assessed, by project
 
-	// How the loop reads a project, reassesses a job right before its
-	// batch starts, and starts a batch's attest run: project, assess and
-	// attest, unless a test gives its own.
-	read    func(g git, name string) ([]*job, error)
+	// How the loop reads a project, reads the evidence origin holds for a
+	// job's head, reassesses a job right before its batch starts, and
+	// starts a batch's attest run: project, coverageOf, assess and attest,
+	// unless a test gives its own.
+	read    func(g git, name string) (projectRead, error)
+	cover   func(j *job) (evidence, error)
 	recheck func(j *job) (bool, error)
 	launch  func(b *batch)
 }
@@ -289,17 +356,56 @@ type job struct {
 	digest  string     // the head's tree digest
 	ref     string     // this worker's attestation ref for the tree
 	key     string     // the batch's key in the failure record
-	seen    int        // the scan that first saw the version ready
+	seen    int        // the scan that first saw the version ready, or the request listed
 	main    bool       // a follow run on main's tip, which v.Head is; c is empty
 	covers  []string   // for a follow run, the landings its checks cover, newest first
+	req     string     // for a check request, its ref, which names v.Head; c is empty
+	// additive says the batch adds its notes to this worker's ref for the
+	// tree on origin, which holds notes already, as a follow run's always
+	// does; otherwise it stores the ref here, and the loop publishes it.
+	additive bool
 }
 
-// version names the job's change version, project by project.
-func (j *job) version() string { return versionName(j.r.name, j.c.ChangeID, j.v.N) }
+// class is the job's class.
+func (j *job) class() int {
+	switch {
+	case j.main:
+		return classFollow
+	case j.req != "":
+		return classRequest
+	}
+	return classReady
+}
+
+// version names the job's change version, or its request and the commit
+// the request names, project by project.
+func (j *job) version() string {
+	if j.req != "" {
+		return checkRequestName(j.r.name, j.req, j.v.Head)
+	}
+	return versionName(j.r.name, j.c.ChangeID, j.v.N)
+}
 
 // versionName names a change version, project by project.
 func versionName(project, change string, n int) string {
 	return project + " " + change + " " + strconv.Itoa(n)
+}
+
+// checkRequestName names a check request at the commit it names, project by
+// project.
+func checkRequestName(project, ref, head string) string {
+	return project + " " + ref + " " + head
+}
+
+// label names what the job builds for in a line about another job.
+func (j *job) label() string {
+	switch j.class() {
+	case classFollow:
+		return "main at " + short(j.v.Head)
+	case classRequest:
+		return "request " + strings.TrimPrefix(j.req, change.CheckRequestPrefix)
+	}
+	return fmt.Sprintf("%s v%d", j.c.Handle, j.v.N)
 }
 
 // dest is the batch's destination: the project and the ref it stores.
@@ -315,8 +421,11 @@ func (j *job) names() []string {
 
 // line opens every line said about the job's version.
 func (j *job) line() string {
-	if j.main {
+	switch j.class() {
+	case classFollow:
 		return fmt.Sprintf("%s: main at %s", j.r.name, short(j.v.Head))
+	case classRequest:
+		return fmt.Sprintf("%s: %s at %s", j.r.name, j.label(), short(j.v.Head))
 	}
 	return fmt.Sprintf("%s: %s v%d at %s", j.r.name, j.c.Handle, j.v.N, j.v.Head[:min(7, len(j.v.Head))])
 }
@@ -325,8 +434,9 @@ func (j *job) identity() identity {
 	return identity{project: j.r.name, change: j.c.ChangeID, cv: j.v.N, head: j.v.Head, tree: j.digest}
 }
 
-// jobBefore orders jobs: by the scan that first saw each version ready, then
-// by project name, then by change ID.
+// jobBefore orders jobs: by the scan that first saw each version ready or
+// each request listed, then by project name, then by change ID, then by
+// request name.
 func jobBefore(a, b *job) bool {
 	if a.seen != b.seen {
 		return a.seen < b.seen
@@ -334,7 +444,10 @@ func jobBefore(a, b *job) bool {
 	if a.r.name != b.r.name {
 		return a.r.name < b.r.name
 	}
-	return a.c.ChangeID < b.c.ChangeID
+	if a.c.ChangeID != b.c.ChangeID {
+		return a.c.ChangeID < b.c.ChangeID
+	}
+	return a.req < b.req
 }
 
 // batch is a job whose attest run has started.
@@ -515,7 +628,11 @@ func runWork(g git, args []string, stdout, stderr io.Writer) (err error) {
 		lock: lock, wake: claim, stdout: stdout, stderr: stderr, out: files, errs: errFiles,
 		seen: map[string]int{}, running: map[string]*batch{}, said: map[string]map[string]bool{}}
 	w.read, w.launch = w.project, w.attest
-	w.recheck = func(j *job) (bool, error) { return w.assess(j, nil) }
+	w.cover = func(j *job) (evidence, error) { return coverageOf(j.r.g, j.v.Head, j.asked, w.stderr) }
+	w.recheck = func(j *job) (bool, error) {
+		needed, _, err := w.assess(j, nil)
+		return needed, err
+	}
 	w.tel = openWorkerTelemetry(telemetryDir)
 	if w.tel != nil {
 		w.capacity = measureCapacity(slots, batches)
@@ -769,7 +886,7 @@ func (w *worker) loop(g git, repos []string) error {
 			// scan reads anything, as the first is.
 			w.wake.again(w.stderr)
 			if stop = w.scan(g, repos); stop == nil {
-				stop = w.admit()
+				stop = w.admit(true)
 			}
 			w.tel.settle()
 		}
@@ -786,10 +903,12 @@ func (w *worker) loop(g git, repos []string) error {
 			// A freed slot takes the next job from the last scan's
 			// queue at once, before the scan that follows finds what
 			// changed meanwhile. A version superseded since that scan
-			// can start a batch this way, which that scan stops.
+			// can start a batch this way, which that scan stops. A
+			// request waits for that scan, which finds any ready change
+			// or follow run that came meanwhile.
 			if err := w.reap(); stop == nil {
 				if stop = err; stop == nil {
-					stop = w.admit()
+					stop = w.admit(false)
 				}
 			}
 			scan = true
@@ -809,26 +928,59 @@ func (w *worker) scan(g git, repos []string) error {
 	w.ready = map[string]bool{}
 	w.wanted = map[string]bool{}
 	var found []*job
+	var reads []projectRead
 	for _, name := range repos {
-		jobs, err := w.read(g, name)
+		pr, err := w.read(g, name)
 		if err != nil {
+			for _, pr := range reads {
+				pr.release()
+			}
 			w.queue = nil
 			return err
 		}
+		reads = append(reads, pr)
+		found = append(found, pr.jobs...)
+	}
+	// Check requests come last: the scan reads them only once every
+	// project's ready changes and follow run are read, when none of those
+	// needs a batch and no batch of theirs runs.
+	readRequests := len(found) == 0 && !w.runningAbove(classRequest)
+	if readRequests {
+		// The request phase handles batches that end meanwhile, and a slot
+		// one frees takes the queue's next job at once, so the queue is
+		// what this scan found first, which is nothing.
+		w.queue = nil
+	}
+	var stop error
+	for _, pr := range reads {
+		if pr.requests == nil {
+			continue
+		}
+		if !readRequests || stop != nil {
+			pr.release()
+			continue
+		}
+		jobs, err := pr.requests()
+		stop = err
 		found = append(found, jobs...)
 	}
-	// Changes waiting to land come first: a follow run on main starts
-	// only when no ready change waits on checks.
-	var gates []*job
+	if stop != nil {
+		w.queue = nil
+		return stop
+	}
+	// Changes waiting to land come first, then follow runs on main, then
+	// check requests: the scan queues the first class it found work in.
+	first := classRequest
 	for _, j := range found {
-		if !j.main {
-			gates = append(gates, j)
+		first = min(first, j.class())
+	}
+	var queued []*job
+	for _, j := range found {
+		if j.class() == first {
+			queued = append(queued, j)
 		}
 	}
-	if len(gates) > 0 {
-		found = gates
-	}
-	w.queue = w.order(found)
+	w.queue = w.order(queued)
 	w.forget(repos)
 	return nil
 }
@@ -870,7 +1022,7 @@ func (w *worker) order(found []*job) []*job {
 	var queue []*job
 	for _, j := range found {
 		if f, ok := first[j.dest()]; ok {
-			w.note(j, "the batch for %s v%d builds the same tree", f.c.Handle, f.v.N)
+			w.note(j, "the batch for %s builds the same tree", f.label())
 			continue
 		}
 		first[j.dest()] = j
@@ -879,48 +1031,77 @@ func (w *worker) order(found []*job) []*job {
 	return queue
 }
 
+// projectRead is what a scan's read of one project found: the jobs its
+// ready changes or follow run need, and, when it lists check requests a
+// batch may build, how to read them. The scan calls requests or release
+// once, and either removes the policy layers the read holds for them.
+type projectRead struct {
+	jobs     []*job
+	requests func() ([]*job, error)
+	done     func()
+}
+
+// release removes what the read holds for its requests, unread.
+func (pr projectRead) release() {
+	if pr.done != nil {
+		pr.done()
+	}
+}
+
 // project reads one project's ready changes, and returns the jobs that
-// need a batch. It returns an error only when a read of origin failed.
-// When it has read the project whole, it forgets the project's failures
-// it did not meet, and stops the project's batches whose evidence would
-// serve no landing.
-func (w *worker) project(g git, name string) ([]*job, error) {
+// need a batch: the ready changes', or else the follow run's. It returns
+// an error only when a read of origin failed. When it has read the
+// project whole, it forgets the project's failures it did not meet, and
+// stops the project's batches whose evidence would serve no landing. When
+// it lists check requests a batch may build, it returns how to read them
+// too, for the scan to call once no project has higher-class work.
+func (w *worker) project(g git, name string) (projectRead, error) {
 	list, _, err := sources(g, listing{repo: name}, w.stderr)
 	if err != nil {
-		return nil, failure(fmt.Sprintf("%s: %v; the pass stops here", name, err))
+		return projectRead{}, failure(fmt.Sprintf("%s: %v; the pass stops here", name, err))
 	}
 	repos := readSources(list, newVerifier())
 	r := repos[0]
 	if r.err != nil {
-		return nil, failure(fmt.Sprintf("%s: %v; the pass stops here", name, r.err))
+		return projectRead{}, failure(fmt.Sprintf("%s: %v; the pass stops here", name, r.err))
 	}
 	view := r.pendingView(handles(repos))
 	for _, c := range view.Changes {
 		w.ready[versionName(name, c.ChangeID, c.Versions[c.Active-1].N)] = true
 	}
-	met := map[string]bool{} // the failures this scan met, by key
-	if len(view.Changes) == 0 && r.snap.tip == "" {
-		w.prune(name, met)
-		return nil, nil
+	listed, pending, err := w.requests(r)
+	if err != nil {
+		return projectRead{}, err
 	}
-	if len(view.Changes) == 0 && (w.gating() || w.quiet.holds(name, r.snap.tip, w.failures)) {
+	met := map[string]bool{} // the failures this scan met, by key
+	idle := len(view.Changes) == 0 && len(pending) == 0 && !w.requesting(name)
+	if idle && r.snap.tip == "" {
+		w.prune(name, met, len(listed) > 0)
+		return projectRead{}, nil
+	}
+	if idle && (w.gating() || w.quiet.holds(name, r.snap.tip, w.failures)) {
 		// Main is not read now, so its follow run's failure, if any, is
 		// kept.
-		return nil, nil
+		return projectRead{}, nil
 	}
 	if r.snap.tip == "" {
 		if w.noteAs(name, name+": origin has no main to read the policy at, so nothing is built") {
 			w.troubles++
 		}
-		return nil, nil
+		return projectRead{}, nil
 	}
 	instance, project, done, err := policyLayers(r.g, r.snap.tip)
-	defer done()
+	held := false // whether the requests' reader holds the layers, and removes them
+	defer func() {
+		if !held {
+			done()
+		}
+	}()
 	if err != nil {
 		if w.noteAs(name, fmt.Sprintf("%s: the policy at main did not read, so nothing is built: %v", name, err)) {
 			w.troubles++
 		}
-		return nil, nil
+		return projectRead{}, nil
 	}
 	delete(w.said, name)
 	whole := true
@@ -929,21 +1110,24 @@ func (w *worker) project(g git, name string) ([]*job, error) {
 		// A scan reads one change after another, which can take a while,
 		// so a batch that ended meanwhile is handled between them.
 		if err := w.reap(); err != nil {
-			return nil, err
+			return projectRead{}, err
 		}
 		j, read, err := w.change(r, instance, project, c, met)
 		if err != nil {
-			return nil, err
+			return projectRead{}, err
 		}
 		whole = whole && read
 		if j != nil {
 			jobs = append(jobs, j)
 		}
 	}
-	if len(jobs) == 0 && !w.gating() {
+	// A project read only for its check requests reads main only when a
+	// pass would read it with none: when main is not quiet.
+	quiet := len(view.Changes) == 0 && w.quiet.holds(name, r.snap.tip, w.failures)
+	if len(jobs) == 0 && !w.gating() && !quiet {
 		j, read, err := w.follows(r, instance, project, handles(repos), met)
 		if err != nil {
-			return nil, err
+			return projectRead{}, err
 		}
 		whole = whole && read
 		if j != nil {
@@ -959,16 +1143,188 @@ func (w *worker) project(g git, name string) ([]*job, error) {
 		}
 	}
 	if whole {
-		w.prune(name, met)
-		w.stopSuperseded(name, view.Changes)
+		// A check request's push failure is met only when the requests
+		// are read, so while the project lists any it is kept here, and
+		// the request phase prunes it.
+		w.prune(name, met, len(listed) > 0)
+		w.stopSuperseded(name, view.Changes, listed)
+	}
+	pr := projectRead{jobs: jobs}
+	if len(pending) > 0 {
+		held = true
+		pr.done = done
+		pr.requests = func() ([]*job, error) {
+			defer done()
+			jobs, err := w.readRequests(r, instance, project, pending, met)
+			if err == nil && whole {
+				w.prune(name, met, false)
+			}
+			return jobs, err
+		}
+	}
+	return pr, nil
+}
+
+// readRequests fetches the commits a project's pending check requests
+// name, and reads each request, as a scan reads them once no project has
+// a ready change or follow run to build. It returns an error only when a
+// read of origin failed.
+func (w *worker) readRequests(r listed, instance, project string, pending []checkRequest, met map[string]bool) ([]*job, error) {
+	var heads []string
+	for _, q := range pending {
+		heads = append(heads, q.head)
+	}
+	if err := fetch(r.g, heads...); err != nil {
+		return nil, failure(fmt.Sprintf("%s: could not fetch the commits its check requests name; the pass stops here", r.name))
+	}
+	var jobs []*job
+	for _, q := range pending {
+		if err := w.reap(); err != nil {
+			return nil, err
+		}
+		j, err := w.request(r, instance, project, q, met)
+		if err != nil {
+			return nil, err
+		}
+		if j != nil {
+			jobs = append(jobs, j)
+		}
 	}
 	return jobs, nil
 }
 
+// checkRequest is one check request a listing found: its ref, and the
+// commit it names.
+type checkRequest struct{ ref, head string }
+
+// requests lists the project's check requests on origin, and forgets the
+// marker of each request whose ref the listing finds gone or naming
+// another commit. It returns every request listed, as its ref to the
+// commit it names, and the ones a batch may build, sorted by name: those
+// with no marker. A ref under the prefix that is not a request's is said
+// and skipped. It returns an error only when a read of origin failed.
+func (w *worker) requests(r listed) (listed map[string]string, pending []checkRequest, err error) {
+	o, err := listOrigin(r.g, change.CheckRequestPrefix+"*")
+	if err != nil {
+		return nil, nil, failure(fmt.Sprintf("%s: could not list its check requests: %v; the pass stops here", r.name, err))
+	}
+	listed, pending = w.listRequests(r, o.refs)
+	return listed, pending, nil
+}
+
+// listRequests is what requests makes of a listing of origin's refs,
+// which ls-remote matched by their ends: the refs under the prefix alone
+// are read.
+func (w *worker) listRequests(r listed, all map[string]string) (listed map[string]string, pending []checkRequest) {
+	var refs []string
+	for ref := range all {
+		if strings.HasPrefix(ref, change.CheckRequestPrefix) {
+			refs = append(refs, ref)
+		}
+	}
+	sort.Strings(refs)
+	listed = map[string]string{}
+	for _, ref := range refs {
+		head := all[ref]
+		key := checkRequestName(r.name, ref, head)
+		w.ready[key] = true
+		if _, ok := w.seen[key]; !ok {
+			w.seen[key] = w.scans
+		}
+		if _, _, _, ok := change.ParseCheckRequestRef(ref); !ok {
+			w.noteAs(key, fmt.Sprintf("%s: %s is not a check request; one is %s<principal>/<worktree>/<attempt>. Skipped.", r.name, ref, change.CheckRequestPrefix))
+			continue
+		}
+		listed[ref] = head
+	}
+	w.failures.keepRequests(r.name, listed)
+	for _, ref := range refs {
+		head, ok := listed[ref]
+		if !ok {
+			continue
+		}
+		if w.marked(&job{r: r, v: jsonVersion{Head: head}, req: ref}) {
+			continue
+		}
+		pending = append(pending, checkRequest{ref, head})
+	}
+	return listed, pending
+}
+
+// marked reports whether a check request is marked as not to be built
+// again while its ref names the commit it names now, and says so once.
+func (w *worker) marked(j *job) bool {
+	if w.failures.Requests[j.r.name][j.req] != j.v.Head {
+		return false
+	}
+	w.note(j, "an earlier batch for it did not end in evidence, so it is not built again until its ref moves or goes")
+	return true
+}
+
+// unbuildable records that a check request cannot be built for what its
+// commit holds: it is said once, marked as a request whose batch failed,
+// and not read again until its ref moves or goes.
+func (w *worker) unbuildable(j *job, reason string) {
+	w.say(j, "%s, so it is not built until its ref moves or goes", reason)
+	w.spent(j, reason)
+	w.troubles++
+	w.waits++
+}
+
+// request reads one check request, and returns its job when it needs a
+// batch. Its checks are derived as a ready head's are, over its merge
+// base with main, under both policy layers at main's tip, never from the
+// commit. A request whose commit shares no history with main, or whose
+// checks do not derive, is unbuildable.
+func (w *worker) request(r listed, instance, project string, q checkRequest, met map[string]bool) (*job, error) {
+	j := &job{r: r, v: jsonVersion{Head: q.head}, req: q.ref, seen: w.seen[checkRequestName(r.name, q.ref, q.head)]}
+	if w.marked(j) {
+		return nil, nil
+	}
+	base, err := r.g.output(true, "merge-base", r.snap.tip, q.head)
+	if err != nil {
+		w.unbuildable(j, "it shares no history with main")
+		return nil, nil
+	}
+	doc, err := derivedChecks(r.g, "", instance, project, base, q.head)
+	if err != nil {
+		w.unbuildable(j, fmt.Sprintf("its checks did not derive: %v", err))
+		return nil, nil
+	}
+	for _, c := range doc.Required {
+		if c.Runner == "nix" {
+			j.asked = append(j.asked, nixCheck{c.Name, c.Attribute})
+		}
+	}
+	if len(j.asked) == 0 {
+		w.note(j, "requires no nix check")
+		return nil, nil
+	}
+	needed, _, err := w.assess(j, met)
+	if err != nil || !needed {
+		return nil, err
+	}
+	return j, nil
+}
+
 // gating reports whether a batch for a ready change runs.
-func (w *worker) gating() bool {
+func (w *worker) gating() bool { return w.runningAbove(classFollow) }
+
+// runningAbove reports whether a batch of a class before class runs.
+func (w *worker) runningAbove(class int) bool {
 	for _, b := range w.running {
-		if !b.job.main {
+		if b.job.class() < class {
+			return true
+		}
+	}
+	return false
+}
+
+// requesting reports whether a batch for one of the project's check
+// requests runs.
+func (w *worker) requesting(project string) bool {
+	for _, b := range w.running {
+		if b.job.r.name == project && b.job.class() == classRequest {
 			return true
 		}
 	}
@@ -994,10 +1350,22 @@ func (w *worker) follows(r listed, instance, project string, h handleMap, met ma
 		}
 	}
 	j.covers = walk.landings(h, r.name)
+	return w.followRun(j, met)
+}
+
+// followRun assesses the follow run on main's tip, j.v.Head, for the
+// checks due there, and returns it when it needs a batch, and whether it
+// read the tip's evidence. It records the tip as quiet when it read it and
+// found no follow run to start, so later passes read neither the policy
+// nor main there; a tip whose evidence did not read is read again.
+func (w *worker) followRun(j *job, met map[string]bool) (*job, bool, error) {
+	r := j.r
 	needed := false
 	if len(j.asked) > 0 {
-		if needed, err = w.assess(j, met); err != nil {
-			return nil, false, err
+		var read bool
+		var err error
+		if needed, read, err = w.assess(j, met); err != nil || !read {
+			return nil, read, err
 		}
 		if w.mains == nil {
 			w.mains = map[string]string{}
@@ -1008,7 +1376,7 @@ func (w *worker) follows(r listed, instance, project string, h handleMap, met ma
 	// either, unless one runs now: it may fail.
 	quiet := quietMain{}
 	if _, running := w.running[j.dest()]; !needed && (len(j.missing) == 0 || !running) {
-		quiet = quietMain{Tip: r.snap.tip, Wait: j.key}
+		quiet = quietMain{Tip: j.v.Head, Wait: j.key}
 	}
 	if err := w.quiet.set(r.name, quiet); err != nil {
 		fmt.Fprintf(w.stderr, "valley: could not write %s: %v\n", w.quiet.path, err)
@@ -1021,22 +1389,42 @@ func (w *worker) follows(r listed, instance, project string, h handleMap, met ma
 }
 
 // stopSuperseded stops each of the project's running batches whose
-// version is no longer its change's active version, when no ready version
+// version is no longer its change's active version, and each whose check
+// request's ref is gone or names another commit, when no ready version
 // the scan assessed holds its tree. changes are the project's ready
-// changes, as the scan read them whole. Each batch is stopped once; its
-// end is handled when attest has ended (complete).
-func (w *worker) stopSuperseded(project string, changes []jsonChange) {
+// changes, as the scan read them whole, and listed its check requests, by
+// ref, as the scan listed them. Each batch is stopped once; its end is
+// handled when attest has ended (complete).
+func (w *worker) stopSuperseded(project string, changes []jsonChange, listed map[string]string) {
 	active := map[string]int{}
 	for _, c := range changes {
 		active[c.ChangeID] = c.Versions[c.Active-1].N
 	}
 	for dest, b := range w.running {
 		j := b.job
-		n, ready := active[j.c.ChangeID]
-		if j.r.name != project || !ready || n == j.v.N || w.wanted[dest] || b.stop == nil || b.stopped != "" {
+		if j.r.name != project || w.wanted[dest] || b.stop == nil || b.stopped != "" {
 			continue
 		}
-		b.stopped = fmt.Sprintf("v%d supersedes it, and no ready change's active version holds its tree", n)
+		switch j.class() {
+		case classReady:
+			n, ready := active[j.c.ChangeID]
+			if !ready || n == j.v.N {
+				continue
+			}
+			b.stopped = fmt.Sprintf("v%d supersedes it, and no ready change's active version holds its tree", n)
+		case classRequest:
+			head, ok := listed[j.req]
+			switch {
+			case head == j.v.Head:
+				continue
+			case ok:
+				b.stopped = fmt.Sprintf("its ref names %s now, and no ready change's active version holds its tree", short(head))
+			default:
+				b.stopped = "its ref is gone, and no ready change's active version holds its tree"
+			}
+		default:
+			continue
+		}
 		w.say(j, "stopping the batch: %s", b.stopped)
 		b.stop()
 	}
@@ -1045,17 +1433,27 @@ func (w *worker) stopSuperseded(project string, changes []jsonChange) {
 // prune forgets the project's failures that a scan which read the project
 // whole did not meet. It never forgets the key of a batch still running,
 // nor a failure recorded since the scan began, which the scan's reads may
-// have come too early to meet.
-func (w *worker) prune(project string, met map[string]bool) {
+// have come too early to meet, nor, given pushes, any failed push, which
+// the scan has yet to meet.
+func (w *worker) prune(project string, met map[string]bool, pushes bool) {
+	keep := map[string]bool{}
+	for key := range met {
+		keep[key] = true
+	}
 	for _, b := range w.running {
 		if b.job.r.name == project {
-			met[b.job.key] = true
+			keep[b.job.key] = true
 		}
 	}
 	for key := range w.fresh[project] {
-		met[key] = true
+		keep[key] = true
 	}
-	w.failures.keep(project, met)
+	for key := range w.failures.Projects[project] {
+		if pushes && strings.HasPrefix(key, "push ") {
+			keep[key] = true
+		}
+	}
+	w.failures.keep(project, keep)
 }
 
 // failed records a failure, and that it was recorded during this scan.
@@ -1087,7 +1485,7 @@ func (w *worker) reap() error {
 	if !ended {
 		return nil
 	}
-	return w.admit()
+	return w.admit(false)
 }
 
 // change reads one ready change, and returns its job when it needs a
@@ -1126,31 +1524,51 @@ func (w *worker) change(r listed, instance, project string, c jsonChange, met ma
 		w.note(j, "requires no nix check")
 		return nil, true, nil
 	}
-	needed, err := w.assess(j, met)
+	needed, read, err := w.assess(j, met)
 	if err != nil || !needed {
-		return nil, err == nil, err
+		return nil, read, err
 	}
 	return j, true, nil
 }
 
 // assess reads the evidence origin holds for a job's head, and reports
-// whether the job needs a batch now. It does not when origin covers every
-// check, when a batch for its destination runs, when origin already holds
-// this worker's ref for the tree, when its batch is waiting out a
+// whether the job needs a batch now, and whether it read the head's
+// evidence at all. It needs none when origin covers every check, when a
+// batch for its destination runs, when its batch is waiting out a
 // failure, or when a batch stored the ref here and origin lacks it, which
-// it publishes. met, when given, gets the failure keys it meets, and the
-// scan reading the job counts its destination as wanted, so a batch
-// building that tree is not stopped. A reassessment of a queued job gives
-// no met: its version may since have been superseded. It returns an error
-// only when a read of origin failed.
-func (w *worker) assess(j *job, met map[string]bool) (bool, error) {
-	e, err := coverageOf(j.r.g, j.v.Head, j.asked, w.stderr)
-	if err != nil {
-		return false, failure(fmt.Sprintf("%s: %s v%d: %v; the pass stops here", j.r.name, j.c.Handle, j.v.N, err))
+// it publishes first. Nor does a check request that is marked, which it
+// checks again here, since a batch for it can end while the scan reads.
+// When origin holds this worker's ref for the tree, the batch builds the
+// checks the ref lacks and adds their notes to it (additive). met, when
+// given, gets the failure keys it meets, and the scan reading a ready
+// change or a follow run counts its destination as wanted, so a batch
+// building that tree is not stopped; a request keeps no batch from being
+// stopped. A reassessment of a queued job gives no met: its version may
+// since have been superseded. An error reading the head's evidence that
+// is not a failed read of origin is the head's own: it is said, the head
+// is not read, and a request is unbuildable. It returns an error only
+// when a read of origin failed.
+func (w *worker) assess(j *job, met map[string]bool) (needed, read bool, err error) {
+	if j.class() == classRequest && w.marked(j) {
+		return false, true, nil
 	}
-	j.digest, j.missing = e.digest, nil
+	e, err := w.cover(j)
+	var origin originFailure
+	switch {
+	case errors.As(err, &origin):
+		return false, false, failure(fmt.Sprintf("%s: %v; the pass stops here", j.line(), err))
+	case err != nil && j.class() == classRequest:
+		w.unbuildable(j, fmt.Sprintf("its evidence could not be read: %v", err))
+		return false, true, nil
+	case err != nil:
+		if w.note(j, "its evidence could not be read, so nothing is built: %v", err) {
+			w.troubles++
+		}
+		return false, false, nil
+	}
+	j.digest, j.missing, j.additive = e.digest, nil, false
 	j.ref = attestationRefs + e.digest + "/" + w.keyhash
-	if met != nil {
+	if met != nil && j.class() != classRequest {
 		w.wanted[j.dest()] = true
 	}
 	for _, q := range j.asked {
@@ -1160,42 +1578,81 @@ func (w *worker) assess(j *job, met map[string]bool) (bool, error) {
 	}
 	if len(j.missing) == 0 {
 		w.note(j, "origin holds evidence for every nix check it requires")
-		return false, nil
+		return false, true, nil
 	}
 	if b, ok := w.running[j.dest()]; ok {
 		if b.job.version() != j.version() {
-			w.note(j, "the batch for %s v%d builds the same tree", b.job.c.Handle, b.job.v.N)
+			w.note(j, "the batch for %s builds the same tree", b.job.label())
 		}
-		return false, nil
+		return false, true, nil
+	}
+	object, published := e.listed[j.ref]
+	if !published && !j.main {
+		if stored, found, err := j.r.g.ref(j.ref); err == nil && found {
+			w.note(j, "an earlier pass stored %s, and origin does not hold it", j.ref)
+			w.publish(j, stored, met)
+			return false, true, nil
+		}
+	}
+	if published {
+		// A signer's ref holds one note for each check, and origin takes
+		// it only with every note kept, so a check it holds a note for
+		// that does not count cannot be built again under this signer.
+		held, err := j.r.g.output(true, "ls-tree", "--name-only", object)
+		if err != nil {
+			if w.note(j, "%s on origin could not be read, so nothing is built: %v", j.ref, err) {
+				w.troubles++
+			}
+			return false, false, nil
+		}
+		has := map[string]bool{}
+		for _, name := range strings.Fields(held) {
+			has[name] = true
+		}
+		var add, kept []nixCheck
+		for _, q := range j.missing {
+			if has[q.name] {
+				kept = append(kept, q)
+			} else {
+				add = append(add, q)
+			}
+		}
+		if len(kept) > 0 {
+			var names []string
+			for _, q := range kept {
+				names = append(names, q.name)
+			}
+			w.note(j, "origin holds %s, this worker's evidence for its tree, with a note for %s that does not count, "+
+				"and a worker adds notes to its ref but replaces none, so approve --build-here builds it (bd-7b7d58f)", j.ref, strings.Join(names, ", "))
+		}
+		if len(add) == 0 {
+			if j.class() == classRequest {
+				w.spent(j, fmt.Sprintf("origin holds %s, this worker's evidence for its tree, and it holds a note that does not count for every check the request lacks", j.ref))
+			}
+			return false, true, nil
+		}
+		j.missing, j.additive = add, true
 	}
 	names := strings.Join(j.names(), ", ")
-	if _, ok := e.listed[j.ref]; ok && !j.main {
-		w.note(j, "origin already holds %s, this worker's evidence for its tree, and it does not cover %s. "+
-			"A worker publishes a tree's evidence once, so approve --build-here builds the rest (bd-7b7d58f)", j.ref, names)
-		return false, nil
-	}
-	if stored, found, err := j.r.g.ref(j.ref); err == nil && found && !j.main {
-		w.note(j, "an earlier pass stored %s, and origin does not hold it", j.ref)
-		w.publish(j, stored, met)
-		return false, nil
-	}
 	j.key = "build " + e.digest + " " + strings.Join(j.names(), ",")
 	if met != nil {
 		met[j.key] = true
 	}
 	if f, waiting := w.failures.waiting(j.r.name, j.key, clock()); waiting {
 		w.note(j, "its batch %s failed %s in a row, so it is not built again before %s", names, counted(f.Failures, "time"), f.Retry.Format(time.RFC3339))
-		return false, nil
+		return false, true, nil
 	}
-	return true, nil
+	return true, true, nil
 }
 
 // admit starts the queue's jobs in order while fewer than w.batches run.
 // It assesses each job again right before it starts it, so evidence that
 // arrived since the scan is not built again. A job whose destination a
 // batch holds, or that finds no slot, stays queued for the next scan to
-// find again. It returns an error only when a read of origin failed.
-func (w *worker) admit() error {
+// find again. So does a check request's, unless scanned says a scan has
+// just found nothing of a higher class to build, and no batch of a higher
+// class runs. It returns an error only when a read of origin failed.
+func (w *worker) admit(scanned bool) error {
 	var left []*job
 	for i, j := range w.queue {
 		if len(w.running) >= w.batches {
@@ -1203,6 +1660,10 @@ func (w *worker) admit() error {
 			break
 		}
 		if _, held := w.running[j.dest()]; held {
+			left = append(left, j)
+			continue
+		}
+		if j.class() == classRequest && (!scanned || w.runningAbove(classRequest)) {
 			left = append(left, j)
 			continue
 		}
@@ -1253,7 +1714,7 @@ func (w *worker) start(j *job) {
 			w.tel.capacity(j.identity(), b.estimate, w.evals.budget, w.evals.source)
 		}
 	}
-	b.attempt = w.tel.begin("build", j.identity(), j.names(), b.run, data)
+	b.attempt = w.tel.begin("build", classNames[j.class()], j.identity(), j.names(), b.run, data)
 	w.running[j.dest()] = b
 	w.launch(b)
 }
@@ -1285,16 +1746,18 @@ func (w *worker) attest(b *batch) {
 	for _, q := range j.missing {
 		args = append(args, "--check", q.name+"="+q.attribute)
 	}
-	if j.main {
-		// A follow run adds its notes to this worker's ref for main's
-		// tree, which a gate batch usually published already.
+	if j.main || j.additive {
+		// The batch adds its notes to this worker's ref for the tree on
+		// origin, keeping every note the ref holds, as origin requires: a
+		// follow run's, beside a gate batch's, and any batch's whose tree
+		// origin holds this worker's evidence for already.
 		args = append(args, "--push", "origin", "--ref-only")
 	}
 	stream := ""
 	if w.tel != nil {
 		stream = w.tel.stream()
 		args = append(args, "--telemetry", stream, "--telemetry-run", b.run, "--project", j.r.name, "--capacity", w.capacity)
-		if !j.main {
+		if j.class() == classReady {
 			args = append(args, "--change", j.c.ChangeID, "--change-version", strconv.Itoa(j.v.N))
 		}
 	}
@@ -1368,11 +1831,19 @@ func (w *worker) complete(c completion) {
 		return
 	}
 	if c.err != nil {
-		f := w.failed(j.r.name, j.key, c.ended, firstBuildWait)
 		reason := fmt.Sprintf("attest run %s: %v", b.run, c.err)
 		if len(c.failed) > 0 {
 			reason += "; " + strings.Join(c.failed, ", ")
 		}
+		if j.class() == classRequest {
+			w.tel.end(b.attempt, "failed", reason, j.key, nil)
+			w.say(j, "the batch did not pass (%v); it is not built again until its ref moves or goes", c.err)
+			w.spent(j, reason)
+			w.troubles++
+			w.waits++
+			return
+		}
+		f := w.failed(j.r.name, j.key, c.ended, firstBuildWait)
 		w.tel.end(b.attempt, "failed", reason, j.key, &f)
 		w.say(j, "the batch did not pass (%v); it is not built again before %s", c.err, f.Retry.Format(time.RFC3339))
 		w.troubles++
@@ -1383,7 +1854,7 @@ func (w *worker) complete(c completion) {
 	w.failures.passed(j.r.name, j.key)
 	w.tel.end(b.attempt, "passed", "", j.key, nil)
 	w.save()
-	if j.main {
+	if j.main || j.additive {
 		w.say(j, "added %s to %s on origin", strings.Join(j.names(), ", "), j.ref)
 		return
 	}
@@ -1409,7 +1880,7 @@ func (w *worker) publish(j *job, object string, met map[string]bool) {
 		w.note(j, "publishing %s failed %s in a row, so it is not pushed again before %s", j.ref, counted(f.Failures, "time"), f.Retry.Format(time.RFC3339))
 		return
 	}
-	a := w.tel.begin("push", j.identity(), nil, "", map[string]any{"ref": j.ref, "object": object})
+	a := w.tel.begin("push", classNames[j.class()], j.identity(), nil, "", map[string]any{"ref": j.ref, "object": object})
 	if err := w.push(j, object); err != nil {
 		f := w.failed(j.r.name, key, clock(), firstPushWait)
 		w.tel.end(a, "failed", fmt.Sprintf("pushing %s to origin: %v", j.ref, err), key, &f)
@@ -1472,6 +1943,17 @@ func (w *worker) noteAs(about, line string) bool {
 	w.said[about][line] = true
 	fmt.Fprintln(w.stdout, line)
 	return true
+}
+
+// spent records that a check request's batch failed, or that no batch
+// can build what it lacks: a marker of its ref and the commit it names,
+// which keeps it from being built again until a listing finds its ref
+// moved or gone, and a backoff record that says why. The record is
+// written at once.
+func (w *worker) spent(j *job, reason string) {
+	w.failures.spend(j.r.name, j.req, j.v.Head)
+	w.tel.spent(j.identity(), j.req, reason)
+	w.save()
 }
 
 // save writes the failure record, and counts a write that fails as
@@ -1608,11 +2090,15 @@ func followsUnder(g git, tip, instance, project string, stderr io.Writer) (mainW
 // failureRecord is the worker's record of what failed, project by
 // project: each batch, keyed "build <tree digest> <check>,<check>", and
 // each push, keyed "push <object ID>". For each it holds how many times in
-// a row it failed, and the time before which it is not tried again. It is
-// kept as JSON at path.
+// a row it failed, and the time before which it is not tried again. Apart
+// from those, it marks each check request whose batch failed, or which no
+// batch can build, by its ref, with the commit the ref named: a marked
+// request waits for no time, but for its ref to move or go. It is kept as
+// JSON at path.
 type failureRecord struct {
 	path     string
 	Projects map[string]map[string]backoff `json:"projects"`
+	Requests map[string]map[string]string  `json:"requests,omitempty"`
 }
 
 type backoff struct {
@@ -1631,12 +2117,38 @@ func readFailures(path string, stderr io.Writer) *failureRecord {
 	}
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		fmt.Fprintf(stderr, "valley: %s does not read, so everything it held is tried again\n", path)
-		r.Projects = nil
+		r.Projects, r.Requests = nil, nil
 	}
 	if r.Projects == nil {
 		r.Projects = map[string]map[string]backoff{}
 	}
+	if r.Requests == nil {
+		r.Requests = map[string]map[string]string{}
+	}
 	return r
+}
+
+// spend marks the project's check request at ref as not to be built again
+// while it names head.
+func (r *failureRecord) spend(project, ref, head string) {
+	if r.Requests[project] == nil {
+		r.Requests[project] = map[string]string{}
+	}
+	r.Requests[project][ref] = head
+}
+
+// keepRequests forgets the marker of each of the project's check requests
+// that listed, a whole listing of them, finds gone or naming another
+// commit.
+func (r *failureRecord) keepRequests(project string, listed map[string]string) {
+	for ref, head := range r.Requests[project] {
+		if listed[ref] != head {
+			delete(r.Requests[project], ref)
+		}
+	}
+	if len(r.Requests[project]) == 0 {
+		delete(r.Requests, project)
+	}
 }
 
 // waiting reports whether something failed and its wait is not over.
@@ -1762,7 +2274,7 @@ func (r *failureRecord) save() error {
 			delete(r.Projects, project)
 		}
 	}
-	if len(r.Projects) == 0 {
+	if len(r.Projects) == 0 && len(r.Requests) == 0 {
 		if err := os.Remove(r.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}

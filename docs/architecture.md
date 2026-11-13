@@ -253,22 +253,23 @@ decides any ref. It asks `git symbolic-ref` whether each pushed ref is symbolic,
 symbolic ref exactly as git does. Checked by `protect-e2e`, `ssh-e2e` and `valleyhook-unit`, and for
 the plan graph by `knots-e2e`.
 
-| Ref namespace                                                                 | Who may push                                                                                     | Rule                                                                                                                                                                                                                                                          |
-| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `refs/heads/*` (topic branches)                                               | Any key                                                                                          | Create, update and delete.                                                                                                                                                                                                                                    |
-| Protected refs (default `refs/heads/main`)                                    | Principals in `protection.writers` (default empty)                                               | The integrator moves them on disk, so it needs no place in `protection.writers`.                                                                                                                                                                              |
-| `refs/the-valley/attestations/<tree>/<key-hash>`                              | Any key                                                                                          | Create, and add notes. The ref must name a tree of notes within size bounds, and each note must verify under a known signer and be about that tree. An update keeps every note the ref holds and adds one; no push deletes one (`valleyhook/attestation.go`). |
-| `refs/the-valley/integration-requests/<target>/<c>`                           | Principals with the `approve` grant (also accepted as `request`)                                 | Create, update and delete. A change with a record is requested as `c-<change-id>` (see [The integrator](#the-integrator)).                                                                                                                                    |
-| `refs/the-valley/changes/main/<change-id>`                                    | Any named principal creates; the owner, `approve` or `restack` holders update; `approve` deletes | A change record. The hook allows only the transitions in [Change records](#change-records) (`valleyhook/record.go`). The integrator reads it to refuse.                                                                                                       |
-| `refs/the-valley/restack/main/<change-id>`                                    | Principals with the `restack` grant                                                              | A restack report about a change the repository records. Created and extended, never deleted (see [Restack reports](#restack-reports), `valleyhook/report.go`).                                                                                                |
-| `refs/the-valley/knots`                                                       | Any named principal                                                                              | The plan graph, that name exactly. One commit on the tip that keeps the graph valid; never deleted (see [The plan graph](#the-plan-graph), `valleyhook/knots.go`).                                                                                            |
-| `refs/the-valley/projects` (instance repository)                              | Nobody                                                                                           | `valley-init` writes it on disk: the host's project list (see [valley-init](#valley-init-and-the-push-hold)).                                                                                                                                                 |
-| `refs/the-valley/signers` (instance repository)                               | Nobody                                                                                           | `valley-signers` writes it on disk, and the integrator can: what clients verify transfer statements with (see [The signers publication](#the-signers-publication)).                                                                                           |
-| Every other `refs/the-valley/*`                                               | Nobody                                                                                           | Covers the integrator's outcome, inputs and landing records (`integration-outcomes`, `integration-inputs`, `integration-landings`), and review histories (see [Reviews](#reviews)).                                                                           |
-| `refs/replace/*`, `refs/notes/*`                                              | Nobody                                                                                           | A replace ref would let git show other content under a watched name.                                                                                                                                                                                          |
-| Symbolic refs                                                                 | Nobody                                                                                           |                                                                                                                                                                                                                                                               |
-| `refs/refs/*`, `refs/heads/refs/*`, `refs/tags/refs/*`, `refs/remotes/refs/*` | Nobody creates or updates one                                                                    | A ref named like another ref. When that ref is missing, git reads, fetches and pushes to this one in its place. A delete follows the rule of its namespace.                                                                                                   |
-| Tags and every other ref                                                      | Principals named in a project grant: `grants.<name>: {refs, writers}` (`schema/valley.cue`)      | Grant patterns cannot name `heads`, `replace`, `notes` or `the-valley`.                                                                                                                                                                                       |
+| Ref namespace                                                                 | Who may push                                                                                     | Rule                                                                                                                                                                                                                                                                                                                                                      |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `refs/heads/*` (topic branches)                                               | Any key                                                                                          | Create, update and delete.                                                                                                                                                                                                                                                                                                                                |
+| Protected refs (default `refs/heads/main`)                                    | Principals in `protection.writers` (default empty)                                               | The integrator moves them on disk, so it needs no place in `protection.writers`.                                                                                                                                                                                                                                                                          |
+| `refs/the-valley/attestations/<tree>/<key-hash>`                              | Any key                                                                                          | Create, and add notes. The ref must name a tree of notes within size bounds, and each note must verify under a known signer and be about that tree. An update keeps every note the ref holds and adds one; no push deletes one (`valleyhook/attestation.go`).                                                                                             |
+| `refs/the-valley/integration-requests/<target>/<c>`                           | Principals with the `approve` grant (also accepted as `request`)                                 | Create, update and delete. A change with a record is requested as `c-<change-id>` (see [The integrator](#the-integrator)).                                                                                                                                                                                                                                |
+| `refs/the-valley/check-requests/<principal>/<worktree>/<attempt>`             | The named principal `<principal>`; `approve` holders also delete                                 | A commit whose required checks the check worker builds, outside any change. Create, update and delete. The worktree and the attempt are 16 lowercase hexadecimal digits each, and a principal holds at most 32 in a repository, a soft bound. Nothing reads it to decide a landing (see [Check requests](#check-requests), `valleyhook/checkrequest.go`). |
+| `refs/the-valley/changes/main/<change-id>`                                    | Any named principal creates; the owner, `approve` or `restack` holders update; `approve` deletes | A change record. The hook allows only the transitions in [Change records](#change-records) (`valleyhook/record.go`). The integrator reads it to refuse.                                                                                                                                                                                                   |
+| `refs/the-valley/restack/main/<change-id>`                                    | Principals with the `restack` grant                                                              | A restack report about a change the repository records. Created and extended, never deleted (see [Restack reports](#restack-reports), `valleyhook/report.go`).                                                                                                                                                                                            |
+| `refs/the-valley/knots`                                                       | Any named principal                                                                              | The plan graph, that name exactly. One commit on the tip that keeps the graph valid; never deleted (see [The plan graph](#the-plan-graph), `valleyhook/knots.go`).                                                                                                                                                                                        |
+| `refs/the-valley/projects` (instance repository)                              | Nobody                                                                                           | `valley-init` writes it on disk: the host's project list (see [valley-init](#valley-init-and-the-push-hold)).                                                                                                                                                                                                                                             |
+| `refs/the-valley/signers` (instance repository)                               | Nobody                                                                                           | `valley-signers` writes it on disk, and the integrator can: what clients verify transfer statements with (see [The signers publication](#the-signers-publication)).                                                                                                                                                                                       |
+| Every other `refs/the-valley/*`                                               | Nobody                                                                                           | Covers the integrator's outcome, inputs and landing records (`integration-outcomes`, `integration-inputs`, `integration-landings`), and review histories (see [Reviews](#reviews)).                                                                                                                                                                       |
+| `refs/replace/*`, `refs/notes/*`                                              | Nobody                                                                                           | A replace ref would let git show other content under a watched name.                                                                                                                                                                                                                                                                                      |
+| Symbolic refs                                                                 | Nobody                                                                                           |                                                                                                                                                                                                                                                                                                                                                           |
+| `refs/refs/*`, `refs/heads/refs/*`, `refs/tags/refs/*`, `refs/remotes/refs/*` | Nobody creates or updates one                                                                    | A ref named like another ref. When that ref is missing, git reads, fetches and pushes to this one in its place. A delete follows the rule of its namespace.                                                                                                                                                                                               |
+| Tags and every other ref                                                      | Principals named in a project grant: `grants.<name>: {refs, writers}` (`schema/valley.cue`)      | Grant patterns cannot name `heads`, `replace`, `notes` or `the-valley`.                                                                                                                                                                                                                                                                                   |
 
 Branches and tags hold the source. The namespaces under `refs/the-valley/` are project storage, as
 [The source and project storage](#the-source-and-project-storage) describes.
@@ -1232,13 +1233,13 @@ Checked by `restack-host-e2e` in a NixOS VM with the principal enrolled and the 
 
 ## The check worker
 
-The check worker builds the checks a ready change requires before anyone approves it. It publishes
-the evidence on `origin`, where approval reuses it instead of building it (see
-[The valley command](#the-valley-command)). `valley-worker` runs one pass of it. It is `valley work`
-(`status/worker.go`), packaged with this flake's git, cue and `attest` and the verification schema
-(`nix/packages.nix`). Within a pass it schedules batches; between passes it keeps nothing but its
-record of failures, and nothing connects to it. A host that turns the worker on runs a pass on a
-timer (see [The worker on the host](#the-worker-on-the-host)).
+The check worker builds the checks a ready change requires before anyone approves it, and the checks
+a check request asks for. It publishes the evidence on `origin`, where approval reuses it instead of
+building it (see [The valley command](#the-valley-command)). `valley-worker` runs one pass of it. It
+is `valley work` (`status/worker.go`), packaged with this flake's git, cue and `attest` and the
+verification schema (`nix/packages.nix`). Within a pass it schedules batches; between passes it
+keeps nothing but its record of failures, and nothing connects to it. A host that turns the worker
+on runs a pass on a timer (see [The worker on the host](#the-worker-on-the-host)).
 
 A pass builds evidence only for the projects named with `--repo`. It reads each project as
 `valley pending --repo` does, so it can run from a clone of any project the host serves. To find a
@@ -1288,9 +1289,9 @@ When a scan finds no ready change to build for and no batch for a ready change r
 a project's due follow checks on `main`'s tip in one batch:
 `attest run --rev <tip> --push origin --ref-only`. One run covers every landing since each check's
 last pass. Its notes are added to the worker's ref for `main`'s tree, beside the notes a gate batch
-published there; a gate batch publishes a tree's evidence once. A follow run takes a slot, a
-destination, an evaluation and a backoff like any batch, and is never stopped because `main` moved:
-the next scan reads the new tip (`implemented`, `status/worker.go`).
+published there. A follow run takes a slot, a destination, an evaluation and a backoff like any
+batch, and is never stopped because `main` moved: the next scan reads the new tip (`implemented`,
+`status/worker.go`).
 
 The walk reads the policy without asking which requirements are mandatory, lists `origin`'s
 attestation refs once, and reads the host's signers once, so each commit costs about a tree digest
@@ -1324,17 +1325,22 @@ version holds its tree, the pass stops the batch, publishes nothing, and builds 
 (`implemented`, `status/worker.go`). A batch whose tree a ready version still holds runs on and
 publishes.
 
-The worker pushes the ref a batch stored, which holds that batch's notes alone, and `origin` takes
-an existing attestation ref only with every note it holds kept. So the worker publishes a tree's
-evidence once, and never builds what it could not publish. When `origin` already holds the worker's
-own ref for the tree and that ref lacks a required check, the pass says so and builds nothing.
-Approval with `--build-here` builds the rest under the operator's key, but only on the initial
-approval: approval also pushes a ref of its own notes alone, so once this signer has published
+For a tree `origin` holds no evidence of the worker's for, the worker pushes the ref a batch stored,
+which holds that batch's notes alone. `origin` takes an existing attestation ref only with every
+note it holds kept and at least one added, so when `origin` already holds the worker's own ref for
+the tree and that ref lacks a check a head there requires, the batch builds the checks it lacks and
+adds their notes to that ref with `attest run --push origin --ref-only`, as a follow run does. This
+holds for a ready change whose policy came to require another check after its evidence was
+published, and for heads with the same tree over different merge bases, whichever was built first
+(`implemented`, `status/worker.go`). A signer's ref holds one note for each check, so a check the
+ref holds a note for that does not count, as one for another attribute, is not built again: the pass
+says so, and approval with `--build-here` builds it under the operator's key, but only on the
+initial approval. Approval pushes a ref of its own notes alone, so once this signer has published
 evidence for the tree, another approval cannot add checks to that ref.
 
 A push whose reply is lost is not built again. If the push landed, the next pass finds the evidence
 on `origin`. If it did not land, the ref is still stored in the worker's clone, and a later pass
-pushes that same object again.
+pushes that same object again, and then adds to it what a head there lacks.
 
 A host refuses every push while `valley-init` converges, which takes seconds (see
 [valley-init and the push hold](#valley-init-and-the-push-hold)). The worker tries a push refused
@@ -1368,6 +1374,50 @@ the record empty, and goes on, and that alone does not make it exit 1.
 
 Checked by `valley-request`, which runs the packaged worker through the protected host's hook and
 lands its evidence with the real integrator.
+
+### Check requests
+
+A check request asks the worker for a commit's checks outside any change: a ref in project storage,
+`refs/the-valley/check-requests/<principal>/<worktree>/<attempt>`, that points at the commit. It
+belongs there because it is a write with no effect to gate: it describes no version of the source
+and grants nothing. The hook lets a named principal create, move and delete the requests under its
+own name, and a holder of the `approve` grant delete any (`implemented`,
+`valleyhook/checkrequest.go`). A principal holds at most 32 in a repository, counted with the ones a
+push creates. The bound limits outstanding names and nothing more: pushes running at once can pass
+it, as they can the bound on change records, and moving a request's ref to another commit is not
+bounded. Build time, tree size and stored evidence have no limit of their own for requests; the
+worker spends on a request what it spends on a ready change's head, after every ready change and
+follow run. Evidence is about a tree, and approval reuses the evidence `origin` holds for the head's
+tree, so checks the worker built for a request count, with no rebuild, when a change is readied and
+approved at a head with the same tree. The request itself lands nothing: the integrator reads only
+integration requests, which take a ready version and the `approve` grant.
+
+A scan lists each project's requests on `origin`, and reads them only once it has read every
+project's ready changes and follow run, found none to build, and found no batch of either running.
+It derives a request's checks as it derives a ready head's, over the commit's merge base with `main`
+and under both policy layers at `main`'s tip, never from the commit. It builds the `nix` checks
+`origin` holds no evidence for in one batch under the worker's key, whose attestation run names no
+change, and publishes the ref as it publishes a ready change's. Ready changes come first, then
+follow runs, then requests: a request's batch starts only when no batch of a higher class runs, and
+is never stopped for higher-class work, which takes a free slot beside it or the next one
+(`implemented`, `status/worker.go`).
+
+A request's batch is stopped when a read lists its ref gone or naming another commit, unless a ready
+change's active version the read assessed holds its tree. Another request with the same tree does
+not keep it, since only a version that may land keeps work alive that nobody asks for. A request
+whose batch failed waits for no time: `failures.json` marks its ref with the commit it names, and no
+pass builds it again until a listing finds the ref gone or naming another commit. The pass reads the
+marker again each time it assesses the request, since its batch can end while a read is under way. A
+client asks again with a new `<attempt>`, which builds at once, from outputs the nix store already
+holds. A request is marked the same way when the worker's ref for its tree on `origin` holds a note
+that does not count for every check it lacks (see above), and when what its commit holds keeps it
+from being read: it shares no history with `main`, its checks do not derive, or its evidence does
+not read, as when `attest` cannot digest a tree holding a submodule. Only a failed read of `origin`
+ends a scan. The worker's telemetry names each batch's class, `ready`, `follow` or `request`, and
+`valley pending` tells a follow run running on `main` from a request by it. A check's result names
+no class, so `valley pending` counts it toward `main`'s state by the tree it is about: a result at a
+tree its walk read on `main` is a run on `main`, whichever batch built it (`implemented`,
+`status/workertelemetry.go`, `status/mainstate.go`).
 
 ### The worker's wakeups
 

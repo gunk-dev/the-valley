@@ -83,6 +83,11 @@ type jsonChange struct {
 	// its active version has an integration request at its head, or an
 	// earlier version's request carries to it (addCarried, pending.go).
 	Approved *bool `json:"approved,omitempty"`
+	// Conflicts and ConflictsUnknown are given on a ready change that has
+	// not landed: the project's other such changes it conflicts with, and
+	// those it was not compared with, and why (conflicts.go).
+	Conflicts        *[]jsonConflict        `json:"conflicts,omitempty"`
+	ConflictsUnknown *[]jsonConflictUnknown `json:"conflicts_unknown,omitempty"`
 }
 
 type jsonVersion struct {
@@ -734,6 +739,22 @@ func walkStrings(doc any, f func(string)) {
 				f(k.Status)
 				f(k.Title)
 			}
+			if c.Conflicts != nil {
+				for _, x := range *c.Conflicts {
+					f(x.ChangeID)
+					f(x.Handle)
+					for _, p := range x.Paths {
+						f(p)
+					}
+				}
+			}
+			if c.ConflictsUnknown != nil {
+				for _, x := range *c.ConflictsUnknown {
+					f(x.ChangeID)
+					f(x.Handle)
+					f(x.Why)
+				}
+			}
 			for _, v := range c.Versions {
 				f(v.Title)
 				f(v.Branch)
@@ -785,9 +806,10 @@ func runChanges(g git, args []string, stdout, stderr io.Writer) error {
 	h := handles(repos)
 	writeHandleCache(g, repos, h)
 	doc := jsonChanges{Schema: changesSchema, Host: host, Repos: []jsonRepo{}}
-	c := newCosts()
+	c, p := newCosts(), newPairing()
 	for _, r := range repos {
 		view := r.repoView(h, everyChange, unlanded)
+		r.addConflicts(&view, p, stderr)
 		if l.checks {
 			r.addChecks(&view, true, c, stderr)
 		}

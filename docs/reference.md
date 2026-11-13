@@ -199,11 +199,13 @@ Two sections follow, then one line of counts:
 needs you (2, in landing order)
   1  kqxm v3  checks 18/18 · stack of 2                                    19m
      add greeting · oc-6335749
+     conflicts with mytm
   2  wnzs v2  6 checks pending                                             42m
      the guest's tools follow main
 
 moving (3)
   ◐ mytm v5  approved · 6 checks pending
+    conflicts with kqxm
   ✗ rwzt v2  worker-e2e failed
   ✗ xzus v3  restack: a conflict rebasing xzus onto main at a1b2c3d, in go.mod
 
@@ -229,6 +231,14 @@ moving (3)
   the request names an earlier version's head whose approval carries to the active version, under
   the rules review applies when a change moves while it is shown (`status/carry.go`). A request
   whose approval does not carry leaves the change under `needs you`.
+- **Conflicts:** Under a row, `conflicts with mytm` names the project's other `ready` changes that
+  conflict with it: landing either makes the other need a rebase. Two changes are compared by the
+  merge the integrator makes of one once the other lands: both heads merged on `main`'s tip, from
+  that tip. Layers of one stack are never compared. A pair with a head not on `main`'s tip awaits a
+  restack and is not compared. At most 64 merges run in one listing, and the pairs past them are not
+  compared either. One line under the sections counts the pairs not compared and why, as
+  `2 pairs not compared: awaiting restack`. With `--checks` or `-v`, a row names the conflicted
+  paths of each change it conflicts with, as `conflicts with mytm: go.mod, docs/guide.md`.
 - **Counts:** The drafts and the unrecorded branches ahead of `main` that no landed version's head
   reaches, with the flags that list them. Older versions of a change are never listed.
 - **Blocks:** `--drafts`, `--branches` and `-v` print blocks. A block's first line is the name, with
@@ -241,8 +251,11 @@ moving (3)
 - **Cost:** For each project with a ready change, or with a draft that `--drafts --checks` lists,
   reading the checks reads the policy once, lists and fetches the evidence on `origin` once for
   every head, and runs `attest verify` for each note. It costs nothing for a project without one.
-  `valley pending` also writes the shell-completion handle cache for the current repository at
-  `<git-common-dir>/valley/handles`.
+  For a project with two or more ready changes, comparing them runs one `git merge-tree` for each
+  pair whose answer is not remembered. An answer depends only on `main`'s tip and the two heads, so
+  it is kept in the client cache, under `$XDG_CACHE_HOME/valley/transfers/pairs`, and a listing that
+  has compared a pair before runs no merge for it. `valley pending` also writes the shell-completion
+  handle cache for the current repository at `<git-common-dir>/valley/handles`.
 
 ```sh
 valley pending
@@ -282,7 +295,7 @@ valley pending [--all] [--repo <name>] [--checks] [--drafts] [--branches] [--jso
   - `--drafts`, `--branches`: List the drafts, or the branches no change is on, as blocks in place
     of their count. Each listing stacks its own entries.
   - `--json`: Emits [`valley-pending/v1`](#valley-changesv1-and-valley-pendingv1) JSON. Each change
-    in `changes` has an `approved` field.
+    in `changes` has `approved`, `conflicts` and `conflicts_unknown` fields.
   - `-v`: Follows each row with its block, with its stack drawn in full and its full check state,
     and warns on `stderr` when a project's plan graph (`refs/the-valley/knots`) cannot be read.
   - `--known-signers <file>`, `--integrator-name <name>`: The known-signers file and the
@@ -296,7 +309,9 @@ valley pending [--all] [--repo <name>] [--checks] [--drafts] [--branches] [--jso
 
 `valley changes` outputs every change recorded on `origin` across all recorded states (`ready`,
 `draft`, and `withdrawn`, whether submitted or unlanded) as a
-[`valley-changes/v1`](#valley-changesv1-and-valley-pendingv1) JSON document.
+[`valley-changes/v1`](#valley-changesv1-and-valley-pendingv1) JSON document. Each `ready` change
+that has not landed carries its `conflicts` with the project's other such changes, compared as
+[`valley pending`](#valley-pending) compares them.
 
 ```sh
 valley changes --json
@@ -1546,16 +1561,16 @@ argument's value, path, title, or body. It adds each phase's `<phase>_ms` (wall 
 nested phases) and `<phase>_procs` (processes started). The phases are `fetch` (`ls-remote` and
 `fetch`, `pending`'s and `rebase`'s fetch of origin included), `records` (reading change and outcome
 records), `transfers` (verifying transfer statements), `knots`, `changes` (the queue's change
-states), `checks` (the queue's check evidence), `policy` (policy at main), `main` (main's follow
-checks and worker runs), `branches` (pending's branches and stacks), `steps` (the reviews a walk
-runs), and `other`. With telemetry off, `valley` starts no extra process and writes no file: it
-reads the git configuration files directly and runs `git` only when one mentions telemetry or
-includes another file. With telemetry on, the command runs one `git config` and starts the
-background flusher. `review` of one change records no phases: its time is the operator's reading. A
-walk records each step's review the same way, as a `review` of one change from the step's
-repository, so a step read through a cache clone is its project's. `help`, a verb's `--help`,
-`--version`, the internal verbs and the background flusher record nothing, and nor does a `tail`
-that has become `nats sub`.
+states), `checks` (the queue's check evidence), `conflicts` (merges comparing ready changes),
+`policy` (policy at main), `main` (main's follow checks and worker runs), `branches` (pending's
+branches and stacks), `steps` (the reviews a walk runs), and `other`. With telemetry off, `valley`
+starts no extra process and writes no file: it reads the git configuration files directly and runs
+`git` only when one mentions telemetry or includes another file. With telemetry on, the command runs
+one `git config` and starts the background flusher. `review` of one change records no phases: its
+time is the operator's reading. A walk records each step's review the same way, as a `review` of one
+change from the step's repository, so a step read through a cache clone is its project's. `help`, a
+verb's `--help`, `--version`, the internal verbs and the background flusher record nothing, and nor
+does a `tail` that has become `nats sub`.
 
 Every approval attempt also records its steps: `valley approve`, and each `[a]pprove` answer in
 `valley review`, a stack's layers included. An attempt records its start, the policy it derived,
@@ -2723,6 +2738,17 @@ Five `--json` commands emit versioned JSON documents for scripts and front ends.
     the change's next round.
   - `approved` (`boolean`, **present only on `changes` in `valley-pending/v1`**): Whether the active
     version has an integration request at its head.
+  - `conflicts` (`array` of `{ "change_id", "handle", "paths", "paths_total" }`, **present only on a
+    `ready` change that has not landed**): The project's other such changes whose merge with this
+    one conflicts, as [`valley pending`](#valley-pending) compares them. `paths` lists the first
+    conflicted paths in sorted order, as many as the client cache keeps (about 4 KiB) and leaving
+    out any that is not UTF-8; `paths_total` counts them all, so `paths` is cut when it is greater.
+  - `conflicts_unknown` (`array` of `{ "change_id", "handle", "why" }`, **present wherever
+    `conflicts` is**): The other changes this one was not compared with, so a missing answer never
+    reads as a clean one. `why` is `"awaiting restack"` (a head is not on `main`'s tip),
+    `"past the bound"` (the listing had run its 64 merges) or `"merge failed"` (the merge did not
+    run or its report did not parse, said on stderr). A change in neither array does not conflict.
+    Layers of one stack are in neither.
   - `includes` (`array` of `string`): Change IDs of other changes that have not landed as any
     version and whose active version head is a strict ancestor of this change's active version head
     in `main..head`. A change that has landed is never named, even though `valley-changes/v1` still

@@ -2,8 +2,9 @@ package main
 
 // The operator's queue: the ready changes that wait on an approval, in the
 // order they would land, and the ready changes that move without one.
-// valley pending prints it (pending.go), and valley review with no change
-// walks it (walk.go).
+// valley pending prints it (pending.go), with each ready change's
+// conflicts with the others (conflicts.go), and valley review with no
+// change walks it (walk.go), without them.
 //
 // A ready change whose active version has not landed is moving when a
 // current restack report says its restack stopped short of complete, when
@@ -86,9 +87,10 @@ func (r listed) queue(view jsonRepo, h handleMap, l listing, measured bool) (wai
 // order. A change's checks are read before it is classed, so a change
 // whose check failed is moving rather than waiting. With --drafts and
 // --checks, the drafts' checks are read with them, in the same batch.
-// each, when it is not nil, is given every repository's view as it is
-// read.
-func operatorQueue(repos []listed, h handleMap, l listing, c *costs, stderr io.Writer, each func(listed, jsonRepo)) (waiting, moving []*entry) {
+// With p, each ready change is marked with its conflicts with the others
+// (conflicts.go). each, when it is not nil, is given every repository's
+// view as it is read.
+func operatorQueue(repos []listed, h handleMap, l listing, c *costs, p *pairing, stderr io.Writer, each func(listed, jsonRepo)) (waiting, moving []*entry) {
 	for _, r := range repos {
 		if r.err != nil {
 			continue
@@ -100,6 +102,7 @@ func operatorQueue(repos []listed, h handleMap, l listing, c *costs, stderr io.W
 		end = phase("checks")
 		r.addChecks(&view, l.drafts && l.checks, c, stderr)
 		end()
+		r.addConflicts(&view, p, stderr)
 		wa, mo := r.queue(view, h, l, l.verbose)
 		waiting, moving = append(waiting, wa...), append(moving, mo...)
 		if each != nil {
@@ -200,6 +203,10 @@ func (r listed) changeEntry(section string, c jsonChange, h handleMap, l listing
 	}
 	if v.Checks != nil {
 		e.state, e.checks, e.see = v.Checks, checksLine(v.Checks), workerSee(v.Checks)
+	}
+	e.conflicts = conflictLines(c, l.checks || l.verbose)
+	if c.ConflictsUnknown != nil {
+		e.unknown = *c.ConflictsUnknown
 	}
 	return e
 }

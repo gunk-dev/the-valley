@@ -32,6 +32,15 @@
 //	  ✗ rwzt v2  worker-e2e failed
 //	  ✗ xzus v3  restack: a conflict rebasing xzus onto main at a1b2c3d
 //
+// Under a row of either section, one line names the project's other
+// ready changes it conflicts with, by the merge the integrator makes of
+// one once the other lands (conflicts.go): "conflicts with mytm, wnzs".
+// With --checks or -v, a line for each such change names the conflicted
+// paths, "conflicts with mytm: go.mod, docs/guide.md". These lines follow
+// the checks lines. One line under the sections counts the pairs not
+// compared and says why, "2 pairs not compared: awaiting restack", so a
+// pair not compared never reads as one that does not conflict.
+//
 // Checks are counted as valley changes --checks reads them
 // (versionchecks.go): for each project with a ready change, or with a
 // draft that --drafts --checks lists, one read of the policy and an
@@ -124,9 +133,10 @@
 //
 // With --json it prints valley-pending/v1: valley-changes/v1's shape, with
 // the pending changes alone in changes, each marked approved or not, the
-// drafts in an array of their own, drafts, and the same branches. --checks
-// gives each pending change its checks object, and with --drafts each
-// draft that has not landed too.
+// drafts in an array of their own, drafts, and the same branches. Each
+// pending change carries conflicts and conflicts_unknown. --checks gives
+// each pending change its checks object, and with --drafts each draft that
+// has not landed too.
 
 package main
 
@@ -250,10 +260,11 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 	defer warnUnverified(repos, stderr)
 	if l.asJSON {
 		doc := jsonChanges{Schema: pendingSchema, Host: host, Repos: []jsonRepo{}}
-		c := newCosts()
+		c, p := newCosts(), newPairing()
 		for _, r := range repos {
 			view := r.pendingView(h)
 			r.addCarried(&view, stderr)
+			r.addConflicts(&view, p, stderr)
 			if l.checks {
 				r.addChecks(&view, l.drafts, c, stderr)
 			}
@@ -269,22 +280,24 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 // entry is one row or block of valley pending: a ready change, a draft,
 // or a branch no record is on.
 type entry struct {
-	section  string
-	repo     string             // the project it is in
-	id       string             // the change ID, for a change
-	version  int                // a change's active version
-	record   string             // the change's record commit
-	name     string             // what the block's first line names
-	ref      string             // what the entry is typed as: its handle, or its branch
-	head     string             // the head commit
-	title    string             // the record's title; for a branch, read by measure
-	knot     string             // ID of the first knot that links the change (does.go)
-	includes []string           // what includes names that is no entry here
-	notes    []string           // uncertain and restack
-	requires string             // with --checks, the checks the policy requires of it, by cost
-	checks   string             // the check state line of a ready change
-	see      string             // the line under checks that reads the worker's report of a failure, if any
-	state    *jsonVersionChecks // the check state its row counts, or nil when its checks were not read
+	section   string
+	repo      string                // the project it is in
+	id        string                // the change ID, for a change
+	version   int                   // a change's active version
+	record    string                // the change's record commit
+	name      string                // what the block's first line names
+	ref       string                // what the entry is typed as: its handle, or its branch
+	head      string                // the head commit
+	title     string                // the record's title; for a branch, read by measure
+	knot      string                // ID of the first knot that links the change (does.go)
+	includes  []string              // what includes names that is no entry here
+	notes     []string              // uncertain and restack
+	requires  string                // with --checks, the checks the policy requires of it, by cost
+	checks    string                // the check state line of a ready change
+	see       string                // the line under checks that reads the worker's report of a failure, if any
+	conflicts []string              // the lines naming the other ready changes it conflicts with (conflictLines)
+	unknown   []jsonConflictUnknown // the other ready changes it was not compared with
+	state     *jsonVersionChecks    // the check state its row counts, or nil when its checks were not read
 
 	glyph, colour, says string // for a moving change, its glyph and what its row says
 
@@ -324,7 +337,7 @@ func writePending(repos []listed, h handleMap, l listing, c *costs, w, stderr io
 	defer phase("branches")()
 	var drafts, branches []block
 	nDrafts, nBranches := 0, 0
-	waiting, moving := operatorQueue(repos, h, l, c, stderr, func(r listed, view jsonRepo) {
+	waiting, moving := operatorQueue(repos, h, l, c, newPairing(), stderr, func(r listed, view jsonRepo) {
 		nDrafts, nBranches = nDrafts+len(*view.Drafts), nBranches+len(view.Branches)
 		if l.drafts && len(*view.Drafts) > 0 {
 			drafts = append(drafts, block{r.name, r.draftStacks(view, h, l)})
@@ -434,22 +447,28 @@ func (t terminal) rows(waiting, moving []*entry, l listing, named bool) []string
 		lines = append(lines, strings.TrimRight(left, " "))
 		lines = append(lines, t.details(e, under, l)...)
 	}
-	if len(moving) == 0 {
-		return lines
+	if len(moving) > 0 {
+		lines = append(lines, "", fmt.Sprintf("moving (%d)", len(moving)))
 	}
-	lines = append(lines, "", fmt.Sprintf("moving (%d)", len(moving)))
 	for _, e := range moving {
 		first := "  " + t.tint(e.colour, e.glyph) + " "
 		used := columns("  "+e.glyph+" ") + width + 2
 		lines = append(lines, first+lead(e)+"  "+fit(e.says, t.width-used))
 		lines = append(lines, t.details(e, "    ", l)...)
 	}
+	all := append([]*entry{}, moving...)
+	for _, e := range waiting {
+		all = append(append(all, e), e.below...)
+	}
+	if u := uncompared(all); u != "" {
+		lines = append(lines, "", t.fit(u, ""))
+	}
 	return lines
 }
 
 // details are the lines under a row, each led by under: for a row of
-// needs you, its title; with --checks, its checks; with -v, its block in
-// place of both.
+// needs you, its title; with --checks, its checks; then the changes it
+// conflicts with; with -v, its block in place of all three.
 func (t terminal) details(e *entry, under string, l listing) []string {
 	if l.verbose {
 		return t.drawStack(e, under, false)
@@ -467,6 +486,9 @@ func (t terminal) details(e *entry, under string, l listing) []string {
 		if e.see != "" {
 			lines = append(lines, under+"  "+t.fit(e.see, under+"  "))
 		}
+	}
+	for _, s := range e.conflicts {
+		lines = append(lines, under+t.fit(s, under))
 	}
 	return lines
 }
@@ -769,6 +791,9 @@ func (t terminal) drawStack(top *entry, lead string, named bool) []string {
 		}
 		if e.see != "" {
 			lines = append(lines, rest+"  "+t.fit(e.see, rest+"  "))
+		}
+		for _, s := range e.conflicts {
+			lines = append(lines, rest+t.fit(s, rest))
 		}
 		if i == 0 && len(top.below) > 0 {
 			lands := fmt.Sprintf("approving it lands the %d below too", len(top.below))

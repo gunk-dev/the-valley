@@ -5,9 +5,16 @@
 //	<cache>/trees/<tree ID>        the valley-tree-v1 digest of a git tree
 //	<cache>/landings/<SHA-256>     a transfer statement that passed every
 //	                               content check (transfer.go)
+//	<cache>/pairs/<SHA-256>        whether two heads conflict when merged
+//	                               onto main's tip (Pair)
 //
 // A tree entry is the line "valley-tree-v1 <tree ID> <digest>", then a
-// line holding the SHA-256 of the first. A landing entry is the text that
+// line holding the SHA-256 of the first. A pair entry is named by the
+// SHA-256 of its first line, "valley-pair-v1 <tip> <head> <head>" with the
+// two heads sorted; its second line is how many paths the merge left
+// conflicted, then come the first of those paths that fit the entry, each
+// Go-quoted on a line of its own, and a last line holds the SHA-256 of
+// every line before it. A landing entry is the text that
 // names what was checked, under the SHA-256 of that text: it is found only
 // when the file holds exactly that text. An entry that does not read as
 // one, such as one cut short or damaged, or one that is not a regular
@@ -31,6 +38,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -81,6 +90,87 @@ func (c cache) landing(text string) bool {
 // putLanding remembers a landing entry holding text.
 func (c cache) putLanding(text string) {
 	c.write("landings", hexSum(text), text)
+}
+
+// Pair is what merging two heads onto main's tip, with the tip as the
+// merge base, reported: how many paths it left conflicted, none for a
+// clean merge, and the first of them in sorted order, as many as an entry
+// holds. Paths holds them all when it has Total of them.
+type Pair struct {
+	Total int
+	Paths []string
+}
+
+// pairKey is a pair entry's first line, the heads sorted.
+func pairKey(tip, a, b string) (string, bool) {
+	for _, oid := range []string{tip, a, b} {
+		if (len(oid) != 40 && len(oid) != 64) || !isHex(oid, len(oid)) {
+			return "", false
+		}
+	}
+	if b < a {
+		a, b = b, a
+	}
+	return "valley-pair-v1 " + tip + " " + a + " " + b, true
+}
+
+// RememberedPair is the answer dir remembers for heads a and b merged onto
+// tip, in either order, if it remembers one.
+func RememberedPair(dir, tip, a, b string) (Pair, bool) {
+	key, ok := pairKey(tip, a, b)
+	if !ok {
+		return Pair{}, false
+	}
+	data, ok := cache{dir: dir}.read("pairs", hexSum(key))
+	text := string(data)
+	cut := strings.LastIndex(strings.TrimSuffix(text, "\n"), "\n") + 1
+	if !ok || cut == 0 || !strings.HasSuffix(text, "\n") || text[cut:] != hexSum(text[:cut])+"\n" {
+		return Pair{}, false
+	}
+	lines := strings.Split(strings.TrimSuffix(text[:cut], "\n"), "\n")
+	if len(lines) < 2 || lines[0] != key {
+		return Pair{}, false
+	}
+	p := Pair{}
+	n, err := strconv.Atoi(lines[1])
+	if err != nil || n < len(lines)-2 || strconv.Itoa(n) != lines[1] {
+		return Pair{}, false
+	}
+	p.Total = n
+	for _, q := range lines[2:] {
+		path, err := strconv.Unquote(q)
+		if err != nil || path == "" {
+			return Pair{}, false
+		}
+		p.Paths = append(p.Paths, path)
+	}
+	return p, true
+}
+
+// RememberPair remembers in dir what merging heads a and b onto tip
+// reported, and returns it as an entry holds it: its paths sorted, and
+// cut to those that fit, so an answer reads the same remembered or not.
+// With dir "", it remembers nothing and returns the same.
+func RememberPair(dir, tip, a, b string, p Pair) Pair {
+	paths := append([]string{}, p.Paths...)
+	sort.Strings(paths)
+	kept := Pair{Total: max(p.Total, len(paths))}
+	key, ok := pairKey(tip, a, b)
+	if !ok {
+		kept.Paths = paths
+		return kept
+	}
+	body := key + "\n" + strconv.Itoa(kept.Total) + "\n"
+	for _, path := range paths {
+		line := strconv.Quote(path) + "\n"
+		if len(body)+len(line)+65 > entryLimit {
+			break
+		}
+		body += line
+		kept.Paths = append(kept.Paths, path)
+	}
+	cache{dir: dir}.write("pairs", hexSum(key), body+hexSum(body)+"\n")
+	return kept
 }
 
 func hexSum(s string) string {

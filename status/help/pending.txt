@@ -19,7 +19,16 @@ usage: valley pending [--all] [--repo <name>] [--checks] [--drafts] [--branches]
                    the ready changes that need no approval now, one line
                    each: ◐ approved, waiting on checks and the
                    integrator; ✗ a check failed, named; ✗ or ◇ a restack
-                   holds it. older versions are never listed. a last line
+                   holds it. under a row, conflicts with <handle> names
+                   the project's other ready changes it conflicts with:
+                   both heads merged on main's tip, as the integrator
+                   merges one once the other lands. layers of one stack
+                   are never compared. a pair with a head not on main's
+                   tip awaits a restack, and at most 64 merges run; one
+                   line under the sections counts the pairs not
+                   compared, and why. each answer is kept in the client
+                   cache, so a warm listing runs no merge. older
+                   versions are never listed. a last line
                    counts the drafts and the branches no change is on.
                    lines fit the terminal, or 80 columns off one; titles
                    are cut short with …, names never. names are bold and
@@ -43,6 +52,8 @@ usage: valley pending [--all] [--repo <name>] [--checks] [--drafts] [--branches]
                                   notes alone. with --drafts, give each
                                   draft's block the same lines, its name
                                   line saying its checks as a row does.
+                                  name the conflicted paths of each
+                                  change a row conflicts with.
                                   with --json, give each pending change,
                                   and with --drafts each draft, its
                                   checks object
@@ -62,13 +73,16 @@ usage: valley pending [--all] [--repo <name>] [--checks] [--drafts] [--branches]
                      --json       print valley-pending/v1: the
                                   valley-changes/v1 shape, with the
                                   pending changes in changes, each
-                                  marked approved or not, and the
-                                  drafts in drafts
+                                  marked approved or not, with its
+                                  conflicts and conflicts_unknown, and
+                                  the drafts in drafts
                      -v           follow each row with its block, its
                                   stack drawn in full, with what its
                                   head includes, `uncertain` when it may
                                   have landed without its evidence
-                                  stored, and its full check state; and
+                                  stored, its conflicts' paths as
+                                  --checks names them, and its full
+                                  check state; and
                                   warn on stderr when a plan graph is
                                   missing or unreadable
                      --known-signers FILE, --integrator-name NAME

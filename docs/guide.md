@@ -232,7 +232,9 @@ landings it covers.
 the order they would land, with their checks and how long they have been ready. A stack is one row,
 its top's, since approving the top lands every layer. Changes that need nothing from you are under
 `moving`: approved ones waiting on their checks and the integrator, and those whose check failed or
-whose restack stopped, which their author fixes. A last line counts the drafts and stray branches;
+whose restack stopped, which their author fixes. A row says `conflicts with mytm` when it and
+another ready change conflict: approving one makes the other need a rebase and a second look.
+`--checks` and `-v` name the conflicted paths. A last line counts the drafts and stray branches;
 `--drafts` and `--branches` list them, and `-v` shows each row's commits and diff.
 
 Use a handle from `pending`. Review pages the diff and offers actions at the terminal. Choose

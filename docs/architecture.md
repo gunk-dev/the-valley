@@ -3179,6 +3179,23 @@ at its head, or when an earlier version's request carries its approval to the ac
 review's carry decides. The human view lists those changes under `approved`, one line each, apart
 from the `ready` changes that wait on an approval.
 
+Each `ready` change that has not landed carries `conflicts`, the project's other such changes it
+conflicts with, and `conflicts_unknown`, those it was not compared with and why; the human view says
+`conflicts with <handle>` under its row (`implemented`, `status/conflicts.go`). Two changes are a
+pair unless one's head contains the other's, since a stack's layers land together. A pair is
+compared on `main`'s tip T as the listing read it, and only when both heads are on T: it conflicts
+when `git merge-tree --write-tree --merge-base=T A B` leaves paths conflicted. That is the merge the
+integrator makes of B once A lands: A lands as one commit on T with A's tree, and B's merge base
+with that commit is T. The two heads' own merge base is not used, since sibling heads can share an
+unlanded ancestor, and a merge from it reports a conflict the integrator never meets: where the
+ancestor changes a line, one head restores it and the other changes it again. One merge serves
+either landing order, since a three-way merge conflicts on the same paths whichever side is ours. A
+pair with a head not on T awaits a restack, a merge that does not run is not computed, and at most
+64 merges run in one listing; each such pair is listed in `conflicts_unknown` on both its changes,
+so a missing answer never reads as clean. The answer depends only on T and the two heads, so the
+client cache keeps it, and a warm listing runs no merge. `valley pending` suggests no approval
+order: a client decides it from these marks.
+
 ```text
 ready
 pppp v1                                                     1 minute ago · alice

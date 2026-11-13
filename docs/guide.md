@@ -263,8 +263,9 @@ Approving then lands v4, and the verdict names it with its checks, such as
 For a revised change, review automatically compares it with an earlier approved version when one can
 be identified. Its first line says whether the change's own commits changed: rebased, with the same
 file changes, gets a short summary; rebased onto files main also edited names the landings that
-edited them; edited adds the range-diff. Use `[v]iew diff` to see the whole change. The
-[comparison rules](./architecture.md#review-against-the-approved-version) explain what can be
+edited them; edited carries the approved version onto main and shows only what the new version
+changes beyond that, and how it resolved any conflict. Use `[v]iew diff` to see the whole change.
+The [comparison rules](./architecture.md#review-against-the-approved-version) explain what can be
 compared.
 
 You can also approve from the command line:

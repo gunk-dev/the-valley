@@ -11,12 +11,16 @@ package main
 // version it could not compare. clean has the approved version's file
 // delta: review prints that in a few lines, with the landings between the
 // two bases, and pages nothing. changed pages the files whose change
-// differs, with the landings that edited them, the range-diff when a
-// commit was edited, and the shown version's diff of those files. A note
-// taken beside the range-diff is unanchored, since its hunks carry no line
-// numbers; the last diff is in git's ordinary form, so a note taken there
-// keeps its file and line. [v]iew full diff pages the whole diff at every
-// prompt. The comparison files no request and skips no check.
+// differs. When a commit was edited, that is what the shown version
+// changes beyond the approved version carried onto main, and each path in
+// conflict with main; -v adds the range-diff, whose hunks carry no line
+// numbers, so a note taken beside it is unanchored, as is one beside the
+// approved version's own diff of a conflicted path, which is indented
+// since its new side is not the shown head. Every other diff on the page
+// is in git's ordinary form with the shown head on its new side, so a
+// note taken there keeps its file and line. [v]iew full diff pages
+// the whole diff at every prompt. The comparison files no request and
+// skips no check.
 //
 // The page is a file rather than a pipe, so less's v key has something to
 // hand the editor: editing it is how notes are written. Whatever comes
@@ -397,6 +401,9 @@ func anchors(page []byte) []anchor {
 		}
 		if !inHunk {
 			switch {
+			case styleHeading.MatchString(line):
+				// A section heading ends the diff above it.
+				path, at = "", 0
 			case strings.HasPrefix(line, "diff --git "):
 				path = ""
 				if m := diffHeader.FindStringSubmatch(line); m != nil {

@@ -40,13 +40,36 @@
 // review shows the landings in (B₀, B₁] instead of the diff. Different
 // deltas list each file whose change differs, with the landings in
 // (B₀, B₁] that edited it, since a rebase onto a file main also edited
-// changes the file's delta and not the commit. Then, when a commit is
-// edited, comes git range-diff B₀..H₀ B₁..H₁, and last the diff of those
-// files from B₁ to H₁. range-diff's hunks carry no line numbers, so a
-// note review takes beside them has no anchor. The diff is in git's
-// ordinary form, so a note taken beside a line of it keeps its file and
-// line. Either way, a message or an author that differs is shown whatever
-// the files say.
+// changes the file's delta and not the commit. A rebased version then
+// shows the diff of those files from B₁ to H₁.
+//
+// An edited version is set against the approved version carried onto B₁:
+// the tree git merge-tree --write-tree -z --merge-base=B₀ B₁ H₀ writes,
+// the merge the integrator makes, or H₀'s tree when B₀ is B₁. The page
+// holds back what that carry explains, so the carry and every diff read
+// from it run in a scratch git directory that shares the clone's object
+// store and nothing else (carryGit): no system or global configuration,
+// no attributes file and replacement refs off. The person's configuration
+// or attributes, a merge=union attribute say, could otherwise resolve a
+// conflict silently or change what a diff shows. Each file whose change
+// differs is carried unchanged when no conflict names it and the carried
+// tree's entry is H₁'s, changed since the approved version when the
+// entries differ, and in conflict with main when a message in merge-tree's
+// conflict report names it. Then comes git diff from the carried tree to
+// H₁ of every path no conflict names: everything the shown version holds
+// that the approved version carried mechanically does not. Each
+// conflicted path follows: for a lone content conflict whose carried file
+// holds conflict markers, its diff from the carried tree to H₁, where the
+// removed lines are the two sides and the added lines the resolution;
+// otherwise its diff from B₀ to H₀ and from B₁ to H₁, so an approved edit
+// the shown version drops is in view. -v adds git range-diff
+// B₀..H₀ B₁..H₁, whose hunks carry no line numbers, so a note review takes
+// beside them has no anchor. Every other diff is in git's ordinary form,
+// so a note taken beside a line of it keeps its file and line. When the
+// carry cannot be computed, the page says so and shows every differing
+// file's landings, the range-diff and the diff from B₁ to H₁ of those
+// files. Either way, a message or an author that differs is shown whatever
+// the files say, a message as a line diff of the two.
 //
 // The output is one line naming the kind, none, clean or changed, and then
 // the text review shows, in plain text: style (style.go) styles it for a
@@ -58,6 +81,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -87,7 +111,7 @@ var approvalDecisions = map[string]bool{"land": true, "stale": true, "reject": t
 type compareArgs struct {
 	tip, id, head string
 	version       int
-	verbose       bool // list each differing file's change as modes and hashes
+	verbose       bool // list each differing file's change as modes and hashes, and the range-diff
 }
 
 func parseCompareArgs(args []string) (compareArgs, error) {
@@ -280,14 +304,15 @@ type reference struct {
 
 // comparison is what comparing a version with its reference found.
 type comparison struct {
-	kind, text string
-	verb       string   // rebased, edited or recommitted, as the text opens
-	edited     int      // the shown version's commits that differ from the earlier version's
-	had, has   int      // the earlier and the shown version's commit counts
-	mainEdited []string // the files whose change differs that a landing in between edited
-	meta       bool     // the commits' messages or authors differ
-	base, head string   // the shown version's base and head
-	landings   []string // main's first-parent history from the shown version's base down to the reference's, both included
+	kind, text string                 // text is the opening lines when rest is set
+	verb       string                 // rebased, edited or recommitted, as the text opens
+	edited     int                    // the shown version's commits that differ from the earlier version's
+	had, has   int                    // the earlier and the shown version's commit counts
+	mainEdited []string               // the files whose change differs that a landing in between edited
+	meta       bool                   // the commits' messages or authors differ
+	base, head string                 // the shown version's base and head
+	landings   []string               // main's first-parent history from the shown version's base down to the reference's, both included
+	rest       func() (string, error) // the rest of the text, built only when page reads it
 }
 
 // reference finds the approved version below the version shown, as the
@@ -341,7 +366,11 @@ func compareVersion(g git, h *history, a compareArgs) (kind, text string, err er
 		return compareNone, fmt.Sprintf("%s: %s; reviewing it in full.\n", shown, ref.unclear), nil
 	}
 	c, err := compareWith(g, h, a.tip, ref, a.version, a.verbose)
-	return c.kind, c.text, err
+	if err != nil {
+		return "", "", err
+	}
+	text, err = c.page()
+	return c.kind, text, err
 }
 
 // compareWith compares version n with the reference, against main's tip,
@@ -454,7 +483,8 @@ func compareWith(g git, h *history, tip string, ref reference, n int, verbose bo
 	for i, f := range files {
 		paths[i] = f.path
 	}
-	edits, err := landingEdits(g, firstParent[i1:i0+1], paths)
+	chain := firstParent[i1 : i0+1]
+	edits, err := landingEdits(g, chain, paths)
 	if err != nil {
 		return comparison{}, err
 	}
@@ -475,57 +505,259 @@ func compareWith(g git, h *history, tip string, ref reference, n int, verbose bo
 			of = fmt.Sprintf("%d of the %d files whose change differs", touched, len(files))
 		}
 		fmt.Fprintf(&b, "Main moved %s → %s and also edited %s:\n", short(b0), short(b1), of)
-	} else {
-		if moved {
-			fmt.Fprintf(&b, "Main moved %s → %s.\n", short(b0), short(b1))
-		} else {
-			fmt.Fprintf(&b, "Its base is still %s.\n", short(b1))
-		}
-		had := ""
-		if len(c0) != len(c1) {
-			had = fmt.Sprintf(" (v%d had %d)", old, len(c0))
-		}
-		differ := fmt.Sprintf("%d files differ", len(files))
-		if len(files) == 1 {
-			differ = "1 file differs"
-		}
-		fmt.Fprintf(&b, "%d of %s changed%s, and %s from v%d:\n", edited, counted(len(c1), "commit"), had, differ, old)
-	}
-	listing, err := fileListing(g, files, edits, moved, a.verbose, old, a.version)
-	if err != nil {
-		return comparison{}, err
-	}
-	b.WriteString(listing)
-	if verb != "rebased" {
-		fmt.Fprintf(&b, "\n── git range-diff %s..%s %s..%s ──\n", short(b0), short(h0), short(b1), short(a.head))
-		out, err := g.output(true, "range-diff", "--no-color", b0+".."+h0, b1+".."+a.head)
+		listing, err := fileListing(g, files, edits, moved, a.verbose, old, a.version)
 		if err != nil {
-			b.WriteString("  (git range-diff failed; view the full diff)\n")
-		} else {
-			b.WriteString(out + "\n")
+			return comparison{}, err
 		}
+		b.WriteString(listing + shownDiff(g, paths, b1, a.head, a.version))
+		c.text = b.String()
+		return c, nil
 	}
-	these := fmt.Sprintf("these %d files", len(files))
+	if moved {
+		fmt.Fprintf(&b, "Main moved %s → %s.\n", short(b0), short(b1))
+	} else {
+		fmt.Fprintf(&b, "Its base is still %s.\n", short(b1))
+	}
+	had := ""
+	if len(c0) != len(c1) {
+		had = fmt.Sprintf(" (v%d had %d)", old, len(c0))
+	}
+	differ := fmt.Sprintf("%d files differ", len(files))
 	if len(files) == 1 {
-		these = "this file"
-	}
-	fmt.Fprintf(&b, "\n── v%d's diff of %s against main %s ──\n", a.version, these, short(b1))
-	// The prefixes and the options are fixed, so that the person's
-	// configuration cannot change the form review anchors notes by. The
-	// paths are taken literally, as the delta has them, and a rename is a
-	// deletion and an addition, as it is in the delta.
-	out, err := g.output(true, append([]string{"--literal-pathspecs", "diff", "--no-color", "--no-ext-diff", "--no-textconv",
-		"--no-renames", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", b1, a.head, "--"}, paths...)...)
-	switch {
-	case err != nil:
-		b.WriteString("  (git diff failed; view the full diff)\n")
-	case out == "":
-		fmt.Fprintf(&b, "  none: v%d leaves each of them as its base has it.\n", a.version)
-	default:
-		b.WriteString(out + "\n")
+		differ = "1 file differs"
 	}
 	c.text = b.String()
+	p := editedPage{g: g, d0: d0, d1: d1, b0: b0, b1: b1, h0: h0, h1: a.head, old: old, shown: a.version,
+		counts: fmt.Sprintf("%d of %s changed%s, and %s from v%d", edited, counted(len(c1), "commit"), had, differ, old),
+		files:  files, edits: edits, chain: chain, moved: moved, verbose: a.verbose}
+	c.rest = p.text
 	return c, nil
+}
+
+// page is the comparison's whole text. For an edited version whose files
+// differ, the part after the opening lines is built here, so that carry,
+// which reads the comparison's other fields alone, makes no merge.
+func (c comparison) page() (string, error) {
+	if c.rest == nil {
+		return c.text, nil
+	}
+	rest, err := c.rest()
+	return c.text + rest, err
+}
+
+// editedPage is what the page of an edited version whose files differ is
+// built from.
+type editedPage struct {
+	g              git
+	d0, d1         delta.Delta
+	b0, b1, h0, h1 string
+	old, shown     int
+	counts         string // how many commits changed and files differ
+	files          []fileDifference
+	edits          map[string][]string
+	chain          []string
+	moved, verbose bool
+}
+
+// text is the page after its opening lines, as the file's comment
+// describes: the files whose change differs, grouped by how they compare
+// with the approved version carried onto main, then what the shown
+// version changes beyond that carry, then each conflicted path.
+func (p editedPage) text() (string, error) {
+	cg, done, err := carryGit(p.g)
+	defer done()
+	var k carried
+	if err == nil {
+		k, err = carry(cg, p.b0, p.b1, p.h0)
+	}
+	if err != nil {
+		return p.fallback(err)
+	}
+	out, err := cg.output(true, "diff", "--name-only", "-z", "--no-renames", "--no-relative", "--no-ext-diff", k.tree, p.h1)
+	if err != nil {
+		return p.fallback(errors.New("the carried tree does not diff"))
+	}
+	changed := map[string]bool{}
+	var beyond []string
+	for _, path := range strings.Split(out, "\x00") {
+		if _, conflicted := k.conflicts[path]; path != "" && !conflicted {
+			changed[path] = true
+			beyond = append(beyond, path)
+		}
+	}
+	var same, differ, conflicts []fileDifference
+	listed := map[string]bool{}
+	for _, f := range p.files {
+		listed[f.path] = true
+		switch _, conflicted := k.conflicts[f.path]; {
+		case conflicted:
+		case changed[f.path]:
+			differ = append(differ, f)
+		default:
+			same = append(same, f)
+		}
+	}
+	var unlisted []string
+	for _, path := range k.paths() {
+		conflicts = append(conflicts, fileDifference{path: path, old: changeOf(p.d0, path), new: changeOf(p.d1, path)})
+		if !listed[path] {
+			unlisted = append(unlisted, path)
+		}
+	}
+	more, err := landingEdits(p.g, p.chain, unlisted)
+	if err != nil {
+		return "", err
+	}
+	edits := map[string][]string{}
+	for _, m := range []map[string][]string{p.edits, more} {
+		for path, oids := range m {
+			edits[path] = oids
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString(p.counts + ".\n")
+	for _, group := range []struct {
+		files    []fileDifference
+		heading  string
+		landings bool
+	}{
+		{same, "carried unchanged onto main", p.verbose},
+		{differ, fmt.Sprintf("changed since v%d", p.old), p.verbose},
+		{conflicts, "in conflict with main", true},
+	} {
+		if len(group.files) == 0 {
+			continue
+		}
+		named := edits
+		if !group.landings {
+			named = nil
+		}
+		listing, err := fileListing(p.g, group.files, named, p.moved && group.landings, p.verbose, p.old, p.shown)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&b, "%s %s:\n%s", counted(len(group.files), "file"), group.heading, listing)
+	}
+	if p.verbose {
+		b.WriteString(p.rangeDiff())
+	}
+
+	fmt.Fprintf(&b, "\n── what v%d changes beyond v%d carried onto main %s ──\n", p.shown, p.old, short(p.b1))
+	switch {
+	case len(beyond) > 0:
+		b.WriteString(diffOf(cg, k.tree, p.h1, beyond))
+	case len(conflicts) > 0:
+		fmt.Fprintf(&b, "  none: outside its conflicts with main, v%d is v%d carried onto main and nothing else.\n", p.shown, p.old)
+	default:
+		fmt.Fprintf(&b, "  none: v%d is v%d carried onto main and nothing else.\n", p.shown, p.old)
+	}
+
+	for _, f := range conflicts {
+		types := k.conflicts[f.path]
+		fmt.Fprintf(&b, "\n── %s: %s ──\n", quotedPath(f.path), strings.Join(types, ", "))
+		if len(types) == 1 && types[0] == "CONFLICT (contents)" && holdsMarkers(cg, k.tree, f.path) {
+			fmt.Fprintf(&b, "Removed: the conflict, main's side and v%d's. Added: v%d's resolution.\n", p.old, p.shown)
+			if diff := diffOf(cg, k.tree, p.h1, []string{f.path}); diff != "" {
+				b.WriteString(diff)
+			} else {
+				fmt.Fprintf(&b, "  none: v%d keeps the conflict as the carry wrote it.\n", p.shown)
+			}
+			continue
+		}
+		// The approved version's diff is indented: its new side is H₀,
+		// not the shown head, so review anchors no note to it.
+		fmt.Fprintf(&b, "v%d's diff against main %s, indented:\n", p.old, short(p.b0))
+		if diff := diffOf(cg, p.b0, p.h0, []string{f.path}); diff != "" {
+			b.WriteString("    " + strings.ReplaceAll(strings.TrimSuffix(diff, "\n"), "\n", "\n    ") + "\n")
+		} else {
+			fmt.Fprintf(&b, "  none: v%d leaves it as main has it.\n", p.old)
+		}
+		fmt.Fprintf(&b, "── v%d's diff of %s against main %s ──\n", p.shown, quotedPath(f.path), short(p.b1))
+		if diff := diffOf(cg, p.b1, p.h1, []string{f.path}); diff != "" {
+			b.WriteString(diff)
+		} else {
+			fmt.Fprintf(&b, "  none: v%d leaves it as main has it.\n", p.shown)
+		}
+	}
+	return b.String(), nil
+}
+
+// fallback is the page when the carry could not be computed: every file
+// whose change differs, the range-diff and the shown version's diff of
+// those files.
+func (p editedPage) fallback(why error) (string, error) {
+	listing, err := fileListing(p.g, p.files, p.edits, p.moved, p.verbose, p.old, p.shown)
+	if err != nil {
+		return "", err
+	}
+	paths := make([]string, len(p.files))
+	for i, f := range p.files {
+		paths[i] = f.path
+	}
+	return fmt.Sprintf("%s:\n%s\nThe carry of v%d onto main %s could not be computed: %v.\n", p.counts, listing, p.old, short(p.b1), why) +
+		p.rangeDiff() + shownDiff(p.g, paths, p.b1, p.h1, p.shown), nil
+}
+
+// rangeDiff is git range-diff B₀..H₀ B₁..H₁ under its heading.
+func (p editedPage) rangeDiff() string {
+	s := fmt.Sprintf("\n── git range-diff %s..%s %s..%s ──\n", short(p.b0), short(p.h0), short(p.b1), short(p.h1))
+	out, err := p.g.output(true, "range-diff", "--no-color", p.b0+".."+p.h0, p.b1+".."+p.h1)
+	if err != nil {
+		return s + "  (git range-diff failed; view the full diff)\n"
+	}
+	return s + out + "\n"
+}
+
+// shownDiff is the shown version's diff of the paths from its base, under
+// its heading.
+func shownDiff(g git, paths []string, base, head string, shown int) string {
+	these := fmt.Sprintf("these %d files", len(paths))
+	if len(paths) == 1 {
+		these = "this file"
+	}
+	s := fmt.Sprintf("\n── v%d's diff of %s against main %s ──\n", shown, these, short(base))
+	switch diff := diffOf(g, base, head, paths); diff {
+	case "":
+		return s + fmt.Sprintf("  none: v%d leaves each of them as its base has it.\n", shown)
+	default:
+		return s + diff
+	}
+}
+
+// diffOf is git diff from one commit or tree to another of the paths, each
+// line ending in a newline, or "" when they do not differ. The prefixes
+// and the options are fixed, so that the person's configuration cannot
+// change the form review anchors notes by. The paths are taken literally,
+// as the delta has them, and a rename is a deletion and an addition, as it
+// is in the delta.
+func diffOf(g git, from, to string, paths []string) string {
+	out, err := g.output(true, append([]string{"--literal-pathspecs", "diff", "--no-color", "--no-ext-diff", "--no-textconv",
+		"--no-renames", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", from, to, "--"}, paths...)...)
+	switch {
+	case err != nil:
+		return "  (git diff failed; view the full diff)\n"
+	case out == "":
+		return ""
+	}
+	return out + "\n"
+}
+
+// holdsMarkers reports whether the tree holds path as text with a
+// conflict marker line.
+func holdsMarkers(g git, tree, path string) bool {
+	out, err := g.output(true, "cat-file", "blob", tree+":"+path)
+	return err == nil && !strings.Contains(out, "\x00") && strings.Contains("\n"+out, "\n<<<<<<< ")
+}
+
+// changeOf is path's change in d, or nil when d leaves it alone.
+func changeOf(d delta.Delta, path string) *delta.Change {
+	for i := range d {
+		if d[i].Path == path {
+			return &d[i]
+		}
+	}
+	return nil
 }
 
 // uniqueBase is head's merge base with tip, when there is exactly one.
@@ -825,7 +1057,8 @@ func parseCommit(oid string, data []byte) commitText {
 // "you approved v<n>" or "v<n>". With as many commits on each side, each
 // commit is set against the one in its place, and only those whose
 // message or author differs are shown. Otherwise every commit on each
-// side is, with its author and its message.
+// side is, with its author and its message. A message that differs, in
+// the same encoding on each side, shows as a line diff of the two.
 func metadataChanges(c0, c1 []commitText, since string, old, shown int) string {
 	var b strings.Builder
 	author := func(c commitText) string { return " " + visible(c.author) }
@@ -858,11 +1091,12 @@ func metadataChanges(c0, c1 []commitText, since string, old, shown int) string {
 		heading string
 		of      func(commitText) string
 		show    func(commitText) string
+		diff    bool // a message in one encoding on each side shows as a line diff
 	}{
 		{"Commit messages edited since %s. Read them before approving:\n",
-			func(c commitText) string { return c.encoding + "\x00" + c.message }, message},
+			func(c commitText) string { return c.encoding + "\x00" + c.message }, message, true},
 		{"Commit authors edited since %s:\n",
-			func(c commitText) string { return c.author }, author},
+			func(c commitText) string { return c.author }, author, false},
 	} {
 		headed := false
 		for i := range c0 {
@@ -873,9 +1107,114 @@ func metadataChanges(c0, c1 []commitText, since string, old, shown int) string {
 				fmt.Fprintf(&b, field.heading, since)
 				headed = true
 			}
+			if diff, ok := messageDiff(c0[i].message, c1[i].message); field.diff && ok && c0[i].encoding == c1[i].encoding {
+				fmt.Fprintf(&b, "  commit %d of %d, v%d %s → v%d %s:\n%s", i+1, len(c0), old, short(c0[i].oid), shown, short(c1[i].oid), diff)
+				continue
+			}
 			entry(old, c0, i, field.show)
 			entry(shown, c1, i, field.show)
 		}
 	}
 	return b.String()
+}
+
+// messageContext is how many unchanged lines a message's line diff shows
+// on each side of a changed one.
+const messageContext = 3
+
+// messageDiffCells bounds the table lineDiff fills for the lines two
+// messages do not share at either end: a million cells, eight megabytes.
+// Past it a message prints in full.
+const messageDiffCells = 1 << 20
+
+// messageDiff is a line diff of two messages: each line indented four
+// spaces and marked -, + or, for an unchanged line, a space. Unchanged
+// lines further than messageContext from a change are counted, not shown.
+// ok is false when the diff is past messageDiffCells, or when the
+// messages differ only in trailing newlines, which a line diff would not
+// show.
+func messageDiff(a, b string) (diff string, ok bool) {
+	if strings.TrimRight(a, "\n") == strings.TrimRight(b, "\n") {
+		return "", false
+	}
+	x, y := strings.Split(strings.TrimRight(a, "\n"), "\n"), strings.Split(strings.TrimRight(b, "\n"), "\n")
+	head := 0
+	for head < min(len(x), len(y)) && x[head] == y[head] {
+		head++
+	}
+	tail := 0
+	for tail < min(len(x), len(y))-head && x[len(x)-1-tail] == y[len(y)-1-tail] {
+		tail++
+	}
+	if (len(x)-head-tail+1)*(len(y)-head-tail+1) > messageDiffCells {
+		return "", false
+	}
+	var ops []string
+	for _, l := range x[:head] {
+		ops = append(ops, " "+l)
+	}
+	ops = append(ops, lineDiff(x[head:len(x)-tail], y[head:len(y)-tail])...)
+	for _, l := range x[len(x)-tail:] {
+		ops = append(ops, " "+l)
+	}
+	near := make([]bool, len(ops))
+	for i, op := range ops {
+		if op[0] != ' ' {
+			for j := max(0, i-messageContext); j <= min(len(ops)-1, i+messageContext); j++ {
+				near[j] = true
+			}
+		}
+	}
+	var s strings.Builder
+	for i := 0; i < len(ops); {
+		if near[i] {
+			s.WriteString("    " + ops[i][:1] + visible(ops[i][1:]) + "\n")
+			i++
+			continue
+		}
+		j := i
+		for j < len(ops) && !near[j] {
+			j++
+		}
+		fmt.Fprintf(&s, "     (%s)\n", counted(j-i, "unchanged line"))
+		i = j
+	}
+	return s.String(), true
+}
+
+// lineDiff is a shortest edit from lines a to lines b, each line marked
+// "-" for a's alone, "+" for b's alone or " " for both, a's before b's
+// within a change.
+func lineDiff(a, b []string) []string {
+	// common[i][j] is the length of the longest common subsequence of
+	// a[i:] and b[j:].
+	common := make([][]int, len(a)+1)
+	for i := range common {
+		common[i] = make([]int, len(b)+1)
+	}
+	for i := len(a) - 1; i >= 0; i-- {
+		for j := len(b) - 1; j >= 0; j-- {
+			if a[i] == b[j] {
+				common[i][j] = common[i+1][j+1] + 1
+			} else {
+				common[i][j] = max(common[i+1][j], common[i][j+1])
+			}
+		}
+	}
+	var ops []string
+	i, j := 0, 0
+	for i < len(a) || j < len(b) {
+		switch {
+		case i < len(a) && j < len(b) && a[i] == b[j]:
+			ops = append(ops, " "+a[i])
+			i, j = i+1, j+1
+		case j == len(b) || i < len(a) && common[i+1][j] >= common[i][j+1]:
+			ops = append(ops, "-"+a[i])
+			i++
+		default:
+			ops = append(ops, "+"+b[j])
+			j++
+		}
+	}
+	return ops
 }

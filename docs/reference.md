@@ -364,9 +364,18 @@ valley review [-v] [--build-here] [--repo <name>]
       pages nothing.
     - `changed`: The deltas differ. `valley review` pages `rebased since you approved v<m>` when
       each commit has the same patch, message and author, or `edited since you approved v<m>`
-      otherwise; the paths whose delta entries differ, each with the landings between the bases that
-      edited it; `git range-diff` when a commit is edited; and the shown version's diff restricted
-      to those paths. `valley review -v` adds each path's mode and SHA-256 in each version.
+      otherwise. A rebased version pages the paths whose delta entries differ, each with the
+      landings between the bases that edited it, and the shown version's diff restricted to those
+      paths. An edited version is set against the approved version carried onto the shown version's
+      base (`git merge-tree --write-tree -z --merge-base=B₀ B₁ H₀`): it pages those paths grouped as
+      carried unchanged, changed since `v<m>`, and in conflict with `main` (with the landings that
+      edited each); `git diff <carried tree> H₁` outside the conflicts, under
+      `── what v<n> changes beyond v<m> carried onto main <B₁> ──`; and, per conflicted path, the
+      shown version's diff from the carry's conflict markers for a lone content conflict, or else
+      `git diff B₀ H₀` and `git diff B₁ H₁` of the path. When the carry cannot be computed, it pages
+      the paths, `git range-diff` and the shown version's diff instead. A changed commit message
+      prints as a line diff. `valley review -v` adds each path's mode and SHA-256 in each version
+      and, for an edited version, the landings of every path and `git range-diff`.
     - On a terminal, unless `NO_COLOR` is set, `valley style` styles the view after the diff pager,
       line for line; the buffer the editor opens stays plain.
     - `none`: No approved version can be compared; `valley review` pages the log, each commit with

@@ -1314,7 +1314,7 @@ grep -qx 'diff --git a/cmp-one.txt b/cmp-one.txt' "$w/clean" || fail '[v]iew ful
 
 # v3 edits a file. The greatest approved version below it is still v1,
 # so review pages that v3 is edited since v1, the file whose change
-# differs, and the range-diff.
+# differs, and what v3 changes beyond v1 carried onto main.
 git checkout --quiet -B cmp/topic "$cv2"
 echo edited > cmp-one.txt
 git commit --quiet -am 'cmp-one edited'
@@ -1327,15 +1327,14 @@ changed="$ch v3 at ${cv3:0:7}: edited since you approved v1 at ${cv1:0:7}."
 grep -qx "$changed" "$w/out" || fail "review did not say v3 is edited since v1: $(cat "$w/out")"
 after "$w/out" "$changed" > "$w/changed"
 grep -qx "Main moved ${base1:0:7} → ${landing:0:7}." "$w/changed" \
-  && grep -A1 -x '1 of 2 commits changed (v1 had 1), and 1 file differs from v1:' "$w/changed" \
-  | grep -qx '  cmp-one.txt  not edited on main' || fail "the file whose change differs was not listed: $(cat "$w/changed")"
+  && grep -qx '1 of 2 commits changed (v1 had 1), and 1 file differs from v1.' "$w/changed" \
+  && grep -A1 -x '1 file changed since v1:' "$w/changed" \
+  | grep -qx '  cmp-one.txt' || fail "the file whose change differs was not listed: $(cat "$w/changed")"
 if grep -q 'absent -> 100644' "$w/changed"; then fail 'review listed hashes without -v'; fi
-grep -qx "── git range-diff ${base1:0:7}..${cv1:0:7} ${landing:0:7}..${cv3:0:7} ──" "$w/changed" || fail 'no range-diff heading'
-grep -qx "1:  ${cv1:0:7} = 1:  ${cv2:0:7} cmp-one" "$w/changed" || fail 'the range-diff did not pair the rebased commit'
-grep -qx -- "-:  ------- > 2:  ${cv3:0:7} cmp-one edited" "$w/changed" || fail 'the range-diff did not show the new commit'
-# The page ends with v3's own diff of that file, where a note keeps its
-# file and line.
-after "$w/changed" "── v3's diff of this file against main ${landing:0:7} ──" > "$w/own"
+if grep -q 'range-diff' "$w/changed"; then fail 'review paged the range-diff without -v'; fi
+# The page ends with what v3 changes beyond v1 carried onto main, where a
+# note keeps its file and line.
+after "$w/changed" "── what v3 changes beyond v1 carried onto main ${landing:0:7} ──" > "$w/own"
 [ "$(sed -n 2p "$w/own")" = 'diff --git a/cmp-one.txt b/cmp-one.txt' ] || fail "the changed version did not end with its own diff: $(cat "$w/changed")"
 grep -qx '+edited' "$w/own" || fail "v3's own diff did not show the edited line"
 
@@ -1353,7 +1352,7 @@ after "$w/out" "$ch v4 at ${cv4:0:7}: edited since you approved v3 at ${cv3:0:7}
 [ -s "$w/meta" ] || fail "a version with another message alone was no clean restack: $(cat "$w/out")"
 grep -qx 'Commit messages edited since you approved v3. Read them before approving:' "$w/meta" \
   || fail 'a changed message was not flagged'
-grep -A1 -x "  v4, commit 2 of 2, ${cv4:0:7}:" "$w/meta" | grep -qx '    cmp-one edited, and reworded' \
+grep -A2 -x "  commit 2 of 2, v3 ${cv3:0:7} → v4 ${cv4:0:7}:" "$w/meta" | grep -qx '    +cmp-one edited, and reworded' \
   || fail 'the changed message was not shown'
 if grep -q 'Commit authors edited' "$w/meta"; then fail 'an unchanged author was flagged'; fi
 ok as requester valley approve --head "$cv4" "$ch"

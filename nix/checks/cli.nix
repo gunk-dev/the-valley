@@ -372,8 +372,9 @@ in
   # withdrawn, offers [a]pprove under it and neither at it nor above it.
   # Then review set against a change's approved version: a clean
   # restack after a rebase, with the landing between the bases listed and no
-  # diff paged; a later version with an edited file, paged with the
-  # range-diff and its own diff of that file; a version whose message
+  # diff paged; a later version with an edited file, paged with what it
+  # changes beyond the approved version carried onto main, and no
+  # range-diff; a version whose message
   # alone changed and one whose author alone did, each flagged; a change
   # with no approved version, paged in full; and a stack whose lower layer
   # is set against its own approval while its top, which has none, is

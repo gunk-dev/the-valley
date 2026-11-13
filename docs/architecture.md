@@ -2764,33 +2764,62 @@ Main moved <old-base> → <new-base> and also edited 2 of its files:
 ── v<N>'s diff of these 2 files against main <new-base> ──
 ```
 
-When a commit differs, `review` pages how many did, each file whose change differs with the landings
-in (B₀, B₁] that edited it, then `git range-diff B₀..H₀ B₁..H₁` and the shown version's diff:
+When a commit differs, `review` carries the approved version onto the shown version's base: the tree
+`git merge-tree --write-tree -z --merge-base=B₀ B₁ H₀` writes, the merge the integrator makes. When
+B₀ is B₁ that tree is H₀'s. The carry runs in a scratch git directory that shares the clone's object
+store and nothing else, with system and global configuration off, no attributes file and replacement
+refs off, so the person's git configuration and attributes (a `merge=union` attribute would resolve
+a conflict silently) cannot change what the page holds back. merge-tree writes loose objects into
+the clone. Each file whose change differs is carried unchanged when no conflict names it and the
+carried tree's entry equals H₁'s, changed since v<M> when they differ, and in conflict with main
+when any conflict message merge-tree reports names it (read from its `-z` output, not its prose):
 
 ```text
 <change> v<N> at <head>: edited since you approved v<M> at <old-head>.
 Main moved <old-base> → <new-base>.
-1 of 2 commits changed, and 3 files differ from v<M>:
+1 of 2 commits changed, and 4 files differ from v<M>.
+2 files carried unchanged onto main:
+  <path>
+1 file changed since v<M>:
+  <path>
+1 file in conflict with main:
   <path>  <commit> <subject>
-  <path>  not edited on main
 
-── git range-diff <old-base>..<old-head> <new-base>..<head> ──
+── what v<N> changes beyond v<M> carried onto main <new-base> ──
 
-── v<N>'s diff of these 3 files against main <new-base> ──
+── <path>: CONFLICT (contents) ──
+Removed: the conflict, main's side and v<M>'s. Added: v<N>'s resolution.
 ```
 
+The section `what v<N> changes beyond` is `git diff <carried tree> H₁` of every path no conflict
+names, so it holds everything in the shown version that is not the approved version carried
+mechanically; when it is empty, the page says v<N> is v<M> carried onto main and nothing else. Each
+conflicted path has a section of its own. A lone content conflict whose carried file holds conflict
+markers shows `git diff <carried tree> H₁` of the path: the removed marker blocks are main's side
+and the approved version's, the added lines the author's resolution. Any other conflict shows the
+approved version's diff of the path from B₀ to H₀, indented so that no note anchors to its H₀ lines,
+and then the shown version's from B₁ to H₁, saying in words when either is empty, so an approved
+deletion the shown version drops stays in view. When merge-tree fails, reports a conflict naming no
+path or prints what does not parse, the page lists every file whose change differs with its
+landings, says the carry could not be computed, and shows `git range-diff B₀..H₀ B₁..H₁` and the
+shown version's diff of those files from B₁ to H₁.
+
 `valley review -v` adds each file's change in each version, as the mode and SHA-256 of each image,
-so a binary file or a mode that differs is visible without its diff. The shown version's diff is
-from B₁ to H₁, in git's ordinary form. range-diff's hunks carry no line numbers, so a note written
-beside them has no anchor. A note written beside a line of the last diff keeps its file and line.
+so a binary file or a mode that differs is visible without its diff; for an edited version it adds
+the landings of every file and `git range-diff B₀..H₀ B₁..H₁`. range-diff's hunks carry no line
+numbers, so a note written beside them has no anchor. Every other diff on the page is in git's
+ordinary form, and a note written beside a line of one keeps its file and line; in the carried
+sections the new side is H₁.
 
 Either way, a message or an author that differs is shown under its own heading,
 `Commit messages edited since you approved v<M>.` or
-`Commit authors edited since you approved v<M>:`, whatever the files say. Every prompt after a
-change is shown offers `[v]iew diff`, which pages the change's log and whole diff and asks again.
-The log shows each commit's short hash and subject, then its body indented four spaces: a change
-lands with its head commit's message, and the indent keeps a body line from reading as a diff
-header.
+`Commit authors edited since you approved v<M>:`, whatever the files say. With as many commits on
+each side, a message in the same encoding on each side prints as a line diff of the two, with up to
+three unchanged lines around each change; an author, an encoding or a differing commit count prints
+each side in full. Every prompt after a change is shown offers `[v]iew diff`, which pages the
+change's log and whole diff and asks again. The log shows each commit's short hash and subject, then
+its body indented four spaces: a change lands with its head commit's message, and the indent keeps a
+body line from reading as a diff header.
 
 The text is plain. On a terminal, unless `NO_COLOR` is set, `valley style` renders it last, after
 the diff pager, so that the pager never reads its escapes: the title in bold, `edited` in yellow,

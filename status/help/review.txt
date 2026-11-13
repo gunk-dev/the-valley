@@ -116,12 +116,18 @@ usage: valley review [-v] [--build-here] <change>
                    of those files.
                      `... edited since you approved v<m> at <old head>.`
                    a commit's patch, message or author differs. review
-                   pages how many commits changed, the files whose change
-                   differs with the landings that edited them, git
-                   range-diff of the two versions, and the shown
-                   version's diff of those files, or prints a changed
-                   message or author when the files are the same. -v adds
-                   each file's mode and SHA-256 in each version. on a
+                   carries v<m> onto main as the integrator would, and
+                   pages how many commits changed; the files whose change
+                   differs, as carried unchanged, changed since v<m>, or
+                   in conflict with main with the landings that edited
+                   them; the diff of what v<n> changes beyond v<m> carried
+                   onto main; and, for each path in conflict, v<n>'s
+                   resolution of the conflict markers, or each version's
+                   own diff of the path. a changed message prints as a
+                   line diff, a changed author in full. -v adds the
+                   landings of every file, each file's mode and SHA-256
+                   in each version, and git range-diff of the two
+                   versions. on a
                    terminal, unless NO_COLOR is set, the title, the
                    section headings and the hashes are styled; the buffer
                    the editor opens is plain. this is information only:
@@ -195,10 +201,10 @@ usage: valley review [-v] [--build-here] <change>
                    while paging, press v: less opens the diff in $EDITOR.
                    every line you insert there is a note. it is anchored to
                    the file and new-side line it sits on — to the file alone
-                   when it sits above the first hunk. range-diff gives no
-                   line numbers, so set against an approved version a
-                   note keeps its file and line only in the section
-                   headed `── v<n>'s diff of these files against main`. each note is then appended to
+                   when it sits above the first hunk. set against an
+                   approved version, a note keeps its file and line in
+                   every diff on the page; range-diff, which -v adds,
+                   gives no line numbers. each note is then appended to
                    $XDG_STATE_HOME/valley/notes/<branch>.md (default
                    ~/.local/state) and printed after the verdict. notes
                    survive a stack's [b]ase onto main. lines you change

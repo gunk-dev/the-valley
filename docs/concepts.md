@@ -26,17 +26,17 @@ an entire change from scratch after a rebase or revision, `valley review` compar
 version against its earlier **approved version** when one can be compared: if the file delta is
 unchanged (a clean restack), it prints a short summary with any landings between the two bases and
 pages nothing; if the version changed files, it pages the comparison (the files whose change
-differs, with the landings that also edited them, the range-diff when a commit was edited, and the
-shown version's diff of those files); and if there is no approved version or no comparison can be
-made, it pages the full diff (`[v]iew diff` is available at the prompt in every case). The operator
-approves the change with `valley approve <change>` (or by selecting `[a]pprove` in `valley review`),
-which reuses eligible evidence already on `origin` for the commit's content tree, runs and signs the
-required `command` checks, and writes an integration request binding that one exact commit. Approval
-and passing checks are separate. When a required `nix` check has no evidence on `origin` yet, the
-request is filed all the same. When evidence is published, an enabled integrator considers the
-request again. Landing still requires the change to apply cleanly and carry acceptable evidence for
-every required check. The operator can pass `--build-here` to build the missing `nix` evidence on
-this machine.
+differs, with the landings that also edited them, and the shown version's diff of those files, or,
+when a commit was edited, what it changes beyond the approved version carried onto main); and if
+there is no approved version or no comparison can be made, it pages the full diff (`[v]iew diff` is
+available at the prompt in every case). The operator approves the change with
+`valley approve <change>` (or by selecting `[a]pprove` in `valley review`), which reuses eligible
+evidence already on `origin` for the commit's content tree, runs and signs the required `command`
+checks, and writes an integration request binding that one exact commit. Approval and passing checks
+are separate. When a required `nix` check has no evidence on `origin` yet, the request is filed all
+the same. When evidence is published, an enabled integrator considers the request again. Landing
+still requires the change to apply cleanly and carry acceptable evidence for every required check.
+The operator can pass `--build-here` to build the missing `nix` evidence on this machine.
 
 Once the integrator verifies that commit's required check evidence and integrates it into `main`,
 the change version is **submitted**: `landed` when its commit is on `main`'s first-parent history

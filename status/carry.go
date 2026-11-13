@@ -71,7 +71,11 @@ func runCarry(g git, args []string, w io.Writer) error {
 	if offer != "" {
 		reason += "\t" + offer
 	}
-	_, err = fmt.Fprintf(w, "%s\t%s\n%s", verdict, reason, c.text)
+	text, err := c.page()
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "%s\t%s\n%s", verdict, reason, text)
 	return err
 }
 

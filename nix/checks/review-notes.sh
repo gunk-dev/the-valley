@@ -504,9 +504,9 @@ awk '/change 3 of 3: /{ on = 1 } on' stale-review.out > stale-page3
 # ----------------------------------------------------------------------
 # A note taken on an edited comparison. v1 of a change is approved, and
 # v2 edits line 9 of its file, so review pages v2 as edited since v1.
-# range-diff's hunks carry no line numbers, so the page ends with v2's
-# own diff of the file, and the note written beside the edited line there
-# keeps its file and line. The view is styled on a terminal, through a
+# The page ends with what v2 changes beyond v1 carried onto main, in git's
+# ordinary form, and the note written beside the edited line there keeps
+# its file and line. The view is styled on a terminal, through a
 # structure-preserving renderer and through less alone, while the buffer
 # the editor opens stays plain.
 git checkout --quiet -b edited main
@@ -542,9 +542,9 @@ for pager in cat less; do
     script -qec "valley review mmmm" /dev/null > "changed-$pager.log" 2>&1
   sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r//g' "changed-$pager.log" > changed-plain.log
   grep -q "mmmm v2 at [0-9a-f]*: edited since you approved v1 at " changed-plain.log
-  grep -q "── v2's diff of this file against main " changed-plain.log
+  grep -q "── what v2 changes beyond v1 carried onto main " changed-plain.log
   grep -q "${esc}\[1mmmmm v2 at [0-9a-f]*: ${esc}\[33medited${esc}\[39m since" "changed-$pager.log"
-  grep -q "${esc}\[36m── git range-diff " "changed-$pager.log"
+  grep -q "${esc}\[36m── what v2 changes beyond " "changed-$pager.log"
   grep -qx "lines.md:9: why edit line 9, through $pager?" "$XDG_STATE_HOME/valley/notes/edited.md"
   grep -q "^  lines.md:9: why edit line 9, through $pager?\$" changed-plain.log
 done

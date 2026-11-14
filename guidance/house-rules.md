@@ -35,6 +35,18 @@ the most valuable, and the code they run requires them. Assert outcomes, not wor
 events rather than fixed windows. Do not re-prove upstream software; check rendered configuration at
 evaluation time rather than booting a machine. A test's run time is part of the change's cost.
 
+## Design
+
+- Name the missing capability before choosing a mechanism. A fix that only makes a symptom stop is a
+  workaround.
+- A setting lives with the thing whose behaviour it changes: the tool's behaviour in the tool, a
+  project's choices in the project, a machine's facts in the machine's configuration.
+- One concept, one meaning. When an existing state or setting would start to carry a second meaning,
+  add an explicit command or setting instead.
+- When the right place is harder to change than a nearby one, say so and ask. Don't let the easier
+  place decide.
+- State the alternative you rejected and why.
+
 ## Carrying cost
 
 Code and tests are carried for the project's lifetime. When a change's cost in code, tests, check

@@ -1,4 +1,5 @@
 usage: valley checks [--schema FILE] [--instance DIR] [--project DIR] [--names [--cost COST] | --json] [<base> [<head>]]
+       valley checks --build [--wait DURATION]
 
   checks [<base> [<head>]]
                    print the check names the composed verification policy
@@ -49,3 +50,31 @@ usage: valley checks [--schema FILE] [--instance DIR] [--project DIR] [--names [
                                       `valley checks --names --cost slow`
                      --json           print the valley-checks/v1 document
                                       instead of the report
+
+  checks --build [--wait DURATION]
+                   ask the host's check worker to build the nix checks
+                   HEAD requires, and wait until origin holds evidence for
+                   every one. when no check is required, it passes at
+                   once. when origin holds evidence already, nothing is
+                   filed.
+                   otherwise a check request for HEAD is filed under git
+                   config valley.principal, the worker is followed through
+                   the host's telemetry (the observe grant), and the
+                   request is deleted on exit. it passes (exit 0) only
+                   when its last read of origin's evidence covers every
+                   check. otherwise the outcome is not established (exit
+                   1): it says why it stopped, and prints the worker's
+                   records for HEAD's tree, which are not this request's
+                   result, with a failed check's build output, or the
+                   nix build that reproduces it.
+                     --wait DURATION  the most the whole command takes,
+                                      such as 30m (default 2h)
+                   limits: a helper in a process group of its own can
+                   outlive the time limit. a command killed outright
+                   leaves its request on origin. a request left behind
+                   counts toward the 32 a principal may hold until the
+                   next run in that worktree deletes it; list your own
+                   with git ls-remote origin
+                   'refs/the-valley/check-requests/<principal>/*' and
+                   delete one with git push
+                   --force-with-lease=<ref>:<commit> origin :<ref>.

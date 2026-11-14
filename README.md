@@ -27,6 +27,7 @@ settle into `main`.
 ```sh
 valley plan                     # view the live plan graph (knots)
 valley checks                   # list checks required for your diff
+valley checks --build           # ask the host's check worker to build them
 valley ready --stamp            # stamp a Change-Id, push, and mark v1 ready
 valley pending                  # list ready changes and what each awaits
 valley review kqxm              # inspect the diff (and interactively approve)

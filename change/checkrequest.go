@@ -1,6 +1,10 @@
 package change
 
-import "strings"
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"strings"
+)
 
 // A check request asks a host's check worker to build the checks a commit
 // requires, outside any change. It is a ref pointing straight at the
@@ -37,6 +41,25 @@ func ParseCheckRequestRef(ref string) (principal, worktree, attempt string, ok b
 		return "", "", "", false
 	}
 	return parts[0], parts[1], parts[2], true
+}
+
+// CheckRequestRef is the ref of the check request principal files from
+// the worktree token as the attempt token. It reports false when that ref
+// would not parse as a check request's (ParseCheckRequestRef).
+func CheckRequestRef(principal, worktree, attempt string) (string, bool) {
+	ref := CheckRequestPrefix + principal + "/" + worktree + "/" + attempt
+	_, _, _, ok := ParseCheckRequestRef(ref)
+	return ref, ok
+}
+
+// NewCheckRequestToken makes a worktree or an attempt token:
+// CheckRequestToken lowercase hexadecimal digits, at random.
+func NewCheckRequestToken() (string, error) {
+	b := make([]byte, CheckRequestToken/2)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // requestToken reports whether s is a check request's worktree or attempt

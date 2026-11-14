@@ -1419,6 +1419,34 @@ no class, so `valley pending` counts it toward `main`'s state by the tree it is 
 tree its walk read on `main` is a run on `main`, whichever batch built it (`implemented`,
 `status/workertelemetry.go`, `status/mainstate.go`).
 
+`valley checks --build` answers one question: does `origin` hold evidence for every check `HEAD`
+requires (`implemented`, `status/checkbuild.go`)? It derives checks the same way the worker does,
+against `main` as `origin` currently holds it. It passes (exit 0) only when its final read of
+`origin`'s evidence completes and covers every check; no earlier read counts. Anything else is not
+established (exit 1). Because worker telemetry records do not name the request a batch served, the
+command never takes them as this request's outcome. Instead, it prints the worker's `check.result`
+records for the tree, labelled as the worker's, along with a failed check's build output when a
+`--logs` read holds a log for that attest run and check.
+
+When the first read falls short, the command takes the worktree's lock in its git directory and
+reads or creates the worktree's token. Under that lock, it deletes any earlier requests from this
+worktree (each leased on its listed commit), takes a cursor at the end of the worker's telemetry,
+and files a request with a new attempt token. It follows telemetry from that cursor only to know
+when to stop waiting and reread `origin`: when a batch for the tree fails, when a publish for the
+tree ends, when a pass ends with no batch for the tree running (provided its `pass.start` came after
+the filing), when a record reports lost records, or when the stream cannot be read. Taking the
+cursor before filing ensures a fast worker is not missed; checking `pass.start` against a second
+stream-end read after the push returns prevents an earlier pass that may not have seen the request
+from ending the wait. The command also rereads `origin` every three minutes, so a missed wake-up
+costs only minutes.
+
+A parent process enforces `--wait` and signals by running the work in a dedicated process group. On
+expiry or signal, it kills the group—so no program left in that group outlives the command, though a
+helper that creates its own group can—and then deletes any leftover request. When a push did not
+report success, the request's existence is unknown: the command tries a leased delete, and prints
+the leased delete command unless the delete succeeded or `origin` lists the ref absent after
+refusing the push.
+
 ### The worker's wakeups
 
 A move of a ref the worker reads starts a pass at once, without waiting for the timer. The host does

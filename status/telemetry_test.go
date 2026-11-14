@@ -24,7 +24,16 @@ import (
 // review starts, which runs this program's checkline (walk_test.go).
 func TestMain(m *testing.M) {
 	if filepath.Base(os.Args[0]) == "ssh" {
+		if dir := os.Getenv("FAKE_SSH_UPLOAD"); dir != "" {
+			os.Exit(fakeUpload(dir, os.Args[1:]))
+		}
 		os.Exit(fakeSSH(os.Args[1:]))
+	}
+	if filepath.Base(os.Args[0]) == "attest" {
+		os.Exit(fakeAttest())
+	}
+	if len(os.Args) > 1 && os.Args[1] == checkBuildChild {
+		os.Exit(cli(os.Args[1:], os.Stdout, os.Stderr, os.Exit))
 	}
 	if os.Getenv("VALLEY_TEST_AS_MAIN") != "" {
 		// Run valley's own main, once the test has closed the reader of

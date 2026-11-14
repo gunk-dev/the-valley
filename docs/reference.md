@@ -97,7 +97,7 @@ unset GIT_REPLACE_REF_BASE GIT_GRAFT_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJ
 | `1`       | Command refused or failed (invalid state, failed check, rejected push, missing git config, runtime error, invalid CLI flags in `status`, `ready`, `unready`, `withdraw`, `changes`, `pending`, `rebase`, `plan`, `tail`, `replay` or `help`, or an unknown verb). |
 | `2`       | Invalid `valley knot` or `valley self-update` CLI usage, or bad `VALLEY_NOW` timestamp in `knot` or `plan`.                                                                                                                                                       |
 | `3`       | Plan graph compare-and-set or precondition conflict in `valley knot` (such as concurrent modification of a field without `--force`, a failed `--if <field>=<value>` check, or a claim held by another run).                                                       |
-| `130`     | Interrupted by `SIGINT` or `SIGTERM` during `valley review`, `valley approve`, `valley rebase`, or `valley self-update`.                                                                                                                                          |
+| `130`     | Interrupted by `SIGINT` or `SIGTERM` during `valley review`, `valley approve`, `valley rebase`, `valley checks --build`, or `valley self-update`.                                                                                                                 |
 
 ### `valley ready`
 
@@ -729,6 +729,7 @@ required for the diff between two commits, along with the matched path classes a
 ```sh
 valley checks
 valley checks --names --cost quick
+valley checks --build [--wait <duration>]
 valley checks [--schema <file>] [--instance <dir>] [--project <dir>] [--names [--cost quick|slow] | --json] [<base> [<head>]]
 ```
 
@@ -749,6 +750,42 @@ valley checks [--schema <file>] [--instance <dir>] [--project <dir>] [--names [-
     `cost: "quick"` or `cost: "slow"`.
   - `--json`: Prints the `valley-checks/v1` document ([architecture](architecture.md#policy)) in
     place of the report; it cannot be combined with `--names` or `--cost`.
+  - `--build`: Asks the host's check worker to build the `nix` checks `HEAD` requires, and waits
+    until `origin` holds evidence for every one ([check requests](architecture.md#check-requests)).
+    It takes no flag other than `--wait` and no revision. It derives the checks as the worker does,
+    against `main` as `origin` currently holds it. When no check is required, it passes at once.
+    When `origin` already holds evidence approval would reuse for every check, it files nothing.
+    Otherwise it first deletes any earlier requests from this worktree, each leased on its listed
+    commit. It then files a check request for `HEAD` under `valley.principal`, follows the worker's
+    telemetry (requiring the telemetry `observe` grant) only to know when to reread `origin`, and
+    deletes the request on exit, leased on `HEAD`. Whenever a deletion is not confirmed—such as
+    after a push that did not report success—it prints the leased `git push` command to delete the
+    request. Only one `--build` runs at a time in a worktree, and it exits `130` when interrupted.
+    It has two outcomes:
+    - **passed** (exit `0`): its last read of `origin`'s evidence completes and covers every check.
+    - **not established** (exit `1`, or `130` when interrupted): anything else. It says why it
+      stopped (the time limit, a worker pass that ended, the worker's batch or publish for the tree,
+      telemetry it could not read or that lost records) and prints the `check.result` records the
+      worker wrote for `HEAD`'s tree while it waited. These may belong to any batch for the tree,
+      not this request. For each failed check it prints the escaped, untrusted tail of the worker's
+      build output when `valley telemetry read --source worker --logs` holds it, or the `nix build`
+      command that reproduces it otherwise. Evidence that does not count for a check is treated as
+      no evidence, never a failure.
+  - `--wait <duration>`: With `--build`, the maximum time the whole command takes, as a Go duration
+    such as `30m` (default `2h`). When the limit expires, every program in its process group is
+    killed, the request is deleted within a further 30 seconds, and the outcome is not established.
+    The default outlasts a busy host's queue and one cold build of a large check set; shorten it
+    when a caller would rather rerun than wait.
+  - Limits of `--build`:
+    - A helper that runs in a process group of its own, such as policy evaluation or some git reads,
+      can outlive the time limit; the command still exits at the limit.
+    - If the command itself is killed outright, its request stays on `origin`, and its child process
+      may run on until its reads end.
+    - A request left behind stays until deleted and counts toward the 32 a principal may hold. The
+      next run in the same worktree deletes that worktree's leftovers, but a complete first read of
+      the evidence passes without clearing them. List your own requests with
+      `git ls-remote origin 'refs/the-valley/check-requests/<principal>/*'` and delete one with
+      `git push --force-with-lease=<ref>:<commit> origin :<ref>`.
 - **Behavior:** Reads all added, modified, deleted, renamed (both old and new paths), and copied
   paths from `git diff --no-relative --name-status -M -z <base> <head>`, matches them against
   `policy.classes` (and `policy.unclassified` when any path matches no class), probes whether each
@@ -1445,14 +1482,14 @@ git config --global valley.selfUpdate.repo git@valley.example:the-valley
 git config --global valley.selfUpdate.branch main
 ```
 
-| Git config key             | Scope               | Read by                                                           | Meaning                                                                                                                                                                                                                             |
-| :------------------------- | :------------------ | :---------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `valley.principal`         | repo or global      | `ready`, `unready`, `withdraw`, `rebase`, `knot` (writes), `plan` | The principal name your SSH key authenticates as on the host. Required for writing change records (`owner` / `uploader`) and knots (`created_by`, `author`, commit `Committer`), and used as the default operator in `valley plan`. |
-| `valley.selfUpdate.repo`   | global (`--global`) | `self-update`                                                     | Default repository URL for `valley self-update` when `--repo` is not passed.                                                                                                                                                        |
-| `valley.selfUpdate.branch` | global (`--global`) | `self-update`                                                     | Default branch name for `valley self-update` when `--branch` is not passed (defaults to `main`).                                                                                                                                    |
-| `valley.telemetry`         | repo or global      | `approve`, `review`                                               | `true` records approve's steps and its checks' progress in the telemetry spool and sends them to the host ([The telemetry spool](#the-telemetry-spool)). Off by default.                                                            |
-| `valley.telemetry.remote`  | repo or global      | `telemetry`, `approve`                                            | The remote telemetry is read from and sent to. Defaults to `origin`.                                                                                                                                                                |
-| `pager.diff`, `core.pager` | repo or global      | `review`                                                          | Diff renderer used as `less`'s input preprocessor when `valley review` pages a diff (`git var GIT_PAGER` fallback).                                                                                                                 |
+| Git config key             | Scope               | Read by                                                                             | Meaning                                                                                                                                                                                                                                             |
+| :------------------------- | :------------------ | :---------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `valley.principal`         | repo or global      | `ready`, `unready`, `withdraw`, `rebase`, `knot` (writes), `plan`, `checks --build` | The principal name your SSH key authenticates as on the host. Required for writing change records (`owner` / `uploader`), knots (`created_by`, `author`, commit `Committer`) and check requests, and used as the default operator in `valley plan`. |
+| `valley.selfUpdate.repo`   | global (`--global`) | `self-update`                                                                       | Default repository URL for `valley self-update` when `--repo` is not passed.                                                                                                                                                                        |
+| `valley.selfUpdate.branch` | global (`--global`) | `self-update`                                                                       | Default branch name for `valley self-update` when `--branch` is not passed (defaults to `main`).                                                                                                                                                    |
+| `valley.telemetry`         | repo or global      | `approve`, `review`                                                                 | `true` records approve's steps and its checks' progress in the telemetry spool and sends them to the host ([The telemetry spool](#the-telemetry-spool)). Off by default.                                                                            |
+| `valley.telemetry.remote`  | repo or global      | `telemetry`, `approve`, `checks --build`                                            | The remote telemetry is read from and sent to. Defaults to `origin`.                                                                                                                                                                                |
+| `pager.diff`, `core.pager` | repo or global      | `review`                                                                            | Diff renderer used as `less`'s input preprocessor when `valley review` pages a diff (`git var GIT_PAGER` fallback).                                                                                                                                 |
 
 ### Environment variables
 
@@ -1525,6 +1562,9 @@ git directory:
   check, named by its SHA-256: the checks' version, and the SHA-256 of the note, the landing commit,
   the head, the request name and the signing key, one per line. Nothing prunes it. Each entry is
   under 400 bytes.
+- `<git-dir>/valley-check-request` and `valley-check-request.lock`: The worktree token of the check
+  requests `valley checks --build` files from this worktree, made on first use, and the lock a run
+  holds while it files, waits on, and deletes its request.
 - `<git-common-dir>/valley/handles`: Tab-separated list (`<handle>\t<state>\t<branch>\t<title>`) of
   unlanded `ready` and `draft` changes in the current repository, written by `valley pending` and
   `valley changes` and read by [`completions/_valley`](../completions/_valley).

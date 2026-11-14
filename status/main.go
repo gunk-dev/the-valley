@@ -193,7 +193,12 @@ func run(args []string, stdout, stderr io.Writer, end func(int)) int {
 	case "style":
 		err = runStyle(args, os.Stdin, stdout)
 	case "checks":
+		if buildMode(args) {
+			return runCheckBuild(g, args, stdout, stderr)
+		}
 		err = runChecks(g, args, stdout)
+	case checkBuildChild:
+		return runCheckBuildChild(g, args, stdout, stderr)
 	case "approve":
 		return runApprove(g, args, stdout, stderr, end)
 	case "changes":

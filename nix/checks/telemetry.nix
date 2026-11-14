@@ -25,10 +25,13 @@
 # published, with alice's CLI version and her own timestamps. An approval
 # reusing the worker's evidence beside a local command check, and one
 # reusing everything, are observable too, and so is the integrator's
-# decision. Every command she runs records its verb, its flag names, its
-# exit status, its time and, for pending, its phases, and never an
-# argument's value; with telemetry off it records nothing and writes no
-# spool, and with the host unreachable it prints and exits as it does off.
+# decision. The operator, who observes the worker, asks it for two
+# commits' checks with valley checks --build: one passes, and one whose
+# check fails is not established, with the worker's output for its tree.
+# Every command alice runs records its verb, its flag names, its exit
+# status, its time and, for pending, its phases, and never an argument's
+# value; with telemetry off it records nothing and writes no spool, and
+# with the host unreachable it prints and exits as it does off.
 #
 # Last, outage: with the collector stopped, and with the telemetry remote
 # unreachable, approvals and pushes still complete, within a bounded
@@ -586,6 +589,27 @@ in
           )
           decision = records(observe("read --source=integrator"), type="decision")[-1]
           assert decision["project"] and decision["data"]["outcome"] and "duration_ms" in decision["data"], decision
+
+      with subtest("checks --build passes once origin holds every check's evidence, and otherwise says why not"):
+          # Two commits ask at once, from two worktrees, and one worker pass
+          # builds both. The first passes. The second's slow check fails, so
+          # its outcome is not established, with the worker's records and
+          # build output for its tree.
+          requests = f"{git} -C /srv/git/project.git for-each-ref refs/the-valley/check-requests/"
+          host.succeed("git clone --quiet git@localhost:project.git /root/project && git -C /root/project config valley.principal operator")
+          for branch, cp in [("asked", ""), ("asked-broken", "cp ${broken} slow.sh && ")]:
+              host.succeed(f"git -C /root/project worktree add --quiet -b {branch} /root/{branch} origin/main && cd /root/{branch} && {cp}"
+                           f"echo {branch} > {branch}.txt && git add -A && {commit} -m {branch}")
+              asking = shlex.quote(f"cd /root/{branch} && valley checks --build > /tmp/{branch}.out 2>&1; echo $? > /tmp/{branch}.status")
+              host.succeed(f"setsid -f sh -c {asking} < /dev/null > /dev/null 2>&1")
+          host.wait_until_succeeds(f"test $({requests}operator/ | wc -l) = 2", timeout=120)
+          host.execute("systemctl start valley-worker.service")
+          host.wait_until_succeeds("test -s /tmp/asked.status && test -s /tmp/asked-broken.status", timeout=300)
+          passed, failed = host.succeed("cat /tmp/asked.out"), host.succeed("cat /tmp/asked-broken.out")
+          assert host.succeed("cat /tmp/asked.status").strip() == "0" and "2 checks passed" in passed, passed
+          assert host.succeed("cat /tmp/asked-broken.status").strip() == "1", failed
+          assert "not established" in failed and "slow  failed" in failed and "| broken check says why" in failed, failed
+          assert not host.succeed(requests), "a request was left on origin"
 
       with subtest("approval and pushes go on when telemetry cannot be reached, and each run's records go only where its run began"):
           def timed_approve(branch, path):

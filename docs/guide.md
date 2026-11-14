@@ -122,6 +122,19 @@ repository, for example:
 nix build --no-link .#checks.x86_64-linux.prose-format -L
 ```
 
+Or let the host's check worker build them. With a key that holds the telemetry `observe` grant:
+
+```sh
+valley checks --build
+```
+
+It asks the worker to build the `nix` checks `HEAD` requires and waits up to two hours (`--wait`).
+It passes (exit 0) once `origin` holds evidence for every check. Otherwise (exit 1) it says why it
+stopped and shows what the worker recorded for this tree: each check's result and, for any failed
+check, its build output or the `nix build` command that reproduces it. Run it again, or read more
+with `valley telemetry read --source worker --logs`. Approval reuses the evidence the worker
+publishes once the change is marked `ready` at the same tree.
+
 For this new, unpushed commit, stamp a stable Change ID and publish the first version:
 
 ```sh

@@ -8,7 +8,7 @@ Authoring and updating changes:
   unready      pause a ready change by marking it a draft
   withdraw     mark a ready or draft change withdrawn
   rebase       rebase a change and its stack onto origin/main
-  checks       print the checks the composed policy requires of a diff
+  checks       print the checks a diff requires, or ask the worker to build them
 
 Reviewing, approving, and inspecting changes:
   pending      list what needs an approval, in landing order, and what moves

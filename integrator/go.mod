@@ -3,6 +3,7 @@ module the-valley/integrator
 go 1.24
 
 require (
+	the-valley/approval v0.0.0
 	the-valley/change v0.0.0
 	the-valley/composed v0.0.0
 	the-valley/derive v0.0.0
@@ -17,10 +18,12 @@ require (
 // read one composition of the policy, and the deriver (../derive) is the
 // one reading of what that policy requires of a diff. The signed-note
 // format (../note) is the one reading of a verifier key, which
-// publish-signers holds the known-signers file to. A decision's timing is stored as a telemetry
-// record (../telemetry) the collector serves. All five live in this
-// repository and are never fetched.
+// publish-signers holds the known-signers file to. The approval format
+// (../approval) defines the instance identity publish-signers derives. A
+// decision's timing is stored as a telemetry record (../telemetry) the
+// collector serves. All six live in this repository and are never fetched.
 replace (
+	the-valley/approval => ../approval
 	the-valley/change => ../change
 	the-valley/composed => ../composed
 	the-valley/derive => ../derive

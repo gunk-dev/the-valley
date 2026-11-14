@@ -249,11 +249,14 @@ said 'the known-signers file does not read'
 [ -z "$(git -C "$instance" for-each-ref refs/the-valley/signers)" ] || fail 'a refused run published something'
 
 # Written on disk, as the host's publisher writes it: one tree holding the
-# controller's signers file and the name it signs under.
+# controller's signers file and the name it signs under, beside the
+# approval signers files, empty on a host that compiles no registry, and
+# the instance's identity. The clients below read it as they read a tree
+# of the first two alone.
 "${publish[@]}" > "$w/out" 2> "$w/err" || fail 'the publisher failed'
 published="$(git -C "$instance" rev-parse refs/the-valley/signers)"
 [ "$(git -C "$instance" cat-file -t "$published")" = tree ] || fail 'the publication is not a tree'
-[ "$(git -C "$instance" ls-tree --name-only "$published" | tr '\n' ' ')" = "integrator-name known-signers " ] \
+[ "$(git -C "$instance" ls-tree --name-only "$published" | tr '\n' ' ')" = "approval-signers approval-signers-hardware instance-id integrator-name known-signers " ] \
   || fail "the publication holds $(git -C "$instance" ls-tree --name-only "$published")"
 [ "$(git -C "$instance" cat-file blob "$published:integrator-name")" = "$name" ] \
   || fail 'the publication does not name the signer the controller signs under'
@@ -418,7 +421,8 @@ expect "$second" landed-recorded 'after the rotated signers are published'
 # Two runs at once take turns, so an older run cannot undo the rotation.
 # The older run reads the signers file as it was before the rotation. It
 # reads it from a FIFO, so it stops mid-read, holding the lock, until the
-# test writes the file and closes the FIFO. The newer run, the host's,
+# test writes the file and closes the FIFO. Once it has the FIFO open, the
+# path holds that file, which the run reads again after it publishes. The newer run, the host's,
 # reads the rotated file. It must wait for the older run's lock rather
 # than publish first, so it publishes last and the rotation stands.
 # Without the lock, the newer run would publish while the older one
@@ -451,6 +455,7 @@ until_flocked "$older" holds "the older run held no lock while it read the signe
 # newer run is not given the FIFO, which would keep the older run's read
 # from ending.
 exec 3> "$w/stale"
+rm "$w/stale" && cp "$w/before-rotation" "$w/stale"
 "${publish[@]}" > "$w/newer.out" 2>&1 3>&- &
 newer=$!
 until_flocked "$newer" waits "the newer run did not wait for the older run: $(cat "$w/newer.out")"
@@ -539,7 +544,7 @@ restricted_list="$(list_of "$restrictedPublishCommand")"
   || fail "the rendered signer projects file holds: $(cat "$restricted_list")"
 publish_as "$restrictedPublishCommand"
 listed="$(git -C "$instance" rev-parse refs/the-valley/signers)"
-[ "$(names "$listed")" = "integrator-name known-signers signer-projects " ] \
+[ "$(names "$listed")" = "approval-signers approval-signers-hardware instance-id integrator-name known-signers signer-projects " ] \
   || fail "the publication of a restricting host holds $(names "$listed")"
 git -C "$instance" cat-file blob "$listed:signer-projects" | cmp -s - "$restricted_list" \
   || fail 'the publication does not hold the signer projects file the controllers read'
@@ -567,7 +572,7 @@ said "the signer projects file $w/named-twice does not read"
 
 # A host that restricts nobody publishes no list.
 "${publish[@]}" > "$w/out" 2> "$w/err" || fail 'the publisher failed once the list was gone'
-[ "$(names refs/the-valley/signers)" = "integrator-name known-signers " ] \
+[ "$(names refs/the-valley/signers)" = "approval-signers approval-signers-hardware instance-id integrator-name known-signers " ] \
   || fail "the list outlived the restriction: the publication holds $(names refs/the-valley/signers)"
 
 touch "$out"

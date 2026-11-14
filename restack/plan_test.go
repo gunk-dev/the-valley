@@ -125,6 +125,7 @@ func TestOnlyACurrentStaleOrRejectReleases(t *testing.T) {
 		{"failed", rebase.Outcome{Head: req, Tip: tip, Evidence: ev, Decision: "failed", FailedAt: "2026-10-18T00:00:00Z"}, true, true, false},
 		{"refused", cur("refused-not-ready"), true, true, false},
 		{"refused merge", cur("refused-merge"), true, true, false},
+		{"refused approval", cur("refused-approval"), true, true, false},
 		{"land with the request still filed", cur("land"), true, true, false},
 	} {
 		current, releases, why := Currency(tc.o, tc.found, req, tip, ev)

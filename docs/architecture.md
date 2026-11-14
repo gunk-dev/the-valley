@@ -174,30 +174,58 @@ verifies no transfer statement, and a publication whose `signer-projects` does n
 given as `--signer-projects`. Approval reads the published file too: it reuses a note only when one
 of its signers counts in the project (`status/coverage.go`).
 
+The publication also says who may approve, in which instance (`implemented`). `approval-signers` and
+`approval-signers-hardware` are the [approval signers files](reference.md#approval-signers-files)
+the registry compiler writes. A host that compiles no registry publishes both empty, so a
+publication keeps no unconfigured approval key, and one file never stands in for the other.
+`instance-id` is the instance identity that approval statements name, derived from the root commits
+of the instance repository's `refs/heads/main`. A clone of the instance shares it, and integrating
+an unrelated root changes it. A repository with no `main` yet publishes no `instance-id`. The
+publication informs clients. A gate that enforces approvals reads the host's own files, never the
+publication (`not built`).
+
 The publisher is `integrator publish-signers` (`integrator/signers.go`). The oneshot service
 `valley-signers` runs it as git (`nix/valley-host.nix`). A host renders the service when the
 integrator is enabled and the host serves the instance repository (`integrator.instanceProject`).
 The publisher is given the same signers file, the same `--name` and the same `--signer-projects` as
-the controllers. When `integrator.signingName` is unset, neither is given a name. Both then take the
-integrator's default, `<hostname>/attestations`, computed by the same code on the same host. The
-service's sandbox lets it write the instance repository and nothing else.
+the controllers, and, with `identity.enable` on, the compiler's two approval signers files. When
+`integrator.signingName` is unset, neither is given a name. Both then take the integrator's default,
+`<hostname>/attestations`, computed by the same code on the same host. The service's sandbox lets it
+write the instance repository and nothing else.
 
 The service runs at boot and on activation, after `valley-init` and after the registry compiler when
 there is one. The signer projects file is rendered into the Nix store, so a changed list is a
 changed command for the service, which activation runs again. A path unit, `valley-signers.path`,
-runs it again whenever the signers file changes, as it does when a compilation replaces the file. A
-run that would publish what is already there writes nothing. A run that changes the publication
-moves the ref with a compare-and-swap.
+starts it when a file it publishes from changes: the signers file, either approval signers file, or
+the instance repository's `refs/heads/main`, loose or in `packed-refs`. A run that would publish
+what is already there writes nothing. A run that changes the publication moves the ref with a
+compare-and-swap.
 
-Two runs at once take turns. Each run holds a lock in the instance repository from reading the
-signers file to moving the ref. So the later run reads the file after the earlier one has published,
-and a run that read an older file cannot publish it over a newer one.
+After each publication, a run reads every input again and publishes again until a reading matches
+what it published (`implemented`, checked by `integrator-unit`). It makes at most one publication
+more than the inputs that can change: the signers file, `main`, and each other file it is given. A
+change made up to a run's last reading, such as a compilation replacing its files one at a time or a
+landing that brings another root into `main`, is published by that run. In between, the publication
+can pair an older `approval-signers` with a newer `approval-signers-hardware`, and the next reading
+corrects it. A change made after the last reading and before the run exits is not published by that
+run, and it starts no other: systemd holds no watch on the inputs while the service runs, and when
+the service ends it does not see that an existing file was replaced. The next change to a published
+input, or the next move of `main`, starts the run that publishes it. A run whose reading fails, or
+whose inputs are still changing after its last round, exits nonzero, and the unit shows failed;
+nothing retries it before that next change. Until then a client can show a revoked key as valid. The
+publication authorizes nothing, so no landing depends on it (see
+[What a client trusts to read a landing](security.md#what-a-client-trusts-to-read-a-landing)).
 
-A run that cannot read the signers file, or reads one that is not a list of verifier keys, fails and
-leaves the last publication in place. A file that holds no key under the signing name is published
-anyway, because it is what the controllers use. That includes a file with no key at all, which is
-what the registry compiles to once every signing key is revoked. Clients then stop verifying with
-the revoked keys. The run warns that no client can verify a statement with the file.
+Two runs at once take turns. Each run holds a lock in the instance repository from its first reading
+to its last. So the later run reads the files after the earlier one has published, and a run that
+read older files cannot publish them over newer ones.
+
+A run that cannot read a file it is given, reads one that is not a list of verifier keys, or finds
+the instance repository shallow, fails and leaves the last publication in place. A file with no key
+at all, which is what the registry compiles to once every signing or approval key is revoked, is
+published anyway, so clients stop verifying with the revoked keys. A `known-signers` file with no
+key under the signing name is published too, because it is what the controllers use, and the run
+warns that no client can verify a statement with it.
 
 Only the host's machinery writes the ref, never a push. The hook refuses every push to a
 `refs/the-valley/*` ref it does not name. On the host, the publisher writes the ref. The integrator
@@ -259,8 +287,9 @@ the plan graph by `knots-e2e`.
 | Protected refs (default `refs/heads/main`)                                    | Principals in `protection.writers` (default empty)                                               | The integrator moves them on disk, so it needs no place in `protection.writers`.                                                                                                                                                                                                                                                                          |
 | `refs/the-valley/attestations/<tree>/<key-hash>`                              | Any key                                                                                          | Create, and add notes. The ref must name a tree of notes within size bounds, and each note must verify under a known signer and be about that tree. An update keeps every note the ref holds and adds one; no push deletes one (`valleyhook/attestation.go`).                                                                                             |
 | `refs/the-valley/integration-requests/<target>/<c>`                           | Principals with the `approve` grant (also accepted as `request`)                                 | Create, update and delete. A change with a record is requested as `c-<change-id>` (see [The integrator](#the-integrator)).                                                                                                                                                                                                                                |
+| `refs/the-valley/approvals/main/c-<change-id>`                                | Principals with the `approve` grant (also accepted as `request`)                                 | Create, update and delete. One blob holding an approval note about that change and `main`, at most 2048 bytes; the hook checks its form and not its key (`valleyhook/approval.go`). Nothing reads it to decide a landing; gating landings on approvals is `not built`.                                                                                    |
 | `refs/the-valley/check-requests/<principal>/<worktree>/<attempt>`             | The named principal `<principal>`; `approve` holders also delete                                 | A commit whose required checks the check worker builds, outside any change. Create, update and delete. The worktree and the attempt are 16 lowercase hexadecimal digits each, and a principal holds at most 32 in a repository, a soft bound. Nothing reads it to decide a landing (see [Check requests](#check-requests), `valleyhook/checkrequest.go`). |
-| `refs/the-valley/changes/main/<change-id>`                                    | Any named principal creates; the owner, `approve` or `restack` holders update; `approve` deletes | A change record. The hook allows only the transitions in [Change records](#change-records) (`valleyhook/record.go`). The integrator reads it to refuse.                                                                                                                                                                                                   |
+| `refs/the-valley/changes/main/<change-id>`                                    | Any named principal creates; the owner, `approve` or `restack` holders update; `approve` deletes | A change record. The hook allows only the transitions in [Change records](#change-records) (`valleyhook/record.go`), and no delete in a project that sets `retainChangeRecords`. The integrator reads it to refuse.                                                                                                                                       |
 | `refs/the-valley/restack/main/<change-id>`                                    | Principals with the `restack` grant                                                              | A restack report about a change the repository records. Created and extended, never deleted (see [Restack reports](#restack-reports), `valleyhook/report.go`).                                                                                                                                                                                            |
 | `refs/the-valley/knots`                                                       | Any named principal                                                                              | The plan graph, that name exactly. One commit on the tip that keeps the graph valid; never deleted (see [The plan graph](#the-plan-graph), `valleyhook/knots.go`).                                                                                                                                                                                        |
 | `refs/the-valley/projects` (instance repository)                              | Nobody                                                                                           | `valley-init` writes it on disk: the host's project list (see [valley-init](#valley-init-and-the-push-hold)).                                                                                                                                                                                                                                             |
@@ -315,9 +344,16 @@ and can leave an old request in place. So `valley withdraw` warns when origin ho
 the change, and `valley unready` notes one. The request is looked for under `c-<change-id>`, and
 under the name a branch's request has, for the branch of each of the change's versions. Only an
 `approve` holder may touch a request ref, so the warning says the operator must drop it if the
-change is readied first. Approvals have no records of their own on origin: `approval` writes, signs,
-and verifies `the-valley/approval/v1` statements (`approval/statement.go`), while storing approvals
-and gating landings on them are **not built**.
+change is readied first.
+
+`approval` writes, signs, and verifies `the-valley/approval/v1` statements
+(`approval/statement.go`). The hook admits one approval note per change at
+`refs/the-valley/approvals/main/c-<change-id>`, from an `approve` holder only (`implemented`). A
+client publishing an approval beside its request must lease each ref: a create against no ref, a
+replacement or a delete against the value it read. Because the hook cannot see leases, and an atomic
+push of both refs does not keep them together afterwards, a gate must compare what the approval
+names with the request and read both in its landing transaction. Signing approvals in
+`valley approve` and gating landings on them are **not built**.
 
 The ref `refs/the-valley/changes/main/<change-id>` points at a record commit. The commit's tree
 holds one entry, `record.json`, as a plain file. Its schema is `valley-change-record/v1`, read by
@@ -361,7 +397,7 @@ parents, `old` is the ref's value before the push, and `h` is the head of the ve
 | Ready again, same version | The owner or an `approve` holder | `[old]`    | Everything as in `old`, except `state` goes from `draft` or `withdrawn` to `ready` and `seq` goes up by one. `active` stays.                                                                        |
 | Ready again, new version  | The owner or an `approve` holder | `[old, h]` | As for a new version, from `draft` or `withdrawn`.                                                                                                                                                  |
 | Restack                   | A `restack` holder               | `[old, h]` | As for a new version, from `ready` only. The new version keeps the `branch` and `title` of the version that was active.                                                                             |
-| Delete                    | An `approve` holder              | —          | Allowed, to keep storage tidy.                                                                                                                                                                      |
+| Delete                    | An `approve` holder              | —          | Allowed, to keep storage tidy, unless the project sets `retainChangeRecords`.                                                                                                                       |
 
 The restack row applies only when the `restack` grant is what authorises the write: the pusher
 neither owns the change nor holds `approve`. Such a pusher may write that row and no other. The hook
@@ -371,6 +407,13 @@ owner, target, change ID, branch or title, and an uploader other than the pusher
 may not delete a record. A `restack` holder that owns the change, or also holds `approve`, writes by
 the other rows. The hook cannot tell a submitted change from a ready one, because a landed change
 can stay `ready`; leaving submitted changes alone is the restacker's own selection.
+
+A project that sets `retainChangeRecords` in its declaration (`deployment choice`) keeps every
+record: the hook refuses a delete from anyone (`implemented`). The record's ref then holds the
+change's whole history, showing whether it stayed ready or was withdrawn or unreadied in between.
+When records can be deleted and recreated, `seq` alone cannot show that. A gate that enforces
+approvals needs that history (`not built`). Retained records count toward the repository's bound on
+records, and nothing removes them.
 
 The hook refuses every other write. That includes a key that names no principal, extra parents,
 parents in another order, a head that is not a commit, and a tree of another shape. It also includes
@@ -2230,8 +2273,8 @@ boundaries.
 
 When asked, the compiler also writes the approval keys and the touch-always hardware approval keys
 of human principals holding an `approve` grant (see
-[Approval signers files](reference.md#approval-signers-files)). The host module does not write them,
-and no gate reads them.
+[Approval signers files](reference.md#approval-signers-files)). The host module has it write both,
+and the signers publication publishes them; no gate reads them.
 
 The compiler refuses a registry where no principal holds a registry grant, where a key's hardware
 attestation does not verify, where one key pushes for two principals, where a pushing key matches a
@@ -5164,25 +5207,25 @@ supplies the host configuration, the project declaration and the secrets (**depl
 
 ## Not deployed or not wired yet
 
-| What                                         | State                                                                                                                                                                                                                                                                              |
-| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sigverify`                                  | On `main` and tested. Nothing calls it.                                                                                                                                                                                                                                            |
-| Hardware-backed keys in the registry         | `identity compile` verifies YubiKey PIV attestations and writes `approval-signers-hardware`; `approval sign --piv` signs statements on a YubiKey PIV slot. No host service or gate uses them.                                                                                      |
-| SSHSIG evidence                              | Attestations use the signed-note format.                                                                                                                                                                                                                                           |
-| Approvals                                    | `approval` writes, signs, and verifies `the-valley/approval/v1` statements. The integrator checks evidence only, and nothing stores or gates on approvals.                                                                                                                         |
-| Approval carry                               | `valley checks` reports a change's carry mode, and `valley review` keeps a reviewer's answer across a restack during review when the mode allows it. Carrying a filed approval is not built.                                                                                       |
-| The restacker                                | The host module runs it on every integrated project, or on the projects the host lists (`services.valley.restacker`). It is off by default, and a deployment registers its principal.                                                                                              |
-| The check worker                             | The host module runs it on a timer (`services.valley.worker`). It is off by default.                                                                                                                                                                                               |
-| The build slice                              | `services.valley.buildSlice` caps every build of the nix daemon. It is off by default.                                                                                                                                                                                             |
-| The web server and export                    | `valley-web-publish` uploads exports, `valley-web-receive` activates them, and `valley-web` serves them (`web/`). `services.valley.webReceiver` and the `valley-web-image` package run the receiver and `valley-web` on an edge. Whether an edge runs them is a deployment choice. |
-| Named readers at the edge                    | `valley-web-publish` exports each project a named principal may read, with that principal in its authorization. `valley-web` signs readers in and serves each session as its principal only when started with `--origin`. Whether an edge sets an origin is a deployment choice.   |
-| Withdrawal without the instance and registry | The policy path withdraws a project without reading any content, but it signs nothing when it cannot read the instance repository or the identity registry. A project whose own policy cannot be read keeps its stored readers that a grant still covers.                          |
-| Filesystem sandbox for the web publisher     | The unit's filesystem is read-only and named key paths are hidden, but the unit can read the host's other repositories, not only the declared ones.                                                                                                                                |
-| Clones from the edge                         | `valley-web` serves no git clone route.                                                                                                                                                                                                                                            |
-| Read grants over ssh                         | sshd lets every admitted key fetch every repository (`valleyhook/shell.go`). Read grants govern only web exports.                                                                                                                                                                  |
-| Reviews                                      | `review/` defines the record and its history. The hook refuses every push to them.                                                                                                                                                                                                 |
-| A crash-safe landing ledger                  | Landing is one `git update-ref --stdin` transaction, though with the files ref backend a crash inside git's commit phase can leave some refs moved and others not (`integrator/refs.go`).                                                                                          |
-| Registry compile on an instance landing      | The compiler runs on its 5-minute timer only.                                                                                                                                                                                                                                      |
-| Bus authentication                           | The bus listens on localhost with no authentication.                                                                                                                                                                                                                               |
-| Telemetry from remote components             | The collector takes reports from a remote component's reporter principal. No component of the-valley sends them; a web receiver is observed only when it runs on the host.                                                                                                         |
-| When the host accepted a request ref         | The integrator records when its process first listed the request at its head and the elapsed time until judging began. It does not record when the host accepted the ref or observations from an earlier process.                                                                  |
+| What                                         | State                                                                                                                                                                                                                                                                                      |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `sigverify`                                  | On `main` and tested. Nothing calls it.                                                                                                                                                                                                                                                    |
+| Hardware-backed keys in the registry         | `identity compile` verifies YubiKey PIV attestations and writes `approval-signers-hardware`, and the signers publication publishes it; `approval sign --piv` signs statements on a YubiKey PIV slot. No gate uses them.                                                                    |
+| SSHSIG evidence                              | Attestations use the signed-note format.                                                                                                                                                                                                                                                   |
+| Approvals                                    | `approval` writes, signs, and verifies `the-valley/approval/v1` statements, and the hook admits one per change at `refs/the-valley/approvals/main/c-<change-id>`. `valley status` reads a `refused-approval` outcome. The integrator checks evidence only, and nothing gates on approvals. |
+| Approval carry                               | `valley checks` reports a change's carry mode, and `valley review` keeps a reviewer's answer across a restack during review when the mode allows it. Carrying a filed approval is not built.                                                                                               |
+| The restacker                                | The host module runs it on every integrated project, or on the projects the host lists (`services.valley.restacker`). It is off by default, and a deployment registers its principal.                                                                                                      |
+| The check worker                             | The host module runs it on a timer (`services.valley.worker`). It is off by default.                                                                                                                                                                                                       |
+| The build slice                              | `services.valley.buildSlice` caps every build of the nix daemon. It is off by default.                                                                                                                                                                                                     |
+| The web server and export                    | `valley-web-publish` uploads exports, `valley-web-receive` activates them, and `valley-web` serves them (`web/`). `services.valley.webReceiver` and the `valley-web-image` package run the receiver and `valley-web` on an edge. Whether an edge runs them is a deployment choice.         |
+| Named readers at the edge                    | `valley-web-publish` exports each project a named principal may read, with that principal in its authorization. `valley-web` signs readers in and serves each session as its principal only when started with `--origin`. Whether an edge sets an origin is a deployment choice.           |
+| Withdrawal without the instance and registry | The policy path withdraws a project without reading any content, but it signs nothing when it cannot read the instance repository or the identity registry. A project whose own policy cannot be read keeps its stored readers that a grant still covers.                                  |
+| Filesystem sandbox for the web publisher     | The unit's filesystem is read-only and named key paths are hidden, but the unit can read the host's other repositories, not only the declared ones.                                                                                                                                        |
+| Clones from the edge                         | `valley-web` serves no git clone route.                                                                                                                                                                                                                                                    |
+| Read grants over ssh                         | sshd lets every admitted key fetch every repository (`valleyhook/shell.go`). Read grants govern only web exports.                                                                                                                                                                          |
+| Reviews                                      | `review/` defines the record and its history. The hook refuses every push to them.                                                                                                                                                                                                         |
+| A crash-safe landing ledger                  | Landing is one `git update-ref --stdin` transaction, though with the files ref backend a crash inside git's commit phase can leave some refs moved and others not (`integrator/refs.go`).                                                                                                  |
+| Registry compile on an instance landing      | The compiler runs on its 5-minute timer only.                                                                                                                                                                                                                                              |
+| Bus authentication                           | The bus listens on localhost with no authentication.                                                                                                                                                                                                                                       |
+| Telemetry from remote components             | The collector takes reports from a remote component's reporter principal. No component of the-valley sends them; a web receiver is observed only when it runs on the host.                                                                                                                 |
+| When the host accepted a request ref         | The integrator records when its process first listed the request at its head and the elapsed time until judging began. It does not record when the host accepted the ref or observations from an earlier process.                                                                          |

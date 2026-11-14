@@ -430,6 +430,40 @@ func TestOnlyTheOperatorDeletesARecord(t *testing.T) {
 	r.expect("a delete by an untagged key", "", recordRef, old, zeroID, "a key that names no principal")
 }
 
+// A project that retains its change records refuses every delete of one,
+// even by a holder of the approve grant, and every other row stands. The
+// hook reads the setting from the push policy under its exact key.
+func TestARetainingProjectKeepsEveryRecord(t *testing.T) {
+	r := newRecords(t)
+	r.p.push.RetainChangeRecords = true
+	h, h2 := r.source("one"), r.source("two")
+	rec := first("alice", h)
+	old := r.write(encode(t, rec), h)
+	retains := "project retains its change records (retainChangeRecords), so no push deletes one, whatever grant the pusher holds"
+	r.expect("a delete by an approve holder", "operator", recordRef, old, zeroID, retains)
+	r.expect("a delete by the owner", "alice", recordRef, old, zeroID, retains)
+	r.expect("a new version", "alice", recordRef, old, r.write(encode(t, next(rec, "alice", h2)), old, h2), "")
+	r.expect("a withdrawal", "operator", recordRef, old, r.write(encode(t, withdrawn(rec)), old), "")
+
+	dir := t.TempDir()
+	policyFile, grantsFile := filepath.Join(dir, "policy.json"), filepath.Join(dir, "grants")
+	if err := os.WriteFile(grantsFile, []byte("approve operator\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for retain, refused := range map[string]bool{"true": true, "false": false} {
+		policy := `{"refs": [], "writers": [], "grants": {}, "retainChangeRecords": ` + retain + `}`
+		if err := os.WriteFile(policyFile, []byte(policy), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var stderr bytes.Buffer
+		code := preReceive([]string{"--project", "project", "--policy", policyFile, "--grants", grantsFile, "--principal", "operator"},
+			strings.NewReader(old+" "+zeroID+" "+recordRef+"\n"), &stderr, gitRepository{})
+		if (code != 0) != refused || refused && !strings.Contains(stderr.String(), retains) {
+			t.Errorf("a delete under retainChangeRecords %s: exit %d, %q", retain, code, stderr.String())
+		}
+	}
+}
+
 // The bounds about a push as a whole are checked by preReceive, before
 // any record is read.
 func TestAPushIsBoundInTheRecordsItWrites(t *testing.T) {
@@ -534,6 +568,10 @@ func (u unreadable) record(string) (fileCommit, error) {
 func (u unreadable) report(string) (fileCommit, error) {
 	u.t.Error("a report was read")
 	return fileCommit{}, errors.New("unread")
+}
+func (u unreadable) approval(string) ([]byte, error) {
+	u.t.Error("an approval was read")
+	return nil, errors.New("unread")
 }
 func (u unreadable) hasRecord(string) (bool, error) {
 	u.t.Error("the records were read")

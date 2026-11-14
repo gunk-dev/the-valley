@@ -65,6 +65,14 @@ import "strings"
 	// to it unchanged.
 	protection?: #Protection
 
+	// Whether the project keeps every change record it holds. True, no
+	// push deletes a record, whatever grant the pusher holds, so a
+	// record's history shows whether a change stayed ready or was
+	// withdrawn or unreadied in between. Retained records count against
+	// the repository's bound on change records, and nothing removes them.
+	// False by default: a holder of the approve grant may delete a record.
+	retainChangeRecords: bool | *false
+
 	// Named grants, each opening ref patterns the push policy closes by
 	// default to the principals it names. A signed release tag pushed by a
 	// person is the case they exist for: tags take no push except through

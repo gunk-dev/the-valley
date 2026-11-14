@@ -372,7 +372,7 @@ func (s *status) settle(g git, refs map[string]string) error {
 // what the integrator compares to decide whether to judge a request again.
 type memo struct {
 	head, tip, evidence string
-	decision            string // land, stale, reject, refused-not-ready, refused-merge, voided-withdrawn, failed, or unknown
+	decision            string // land, stale, reject, refused-not-ready, refused-merge, refused-approval, voided-withdrawn, failed, or unknown
 	failedAt            string // set for failed alone
 }
 
@@ -424,7 +424,7 @@ func decide(g git, s *status, evidence string) string {
 		return "stale"
 	case "reject":
 		return "rejected"
-	case "refused-not-ready", "refused-merge":
+	case "refused-not-ready", "refused-merge", "refused-approval":
 		return decision
 	case "voided-withdrawn":
 		// The request the integrator voided is gone, so one that stands

@@ -77,6 +77,8 @@ func writeHuman(g git, s *status, w io.Writer) int {
 	case "refused-merge":
 		p("the integrator refused to land it, because its commits from the merge base with main include a merge.\n")
 		p("A change is a line of commits. Make one without the merge, and approve that head.\n")
+	case "refused-approval":
+		p("the integrator refused to land it, because it found no approval of this head that it accepts.\n")
 	case "failed":
 		p("the integrator failed while processing the request (%s).\n", s.memo.failedAt)
 		p("This does not prove that nothing landed; recording can fail after main advances.\n")

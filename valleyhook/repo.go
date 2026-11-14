@@ -39,6 +39,9 @@ type repository interface {
 	// report reads the restack report commit id names (report.go) the
 	// same way: its parents, and the report.json its tree holds.
 	report(id string) (fileCommit, error)
+	// approval reads the approval note blob id names (approval.go), or
+	// returns an error saying why id is not such a blob.
+	approval(id string) ([]byte, error)
 	// hasRecord reports whether the repository holds a record of the
 	// change with the ID given now.
 	hasRecord(id string) (bool, error)

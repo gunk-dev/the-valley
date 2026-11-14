@@ -169,7 +169,7 @@ func (gitRepository) records() (int, error) {
 //	re-ready     owner or approve holder P = [old]   draft or withdrawn → ready
 //	withdraw     owner or approve holder P = [old]   ready or draft → withdrawn
 //	restack      restack holder          P = [old, h] ready → ready
-//	delete       approve holder          —
+//	delete       approve holder          —   not when the project retains its records
 //
 // A new version always leaves the change ready, from whatever state it
 // was in. A record whose one parent is old changes the state and the seq
@@ -192,6 +192,9 @@ func (p policy) checkRecord(principal string, u update) (verb, why string) {
 	}
 	switch {
 	case isZero(u.new):
+		if p.push.RetainChangeRecords {
+			return "delete", fmt.Sprintf("%s retains its change records (retainChangeRecords), so no push deletes one, whatever grant the pusher holds", p.project)
+		}
 		if !p.grants.holds(principal, grantApprove) {
 			return "delete", fmt.Sprintf("only a principal holding the %s may delete a change record, and %s holds none", approveGrant, principal)
 		}

@@ -239,6 +239,12 @@ let
   # The grants the pre-receive hook checks, as the registry names them.
   identityGrants = "${identityStateDir}/grants";
 
+  # The approval signers files: the keys of every approval key, and of the
+  # hardware ones. Nothing on the host enforces approvals with them yet;
+  # the signers publication publishes both.
+  identityApprovalSigners = "${identityStateDir}/approval-signers";
+  identityApprovalHardware = "${identityStateDir}/approval-signers-hardware";
+
   # The compiled authorized keys. sshd reads them for the git user alone:
   # the git user's Match block below names the files its keys come from.
   identityAuthorizedKeys = "${identityStateDir}/authorized_keys.${cfg.user}";
@@ -251,6 +257,8 @@ let
     "--known-signers ${identityKnownSigners}"
     "--authorized-keys ${identityAuthorizedKeys}"
     "--grants ${identityGrants}"
+    "--approval-signers ${identityApprovalSigners}"
+    "--approval-signers-hardware ${identityApprovalHardware}"
     "--declared-keys ${declaredKeysFile}"
   ];
 
@@ -284,6 +292,11 @@ let
   # code on the same host, so what is published is what the controllers use.
   # A host publishes it while the integrator runs and the host serves the
   # instance repository; any other host publishes nothing.
+  #
+  # Beside them, who may approve: the compiler's two approval signers files
+  # when the registry machinery is on, and empty files otherwise, since no
+  # other source of approval keys exists. The publisher also derives the
+  # instance's identity from the instance repository's main.
   publishesSigners = cfg.integrator.enable && instanceRepo != null;
   signersCommand = lib.concatStringsSep " " (
     [
@@ -293,8 +306,28 @@ let
     ]
     ++ lib.optional (cfg.integrator.signingName != null) "--name ${cfg.integrator.signingName}"
     ++ lib.optional (signerProjects != null) "--signer-projects ${signerProjects}"
+    ++ lib.optionals cfg.identity.enable [
+      "--approval-signers ${identityApprovalSigners}"
+      "--approval-signers-hardware ${identityApprovalHardware}"
+    ]
     ++ lib.optional cfg.worker.enable "--wake ${workerWakeDir}"
   );
+
+  # Every file a publication is read from, which the path unit watches: the
+  # signers and approval files, and the instance repository's main, which
+  # the identity is derived from. git moves main by writing its loose ref,
+  # and pack-refs moves it into packed-refs, so both are watched.
+  signersInputs = [
+    knownSigners
+  ]
+  ++ lib.optionals cfg.identity.enable [
+    identityApprovalSigners
+    identityApprovalHardware
+  ]
+  ++ [
+    "${toString instanceRepo}/refs/heads/main"
+    "${toString instanceRepo}/packed-refs"
+  ];
 
   # The check worker (status/worker.go), as this flake packages it, and the
   # attest it signs with.
@@ -1099,28 +1132,35 @@ let
   # that names no such keys accepts no attestation at all.
   hookVerifiers = lib.optional (knownSigners != "") knownSigners;
 
-  # What a project declares about pushes, as valleyhook reads it: the
+  # What each project declares about pushes, as valleyhook reads it: the
   # protected refs and their writers, empty for a project that declares no
-  # protection, and the project's named grants.
+  # protection, and the project's named grants. A project that retains its
+  # change records says so too; one that does not leaves the key out, and
+  # valleyhook reads it as false.
+  pushPolicies = lib.mapAttrs (
+    _: p:
+    {
+      refs = p.protection.refs or [ ];
+      writers = p.protection.writers or [ ];
+      grants = p.grants or { };
+    }
+    // lib.optionalAttrs (p.retainChangeRecords or false) { retainChangeRecords = true; }
+  ) gitProjects;
+
   pushPolicy =
-    name: p:
-    pkgs.writeText "valley-push-policy-${name}.json" (
-      builtins.toJSON {
-        refs = p.protection.refs or [ ];
-        writers = p.protection.writers or [ ];
-        grants = p.grants or { };
-      }
-    );
+    name: _:
+    pkgs.writeText "valley-push-policy-${name}.json" (builtins.toJSON pushPolicies.${name});
 
   # The pre-receive hook: the one structural git invariant
   # (archive/design/architecture.md, archive/design/contribute.md), which is what a push may
   # write. It is installed on every project the host serves. Replacement
   # refs, notes and the valley's own namespace take no push, but for the
-  # four namespaces below; a symbolic ref takes none; topic branches are
+  # namespaces below; a symbolic ref takes none; topic branches are
   # open; an attestation ref holds only what its name says, and takes
   # added notes but no other change and no delete; an integration request
-  # takes the approve grant; a change record moves only by the transitions
-  # the hook allows; the plan graph, refs/the-valley/knots, takes any named
+  # and an approval take the approve grant; a change record moves only by
+  # the transitions the hook allows, and a project that retains its records
+  # takes no delete of one; the plan graph, refs/the-valley/knots, takes any named
   # principal's write of one commit on its tip that keeps the graph valid;
   # every other ref, tags included, takes a named grant of the project; and
   # a protected ref also takes a declared writer. All policy beyond this lives in the integrator.
@@ -2214,6 +2254,14 @@ in
       };
     };
 
+    pushPolicies = lib.mkOption {
+      type = lib.types.attrs;
+      internal = true;
+      readOnly = true;
+      default = pushPolicies;
+      description = "Each served project's push policy, before it is written as the JSON valleyhook reads; module-eval reads it.";
+    };
+
     # The programs the host runs, as this flake builds them
     # (nix/packages.nix). These options are internal: a host has no reason
     # to set them. The module checks set them to stand-ins with the same
@@ -2745,23 +2793,34 @@ in
     #
     # What starts it: every boot and every activation, after valley-init,
     # which covers a changed signing name, signers path or signer projects
-    # list; and the path
-    # unit below, whenever the known-signers file changes, which covers
-    # each compilation that changed it and a hand-provisioned file being
-    # replaced. A run reads the current file and name and writes the ref
-    # only when the tree it makes differs, so a run with nothing new is
-    # free. Both values are in one tree under one ref, so a client never
-    # reads one value without the other. A run holds a lock in the
-    # instance repository from reading the file to moving the ref, so two
-    # runs take turns, and one that read an older file cannot publish it
-    # over a newer one. The ref also moves with a compare-and-swap.
+    # list; and the path unit below, whenever a file it publishes from
+    # changes: the known-signers file, either approval signers file, or the
+    # instance repository's main. That covers each compilation that changed
+    # a file, a hand-provisioned file being replaced, an approval key
+    # revoked while the signing keys stay, and a landing on the instance.
+    # A run reads every input and writes the ref only when the tree it
+    # makes differs, so a run with nothing new is free. Every value is in
+    # one tree under one ref, so a client never reads one value without the
+    # others. The path unit holds no watch while the service it started
+    # runs, and when the service ends it does not see that an existing
+    # file was replaced. So after each publication the publisher reads
+    # every input again, and publishes again until a reading matches what
+    # it published: a change made up to its last reading is published by
+    # that run. A change made after it starts no run, and waits for the
+    # next change to a published input or the next move of main. A run
+    # makes at most one publication more than the inputs that can change,
+    # and fails if they are still changing then; the unit shows failed,
+    # and nothing retries it before that next change. A run holds a lock
+    # in the instance repository from its first reading to its last, so two
+    # runs take turns, and one that read older files cannot publish them
+    # over newer ones. The ref also moves with a compare-and-swap.
     #
-    # A run that cannot read the file, or reads one that is not a list of
+    # A run that cannot read a file, or reads one that is not a list of
     # verifier keys, fails and leaves the last publication in place. That
     # is the file the controllers were given before it changed, and the
     # journal says why. A file with no key in it, as the compiler writes
-    # once every signing key is revoked, is published, so clients stop
-    # verifying with the revoked keys.
+    # once every signing or approval key is revoked, is published, so
+    # clients stop verifying with the revoked keys.
     systemd.services.valley-signers = lib.mkIf publishesSigners {
       description = "Publish what clients verify the valley integrator's transfer statements with";
       wantedBy = [ "multi-user.target" ];
@@ -2805,9 +2864,9 @@ in
     };
 
     systemd.paths.valley-signers = lib.mkIf publishesSigners {
-      description = "Watch the known-signers file the valley integrator reads";
+      description = "Watch what the valley signers publication is read from";
       wantedBy = [ "multi-user.target" ];
-      pathConfig.PathChanged = knownSigners;
+      pathConfig.PathChanged = signersInputs;
     };
 
     # One controller per served project, as instances of a single template:

@@ -31,6 +31,16 @@ rec {
   # nothing.
   unread = lib.fileset.fileFilter (f: f.hasExt "md" || f.name == ".gitignore") ../.;
 
+  # The parts of the approval module (approval/) that only the approval
+  # package builds and tests: its command, the PIV signer's C source and
+  # the fixtures. A module that imports the approval library leaves them
+  # out of its source.
+  approvalExtras = [
+    ../approval/cmd
+    ../approval/piv
+    ../approval/testdata
+  ];
+
   # Every Go test file in the tree. No package's build reads one.
   goTests = lib.fileset.fileFilter (f: lib.hasSuffix "_test.go" f.name) ../.;
 
@@ -403,7 +413,8 @@ rec {
 
   # The pre-receive hook's policy (valleyhook/): what a push may write to a
   # project a valley host serves. It validates a push to the plan graph
-  # with the one reading of a graph the CLI shares (../knot), and reads the
+  # with the one reading of a graph the CLI shares (../knot), reads a
+  # pushed approval with the approval format (../approval), and reads the
   # project's push policy with exactjson (../exactjson). The same
   # binary is the git user's login shell, which derives the pushing
   # principal and pauses pushes until the host has converged. Go, standard
@@ -416,12 +427,16 @@ rec {
     pname = "valley-valleyhook";
     dir = ../valleyhook;
     modules = [
+      ../approval
       ../note
       ../change
       ../knot
       ../exactjson
       ../telemetry
     ];
+    # The approval library alone: its command, signer and fixtures are the
+    # approval package's.
+    excluded = approvalExtras;
     preBuild = readsGoMod;
     ldflags = [ "-X main.gitProgram=${lib.getExe pkgs.git}" ];
     # The walk's and the change records' tests build hostile objects with
@@ -1053,10 +1068,13 @@ rec {
   # with the one reading of a record the push hook shares (../change),
   # verifier keys with the one reading of a key the note format defines
   # (../note), and derives required checks with the deriver (../derive).
+  # The instance identity it publishes is the approval format's
+  # (../approval).
   integrator-unwrapped = goModule {
     pname = "valley-integrator";
     dir = ../integrator;
     modules = [
+      ../approval
       ../change
       ../composed
       ../derive
@@ -1064,8 +1082,8 @@ rec {
       ../telemetry
     ];
     # The scenarios (integrator/e2e/) are integrator-e2e's, and no Go test
-    # reads them.
-    excluded = [ ../integrator/e2e ];
+    # reads them. Of the approval module, only its library is read.
+    excluded = [ ../integrator/e2e ] ++ approvalExtras;
     preBuild = readsGoMod;
     tests = {
       # The policy bridge's tests compose a policy under the verification

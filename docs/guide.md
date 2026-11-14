@@ -726,9 +726,9 @@ published in the signers file.
 
 The host publishes the `known-signers` file and the integrator's signing name for clients, at
 `refs/the-valley/signers` in the instance repository. `valley-signers` writes it at boot, on
-activation, and whenever the file changes, so clients need no signer settings. Follow
-[Authoring a change](#authoring-a-change) in a clone of `demo`, then approve it as `operator`.
-Verify that `valley status <handle>` reports the landing. On the host, inspect:
+activation, and whenever a file it publishes or the instance's `main` changes, so clients need no
+signer settings. Follow [Authoring a change](#authoring-a-change) in a clone of `demo`, then approve
+it as `operator`. Verify that `valley status <handle>` reports the landing. On the host, inspect:
 
 ```sh
 sudo systemctl status valley-integrator@demo --no-pager

@@ -53,35 +53,46 @@ func Sign(s Statement, signer Signer) ([]byte, error) {
 	return b.Bytes(), nil
 }
 
-// Verify opens an approval note under the approval keys a reader holds,
-// and returns the statement it carries. The note carries one signature,
-// by a key among those keys, over a statement in its written form that
-// names the key's principal as its approver.
-//
-// Which keys a reader holds decides which approvals count: the keys of
-// approval-signers, or of approval-signers-hardware when only hardware
-// keys may approve.
-func Verify(n []byte, authority []note.VerifierKey) (Statement, error) {
+// ParseNote reads an approval note's form, without checking its signature:
+// at most MaxNote bytes, one signature line, and a statement in its written
+// form whose principal names that line. The statement it returns is what
+// the note claims; only Verify, under the keys a reader holds, says whether
+// the claim is true.
+func ParseNote(n []byte) (Statement, error) {
 	if len(n) > MaxNote {
 		return Statement{}, fmt.Errorf("the approval note is %d bytes; one holds at most %d", len(n), MaxNote)
 	}
-	_, sigs, err := note.Split(n)
+	text, sigs, err := note.Split(n)
 	if err != nil {
 		return Statement{}, err
 	}
 	if len(sigs) != 1 {
 		return Statement{}, fmt.Errorf("an approval note carries one signature, and this carries %d", len(sigs))
 	}
-	text, checked, err := note.Open(n, authority)
-	if err != nil {
-		return Statement{}, err
-	}
 	s, err := Parse(text)
 	if err != nil {
 		return Statement{}, fmt.Errorf("the signed text %w", err)
 	}
-	if checked[0].Name != s.Principal {
-		return Statement{}, fmt.Errorf("the approval is signed with a key of %s, and names %s as its approver", checked[0].Name, s.Principal)
+	if sigs[0].Name != s.Principal {
+		return Statement{}, fmt.Errorf("the approval is signed with a key of %s, and names %s as its approver", sigs[0].Name, s.Principal)
+	}
+	return s, nil
+}
+
+// Verify opens an approval note under the approval keys a reader holds,
+// and returns the statement it carries. The note has ParseNote's form, and
+// its one signature is by a key among those keys.
+//
+// Which keys a reader holds decides which approvals count: the keys of
+// approval-signers, or of approval-signers-hardware when only hardware
+// keys may approve.
+func Verify(n []byte, authority []note.VerifierKey) (Statement, error) {
+	s, err := ParseNote(n)
+	if err != nil {
+		return Statement{}, err
+	}
+	if _, _, err := note.Open(n, authority); err != nil {
+		return Statement{}, err
 	}
 	return s, nil
 }

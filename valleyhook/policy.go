@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"the-valley/approval"
 	"the-valley/change"
 	"the-valley/knot"
 	"the-valley/note"
@@ -24,6 +25,13 @@ type pushPolicy struct {
 	// Grants open refs the namespace rules close, each to the principals
 	// it names. Tags open only this way.
 	Grants map[string]refGrant `json:"grants"`
+
+	// RetainChangeRecords keeps every change record the project holds: no
+	// push deletes one, whatever grant the pusher holds. A record's ref
+	// then holds the change's whole history, so a reader can tell a
+	// change that stayed ready from one withdrawn or unreadied and readied
+	// again.
+	RetainChangeRecords bool `json:"retainChangeRecords"`
 }
 
 // refGrant is one named grant: ref patterns, and who may write them.
@@ -123,8 +131,8 @@ type update struct {
 //
 //  1. Some refs no push may write, whatever anything declares: replacement
 //     refs, notes, and the valley's own namespace apart from attestations,
-//     integration requests, change records, restack reports, check
-//     requests and the plan graph. The plan graph is one ref, refs/the-valley/knots, matched
+//     integration requests, approvals, change records, restack reports,
+//     check requests and the plan graph. The plan graph is one ref, refs/the-valley/knots, matched
 //     exactly: a ref that only begins with its name is in the closed
 //     namespace. Nor may a push create or update a ref named like another
 //     (lookalike), since git would read it in place of that ref when that
@@ -134,8 +142,11 @@ type update struct {
 //  3. The ref's namespace has its own rule. Topic branches are open.
 //     Attestations must be what their name says, and an existing one
 //     only takes added notes.
-//     Integration requests take the approve grant. A change record moves
-//     only by the transitions checkRecord allows. A restack report takes
+//     Integration requests take the approve grant. An approval takes the
+//     approve grant, and holds an approval note about the change its name
+//     says (checkApproval). A change record moves only by the transitions
+//     checkRecord allows, and is never deleted from a project that retains
+//     its records. A restack report takes
 //     the restack grant, and moves only by the writes checkReport allows.
 //     A check request takes a named principal under its own name, or a
 //     holder of the approve grant deleting it, and points at a commit
@@ -164,7 +175,7 @@ func (p policy) decide(principal string, u update) string {
 	case strings.HasPrefix(u.ref, notesPrefix):
 		return refuse("write", "refs/notes/ is closed to every push: a note attaches text to an object that every reader's git shows beside it")
 	case strings.HasPrefix(u.ref, valleyPrefix) && !strings.HasPrefix(u.ref, attestationPrefix) &&
-		!strings.HasPrefix(u.ref, requestPrefix) && !strings.HasPrefix(u.ref, change.RefPrefix) &&
+		!strings.HasPrefix(u.ref, requestPrefix) && !strings.HasPrefix(u.ref, approval.RefPrefix) && !strings.HasPrefix(u.ref, change.RefPrefix) &&
 		!strings.HasPrefix(u.ref, change.RestackPrefix) && !strings.HasPrefix(u.ref, change.CheckRequestPrefix) && u.ref != knot.Ref:
 		return refuse("write", fmt.Sprintf("%s is written only by the machinery on the host, and no push may write it", namespace(u.ref)))
 	}
@@ -205,6 +216,11 @@ func (p policy) decide(principal string, u update) string {
 				holder = "a key that names no principal holds no grant"
 			}
 			return refuse("write", fmt.Sprintf("%s takes writes only from a principal holding the %s, and %s", requestPrefix, approveGrant, holder))
+		}
+
+	case strings.HasPrefix(u.ref, approval.RefPrefix):
+		if verb, why := p.checkApproval(principal, u); why != "" {
+			return refuse(verb, why)
 		}
 
 	case strings.HasPrefix(u.ref, change.RefPrefix):

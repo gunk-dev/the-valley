@@ -15,6 +15,9 @@ package valley
 projects: {
 	"sealed": protection: refs: ["refs/heads/main"]
 
+	// sealed keeps every change record: no push deletes one.
+	"sealed": retainChangeRecords: true
+
 	"guarded": protection: writers: ["integrator"]
 
 	// released's protection also covers its integration requests, so a

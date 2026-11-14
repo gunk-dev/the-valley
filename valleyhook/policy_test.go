@@ -50,6 +50,9 @@ func (f fakeRepository) record(string) (fileCommit, error) {
 func (f fakeRepository) report(string) (fileCommit, error) {
 	return fileCommit{}, errors.New("holds no objects")
 }
+func (f fakeRepository) approval(string) ([]byte, error) {
+	return nil, errors.New("holds no objects")
+}
 func (f fakeRepository) hasRecord(string) (bool, error) {
 	return false, errors.New("holds no refs")
 }

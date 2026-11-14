@@ -132,8 +132,14 @@ the integrator's last read of the records and its move of the target can be miss
 head the operator approved and the author has since paused. It can never land content the operator
 did not approve. The race-free design binds each approval to the record commit the approver read in
 a signed `the-valley/approval/v1` statement (`implemented`, see
-[Approval statement](./reference.md#approval-statement-the-valleyapprovalv1); storing approvals and
-gating landings on them are **not built**).
+[Approval statement](./reference.md#approval-statement-the-valleyapprovalv1)). The hook stores
+approvals, and takes them only from a holder of the `approve` grant: owning the change, holding
+`restack`, and being in `protection.writers` confer nothing (`implemented`, checked by
+`valleyhook-unit`). It checks an approval's form, not whose key signed it, so a stored approval
+proves nothing until a reader verifies it under its own approval keys. A project can declare
+`retainChangeRecords` so that no push deletes a record and its history shows any withdrawal
+(`implemented`; setting it is a **deployment choice**). Gating landings on approvals is **not
+built**; it would require retained records.
 
 ### 3. Filing takes a touch (not built)
 
@@ -355,6 +361,21 @@ Someone who can write the user's cache directory can skip a statement's digest a
 cannot make a statement count that the integrator did not sign and its records do not bind. Two runs
 of the publisher take turns under a lock, so a run that read the file before a rotation cannot
 publish it over a run that read it after (`implemented`, checked by `signers-e2e`).
+
+The publication also carries the approval signers files and the instance identity, so a client can
+show who may approve in which instance (`implemented`, checked by `integrator-unit` and
+`module-eval`). The publication gives an approval no authority: a gate that enforces approvals reads
+the host's own files (**not built**). The publisher runs when a published input changes, reads every
+input again after each publication, and publishes again until nothing it read has changed. A change
+made after a run's last reading waits for the next change to a published input, since systemd misses
+a change made while the run is under way (see
+[The signers publication](./architecture.md#the-signers-publication)). Until that next run, a client
+can show a revoked key as valid. So after revoking a signing or approval key, the operator confirms
+the publication: compare `known-signers`, `approval-signers` and `approval-signers-hardware` at
+`refs/the-valley/signers` in the instance repository with the compiled files, and start
+`valley-signers.service` by hand if they differ. A host that configures no approval keys publishes
+empty files rather than keeping old ones. A clone of the instance repository derives the same
+identity, so instances that share history, project names and approval keys share approvals.
 
 The client finds the instance repository through `policy/valley` at `main`'s tip on origin, which is
 integrated source. A change that lands a new `policy/valley` points clients at another repository's

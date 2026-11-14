@@ -654,8 +654,11 @@ let
   # either, in which case both take the binary's default. The publisher
   # writes as the git user, which owns the instance repository, may write
   # that repository and nothing else, runs after the compilation when there
-  # is one, and runs again whenever the signers file changes. The signer
-  # projects file is the controllers' too, or neither has one.
+  # is one, and runs again whenever a file it publishes from changes: the
+  # signers file, the approval signers files, and the instance repository's
+  # main, loose or packed. The signer projects file is the controllers'
+  # too, or neither has one. The approval signers files are the ones the
+  # compiler writes, or none on a host that compiles no registry.
   flagValue =
     flag: command:
     let
@@ -669,6 +672,21 @@ let
       unit = host.config.systemd.services.valley-signers;
       publish = unit.serviceConfig.ExecStart;
       controller = host.config.systemd.services."valley-integrator@".serviceConfig.ExecStart;
+      compile = host.config.systemd.services.valley-identity.serviceConfig.ExecStart or "";
+      approvalFlags = [
+        "approval-signers"
+        "approval-signers-hardware"
+      ];
+      approvalFiles = map (flag: flagValue flag publish) approvalFlags;
+      compiled = map (flag: flagValue flag compile) approvalFlags;
+      inputs = [
+        (flagValue "known-signers" controller)
+      ]
+      ++ lib.remove null approvalFiles
+      ++ [
+        "${repo}/refs/heads/main"
+        "${repo}/packed-refs"
+      ];
     in
     !(lib.hasInfix "/bin/integrator publish-signers " publish)
     || flagValue "instance-repo" publish != repo
@@ -679,9 +697,16 @@ let
     || unit.serviceConfig.ReadWritePaths or [ ] != [ repo ]
     || !(builtins.elem "valley-init.service" unit.after)
     || !(builtins.elem "multi-user.target" unit.wantedBy)
-    || host.config.systemd.paths.valley-signers.pathConfig.PathChanged or null
-      != flagValue "known-signers" controller
+    || approvalFiles != compiled
+    || (compile != "" && lib.elem null approvalFiles)
+    || host.config.systemd.paths.valley-signers.pathConfig.PathChanged or null != inputs
     || !(builtins.elem "multi-user.target" host.config.systemd.paths.valley-signers.wantedBy);
+
+  # A project that retains its change records hands the hook that setting,
+  # and one that does not leaves it out, which the hook reads as false.
+  retentionMisrendered =
+    protectedHost.config.services.valley.pushPolicies.sealed.retainChangeRecords or null != true
+    || protectedHost.config.services.valley.pushPolicies.open ? retainChangeRecords;
 
   signersRenderedWithoutIntegrator =
     protectedHost.config.systemd.services ? valley-signers
@@ -1232,7 +1257,9 @@ in
     else if signersRenderedWithoutIntegrator then
       throw "valley module-eval: a signers publication rendered for a host whose integrator is off — there is no transfer statement to verify"
     else if signersUnpublished then
-      throw "valley module-eval: the signers publisher must publish the controllers' own signers file and signing name into the instance repository, as the git user, writing nothing else, after valley-init and the compilation, at boot and whenever the signers file changes"
+      throw "valley module-eval: the signers publisher must publish the controllers' own signers file and signing name into the instance repository, as the git user, writing nothing else, after valley-init and the compilation, at boot and whenever a file it publishes from changes"
+    else if retentionMisrendered then
+      throw "valley module-eval: a project that retains its change records must hand the hook retainChangeRecords = true, and one that does not must leave the key out"
     else if signerProjectsMisrendered then
       throw "valley module-eval: a controller is given a signer projects file exactly when the host restricts a signer to projects"
     else if identityKeepsDeclaredKeys then

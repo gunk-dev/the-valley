@@ -35,7 +35,7 @@ pre-receive hook answers for the push and not for each ref.
 
 A write is allowed only if every rule that applies to its ref allows it:
 
-  refs/replace/*, refs/notes/*, and refs/the-valley/* other than the six
+  refs/replace/*, refs/notes/*, and refs/the-valley/* other than the seven
   namespaces below
                     nobody, whatever a declaration says. A replacement ref
                     makes one object stand in for another wherever git
@@ -61,6 +61,14 @@ A write is allowed only if every rule that applies to its ref allows it:
                     principals holding the approve grant (also accepted as
                     request). They may file, replace and withdraw a
                     request.
+  refs/the-valley/approvals/main/c-<change ID>
+                    principals holding the approve grant, to create,
+                    replace or delete. The ref points at one blob of at
+                    most 2048 bytes: an approval note with one signature
+                    line, whose text is a the-valley/approval/v1
+                    statement about that change and main, signed under
+                    the statement's principal. Whose key signed it is
+                    not checked here.
   refs/the-valley/changes/main/<change ID>
                     a change record: a commit whose tree holds one file,
                     record.json. Any named principal may create one, and
@@ -72,8 +80,9 @@ A write is allowed only if every rule that applies to its ref allows it:
                     the approve grant may delete one. A holder of the
                     restack grant that is neither may add one version to a
                     ready change, on the active version's branch and under
-                    its title, and nothing more. Every other write is
-                    refused. A push may update at most 32 records, and a
+                    its title, and nothing more. A project whose policy
+                    retains its change records takes no delete of one,
+                    from anyone. Every other write is refused. A push may update at most 32 records, and a
                     repository may hold at most 2000. That bound is soft:
                     pushes running at once can pass it by the records
                     they create.
@@ -130,7 +139,8 @@ flags:
   --project NAME        the project, named in what a refusal says
   --policy FILE         the project's push policy, as the host declaration
                         exports it (JSON): its protected refs, their
-                        writers, and its named grants
+                        writers, its named grants, and whether it retains
+                        its change records
   --grants FILE         grants, one "<grant> <principal>" per line. Repeat
                         the flag to read more than one file; what they
                         grant adds up. A line naming request grants the

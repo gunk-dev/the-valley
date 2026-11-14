@@ -9,7 +9,7 @@ import "strings"
 // integrator compares to decide whether to judge a request again.
 type Outcome struct {
 	Head, Tip, Evidence string
-	Decision            string // land, stale, reject, refused-not-ready, refused-merge, voided-withdrawn, failed, or unknown
+	Decision            string // land, stale, reject, refused-not-ready, refused-merge, refused-approval, voided-withdrawn, failed, or unknown
 	FailedAt            string // set for failed alone
 }
 
@@ -34,7 +34,7 @@ func ParseOutcome(record string) Outcome {
 		m.Decision = "unknown"
 	}
 	switch m.Decision {
-	case "land", "stale", "reject", "refused-not-ready", "refused-merge", "voided-withdrawn":
+	case "land", "stale", "reject", "refused-not-ready", "refused-merge", "refused-approval", "voided-withdrawn":
 		if m.FailedAt != "" {
 			m.Decision = "unknown"
 		}

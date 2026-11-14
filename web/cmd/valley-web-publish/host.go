@@ -33,6 +33,7 @@ type hostProject struct {
 	Mirrors     json.RawMessage `json:"mirrors"`
 	Protection  json.RawMessage `json:"protection"`
 	Grants      json.RawMessage `json:"grants"`
+	Retain      json.RawMessage `json:"retainChangeRecords"`
 	Group       string          `json:"group"`
 	Name        string          `json:"name"`
 	FormerNames []string        `json:"formerNames"`

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -28,6 +29,7 @@ func TestMemoAcceptsOnlyTheRecordsTheIntegratorWrites(t *testing.T) {
 		{sha1a + " " + sha1b + " " + fp + " failed 2026-09-21T12:00:00Z\n", "failed", "2026-09-21T12:00:00Z"},
 		{sha1a + " " + sha1b + " " + fp + " refused-not-ready\n", "refused-not-ready", ""},
 		{sha1a + " " + sha1b + " " + fp + " refused-merge\n", "refused-merge", ""},
+		{sha1a + " " + sha1b + " " + fp + " refused-approval\n", "refused-approval", ""},
 		{sha1a + " " + sha1b + " " + fp + " voided-withdrawn\n", "voided-withdrawn", ""},
 		{sha256a + " " + sha256a + " " + fp + " land\n", "land", ""},
 		{"  " + sha1a + "\t" + sha1b + "  " + fp + "\tland  \n", "land", ""},
@@ -38,6 +40,7 @@ func TestMemoAcceptsOnlyTheRecordsTheIntegratorWrites(t *testing.T) {
 		{sha1a + " " + sha1b + " " + fp + " merged\n", "unknown", ""},
 		{sha1a + " " + sha1b + " " + fp + " land 2026-09-21T12:00:00Z\n", "unknown", ""},
 		{sha1a + " " + sha1b + " " + fp + " refused-not-ready 2026-09-21T12:00:00Z\n", "unknown", ""},
+		{sha1a + " " + sha1b + " " + fp + " refused-approval 2026-09-21T12:00:00Z\n", "unknown", ""},
 		{sha1a + " " + sha1b + " " + fp + " refused\n", "unknown", ""},
 		{sha1a + " " + sha1b + " " + fp + " failed\n", "unknown", ""},
 		{sha1a + " " + sha1b + " " + fp + " failed 2026-09-21T12:00:00Z extra\n", "unknown", ""},
@@ -56,6 +59,34 @@ func TestMemoAcceptsOnlyTheRecordsTheIntegratorWrites(t *testing.T) {
 			t.Errorf("parseMemo(%q) = %q, %q; want %q, %q",
 				c.record, got.decision, got.failedAt, c.decision, c.failedAt)
 		}
+	}
+}
+
+// A current refused-approval outcome for the head the request names is a
+// state of its own, in the report a person reads and in valley-status/v1.
+func TestARefusedApprovalIsAState(t *testing.T) {
+	dir := t.TempDir()
+	if out, err := exec.Command("git", "init", "--quiet", dir).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	g := git{env: os.Environ(), stderr: io.Discard, dir: dir}
+	record := sha1a + " " + sha1b + " " + fp + " refused-approval\n"
+	s := &status{
+		branch: "topic", change: "topic",
+		requestRef: requestPrefix + "topic", outcomeRef: outcomePrefix + "topic",
+		tip: sha1b, head: sha1a, request: sha1a, outcome: record, memo: parseMemo(record),
+	}
+	if s.state = decide(g, s, fp); s.state != "refused-approval" {
+		t.Fatalf("the state is %q", s.state)
+	}
+	var human, js bytes.Buffer
+	writeHuman(g, s, &human)
+	if !strings.Contains(human.String(), "refused to land it, because it found no approval of this head that it accepts") {
+		t.Errorf("the report reads:\n%s", human.String())
+	}
+	if writeJSON(s, &js, io.Discard) != 0 ||
+		!strings.Contains(js.String(), `"state":"refused-approval"`) || !strings.Contains(js.String(), `"decision":"refused-approval"`) {
+		t.Errorf("valley-status/v1 reads %s", js.String())
 	}
 }
 

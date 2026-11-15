@@ -110,6 +110,11 @@ type policy struct {
 	// creates a record.
 	recordCreates, existingRecords int
 
+	// pushed is the value every ref the push writes takes, a delete's
+	// zero ID included. A decision about one ref reads it for another ref
+	// the same push writes (besideRequest).
+	pushed map[string]string
+
 	// requestCreates is how many check requests the push creates under
 	// the pushing principal's name, and existingRequests how many that
 	// principal held before it. preReceive counts both the same way.

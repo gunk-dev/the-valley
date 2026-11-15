@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -74,6 +75,21 @@ const (
 // empty), and reads the key the slot attests to. Touch requests are
 // written to prompt.
 func OpenPIV(program, slot, reader string, prompt io.Writer) (*PIVSession, error) {
+	p, err := StartPIV(program, slot, reader, prompt)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.Open(); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// StartPIV is OpenPIV's first half: it starts the helper and returns the
+// session at once, before the helper has reached the device, so a caller
+// that stops the helper on a signal of its own holds its process from
+// the start (Process). Open reads the key.
+func StartPIV(program, slot, reader string, prompt io.Writer) (*PIVSession, error) {
 	args := []string{}
 	if slot != "" {
 		args = append(args, "--slot", slot)
@@ -93,7 +109,12 @@ func OpenPIV(program, slot, reader string, prompt io.Writer) (*PIVSession, error
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("the PIV signer did not start: %w", err)
 	}
-	p := &PIVSession{cmd: cmd, in: in, out: bufio.NewReaderSize(out, 4096), prompt: prompt}
+	return &PIVSession{cmd: cmd, in: in, out: bufio.NewReaderSize(out, 4096), prompt: prompt}, nil
+}
+
+// Open reads the key the slot attests to, which the helper sends once it
+// has reached the device. A session that does not open is closed.
+func (p *PIVSession) Open() error {
 	word, rest, err := p.reply()
 	if err == nil && word != "key" {
 		err = fmt.Errorf("the PIV signer opened with %q, not its key", word)
@@ -103,9 +124,8 @@ func OpenPIV(program, slot, reader string, prompt io.Writer) (*PIVSession, error
 	}
 	if err != nil {
 		p.Close()
-		return nil, err
 	}
-	return p, nil
+	return err
 }
 
 func (p *PIVSession) readKey(rest string) error {
@@ -225,6 +245,11 @@ func (p *PIVSession) Close() error {
 	io.Copy(io.Discard, io.LimitReader(p.out, maxPIVReply))
 	return p.wait()
 }
+
+// Process is the helper's process, for a caller that stops it when a
+// signal ends the caller: the helper ends its session on SIGINT or
+// SIGTERM, resetting the YubiKey and the terminal it read the PIN on.
+func (p *PIVSession) Process() *os.Process { return p.cmd.Process }
 
 // PIVSerial is the serial number of the YubiKey the session signs on.
 func (p *PIVSession) PIVSerial() string { return p.serial }

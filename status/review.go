@@ -59,7 +59,7 @@ import (
 	"the-valley/change"
 )
 
-const reviewUsage = "usage: valley review [-v] [--build-here] [<change> | --repo <name>]"
+const reviewUsage = "usage: valley review [-v] [--build-here] [--approval-key <file> | --approval-piv] [<change> | --repo <name>]"
 
 // reviewStep is what one review of a change is given: by valley review
 // <change> for the current checkout, and by the walk for each step.
@@ -69,7 +69,8 @@ type reviewStep struct {
 	g                  git
 	queued             *queuedChange // what the walk's queue held of the change; nil outside a walk
 	verbose, buildHere bool
-	stdin              *os.File // the terminal: read a byte at a time, and given to the programs that read it
+	key                *approvalKey // what [a]pprove signs with; nil for no signed approval
+	stdin              *os.File     // the terminal: read a byte at a time, and given to the programs that read it
 	stdout, stderr     io.Writer
 	signers            *signerSource // what the review's reads verify a transfer statement with
 	// interrupts is the caller's catch of SIGINT and SIGTERM, which it
@@ -116,6 +117,7 @@ type review struct {
 	stdin              *os.File
 	stdout, stderr     io.Writer
 	verbose, buildHere bool
+	key                *approvalKey
 
 	c                           shownChange
 	approveHead, approveVersion string // what [a]pprove files (bind)
@@ -157,7 +159,19 @@ func endedStatus(err error) int {
 func runReview(g git, args []string, stdout, stderr io.Writer, end func(int)) int {
 	var name, repo string
 	var verbose, buildHere, repoGiven bool
+	var keyFlags approvalFlags
+	var keyArgs []string // the approval-key flags, for the walk
 	for i := 0; i < len(args); i++ {
+		last, isKey, err := keyFlags.take(args, i)
+		if err != nil {
+			fmt.Fprintf(stderr, "valley: %s\n", err)
+			return 1
+		}
+		if isKey {
+			keyArgs = append(keyArgs, args[i:last+1]...)
+			i = last
+			continue
+		}
 		switch a := args[i]; {
 		case a == "-v":
 			verbose = true
@@ -177,6 +191,11 @@ func runReview(g git, args []string, stdout, stderr io.Writer, end func(int)) in
 			name = a
 		}
 	}
+	key, err := keyFlags.key()
+	if err != nil {
+		fmt.Fprintf(stderr, "valley: %s\n", err)
+		return 1
+	}
 	if name == "" {
 		var walk []string
 		if verbose {
@@ -185,6 +204,7 @@ func runReview(g git, args []string, stdout, stderr io.Writer, end func(int)) in
 		if buildHere {
 			walk = append(walk, "--build-here")
 		}
+		walk = append(walk, keyArgs...)
 		if repoGiven {
 			walk = append(walk, "--repo", repo)
 		}
@@ -201,7 +221,7 @@ func runReview(g git, args []string, stdout, stderr io.Writer, end func(int)) in
 	// Never stopped: the process exits holding it.
 	interrupts := make(chan os.Signal, 1)
 	signal.Notify(interrupts, os.Interrupt, syscall.SIGTERM)
-	o := reviewChange(reviewStep{g: g, verbose: verbose, buildHere: buildHere, stdin: os.Stdin,
+	o := reviewChange(reviewStep{g: g, verbose: verbose, buildHere: buildHere, key: key, stdin: os.Stdin,
 		stdout: stdout, stderr: stderr, signers: verification, interrupts: interrupts,
 		end: func(status int, _ stepOutcome) {
 			verification.done()
@@ -222,7 +242,7 @@ func reviewChange(s reviewStep, name string) stepOutcome {
 // newReview is a review given s.
 func newReview(s reviewStep) *review {
 	return &review{step: s, g: s.g, stdin: s.stdin, stdout: s.stdout, stderr: s.stderr,
-		verbose: s.verbose, buildHere: s.buildHere, attempt: func(a *approval) { a.run() }}
+		verbose: s.verbose, buildHere: s.buildHere, key: s.key, attempt: func(a *approval) { a.run() }}
 }
 
 // review reviews the change named, and returns how it ended. It stops

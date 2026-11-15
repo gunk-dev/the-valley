@@ -117,8 +117,12 @@ _valley() {
       '--head:the exact head to approve, one of the change'"'"'s version heads'
       '--build-here:build the nix checks origin holds no evidence for on this machine'
       '--verbose:also print the refs, evidence, signers and digest approve read and published'
+      '--approval-key:sign the approval with this ed25519 key file'
+      '--approval-piv:sign the approval with the key in a YubiKey'"'"'s PIV slot'
     )
     _describe -t options 'valley approve option' opts
+  elif [[ ${words[2]} == (approve|review) && ${words[CURRENT-1]} == --approval-key ]]; then
+    _files
   elif [[ ${words[2]} == approve && ${words[CURRENT-1]} == --head ]]; then
     return
   elif [[ ${words[2]} == pending && ${words[CURRENT]} == -* ]]; then
@@ -164,6 +168,8 @@ _valley() {
       '-v:say why no knot is shown'
       '--build-here:let approve build the nix checks origin holds no evidence for on this machine'
       '--repo:with no change, walk one project'
+      '--approval-key:sign each approval with this ed25519 key file'
+      '--approval-piv:sign each approval with the key in a YubiKey'"'"'s PIV slot'
     )
     _describe -t options 'valley review option' opts
   elif [[ ${words[2]} == (review|approve|rebase|status|unready|withdraw) ]] \

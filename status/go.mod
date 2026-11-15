@@ -6,6 +6,7 @@ module the-valley/valley
 go 1.24
 
 require (
+	the-valley/approval v0.0.0
 	the-valley/change v0.0.0
 	the-valley/composed v0.0.0
 	the-valley/delta v0.0.0
@@ -30,8 +31,11 @@ require (
 // policy the composed-policy reader (../composed) reads, the reader the
 // integrator and the restacker share. The check worker and the telemetry
 // verbs read and write telemetry streams (../telemetry) as the collector
-// does. All nine live in this repository and are never fetched.
+// does. A signed approval is written and sealed in the approval format
+// (../approval), the one reading the hook and the approval command share.
+// All ten live in this repository and are never fetched.
 replace (
+	the-valley/approval => ../approval
 	the-valley/change => ../change
 	the-valley/composed => ../composed
 	the-valley/delta => ../delta

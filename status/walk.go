@@ -95,7 +95,18 @@ func runWalk(g git, args []string, stdout, stderr io.Writer, end func(int)) int 
 	l := listing{all: true}
 	var flags []string // the flags each step's review is recorded with
 	var verbose, buildHere bool
+	var keyFlags approvalFlags
 	for i := 0; i < len(args); i++ {
+		last, isKey, err := keyFlags.take(args, i)
+		if err != nil {
+			fmt.Fprintf(stderr, "valley: %s\n", err)
+			return 2
+		}
+		if isKey {
+			flags = append(flags, args[i:last+1]...)
+			i = last
+			continue
+		}
 		switch a := args[i]; {
 		case a == "-v" || a == "--build-here":
 			flags = append(flags, a)
@@ -109,6 +120,11 @@ func runWalk(g git, args []string, stdout, stderr io.Writer, end func(int)) int 
 			fmt.Fprintf(stderr, "valley: walk does not take %s\n", a)
 			return 2
 		}
+	}
+	key, err := keyFlags.key()
+	if err != nil {
+		fmt.Fprintf(stderr, "valley: %s\n", err)
+		return 1
 	}
 	if l.repo != "" && !change.ValidPrincipal(l.repo) {
 		fmt.Fprintf(stderr, "valley: --repo %s: not a project name\n", l.repo)
@@ -182,7 +198,7 @@ func runWalk(g git, args []string, stdout, stderr io.Writer, end func(int)) int 
 		inv := &invocation{args: append(append([]string{"review"}, flags...), e.id), since: time.Now(), version: versionStamp}
 		left := phase("steps")
 		o := reviewChange(reviewStep{g: step, queued: &queuedChange{id: e.id, version: e.version, head: e.head},
-			verbose: verbose, buildHere: buildHere, stdin: os.Stdin, stdout: stdout, stderr: stderr,
+			verbose: verbose, buildHere: buildHere, key: key, stdin: os.Stdin, stdout: stdout, stderr: stderr,
 			signers: verification, interrupts: interrupts,
 			end: func(status int, o stepOutcome) {
 				walked = append(walked, walkStep{row: e, outcome: o})

@@ -300,6 +300,10 @@ func preReceive(args []string, stdin io.Reader, stderr io.Writer, repo repositor
 	}
 	p.symrefs = symrefs
 
+	p.pushed = map[string]string{}
+	for _, u := range updates {
+		p.pushed[u.ref] = u.new
+	}
 	refused := false
 	for _, u := range updates {
 		if refusal := p.decide(*principal, u); refusal != "" {

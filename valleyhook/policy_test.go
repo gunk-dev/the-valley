@@ -56,6 +56,7 @@ func (f fakeRepository) approval(string) ([]byte, error) {
 func (f fakeRepository) hasRecord(string) (bool, error) {
 	return false, errors.New("holds no refs")
 }
+func (f fakeRepository) ref(string) (string, bool, error)  { return "", false, nil }
 func (f fakeRepository) kind(string) (string, error)       { return "", errors.New("holds no objects") }
 func (f fakeRepository) records() (int, error)             { return 0, nil }
 func (f fakeRepository) checkRequests(string) (int, error) { return 0, nil }

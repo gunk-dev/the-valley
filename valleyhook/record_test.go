@@ -577,6 +577,10 @@ func (u unreadable) hasRecord(string) (bool, error) {
 	u.t.Error("the records were read")
 	return false, errors.New("unread")
 }
+func (u unreadable) ref(string) (string, bool, error) {
+	u.t.Error("a ref was read")
+	return "", false, errors.New("unread")
+}
 func (u unreadable) kind(string) (string, error) {
 	u.t.Error("an object was read")
 	return "", errors.New("unread")

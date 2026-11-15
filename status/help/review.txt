@@ -1,5 +1,8 @@
-usage: valley review [-v] [--build-here] <change>
-       valley review [-v] [--build-here] [--repo <name>]
+usage: valley review [-v] [--build-here] [<approval key>] <change>
+       valley review [-v] [--build-here] [<approval key>] [--repo <name>]
+
+  <approval key> is --approval-key <file> or --approval-piv: [a]pprove
+  signs each approval with it, as approve does (valley help approve).
 
   review [-v] [--build-here] [--repo <name>]
                    with no change, review each change that needs you, as

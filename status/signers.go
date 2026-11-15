@@ -239,12 +239,20 @@ func (s *signerSource) done() {
 }
 
 // publishedSigners is the serving host's publication, and where it was
-// read.
+// read. Its other files are not read here: a signed approval reads the
+// ones it needs (approvalsign.go) from the tree's entries, as the tree
+// was fetched, so a file that is missing or does not read concerns no
+// other reader.
 type publishedSigners struct {
 	keys     []byte
 	name     string
 	projects note.SignerProjects
 	where    string
+
+	instance string            // the instance repository's URL
+	oid      string            // the publication's tree
+	kinds    map[string]string // each entry's mode and type, as ls-tree lists them
+	blobs    map[string]string // each blob entry's object ID
 }
 
 // readSigners reads the serving host's publication. It is nil, with no
@@ -271,7 +279,7 @@ func readSigners(g git) (*publishedSigners, error) {
 	if err := fetchFrom(g, instance, signersRef, oid); err != nil {
 		return nil, err
 	}
-	p := &publishedSigners{where: signersRef + " in " + instance}
+	p := &publishedSigners{where: signersRef + " in " + instance, instance: instance, oid: oid}
 	listing, err := g.output(true, "ls-tree", "-z", oid)
 	if err != nil {
 		return nil, fmt.Errorf("%s is not a tree", p.where)
@@ -288,6 +296,7 @@ func readSigners(g git) (*publishedSigners, error) {
 			blobs[file] = f[2]
 		}
 	}
+	p.kinds, p.blobs = kinds, blobs
 	if blobs[signersKeys] == "" || blobs[signersName] == "" {
 		return nil, fmt.Errorf("%s holds no %s or no %s", p.where, signersKeys, signersName)
 	}

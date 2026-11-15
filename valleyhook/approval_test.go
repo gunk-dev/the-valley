@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/ed25519"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,6 +33,19 @@ var approvalKey = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSiz
 func approvalNote(t *testing.T, id, target, principal string, version int) string {
 	t.Helper()
 	n, err := approval.Sign(approvalStatement(id, target, principal, version), approval.NewKey(approvalKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(n)
+}
+
+// approvalNoteAt is a signed approval of version of changeID at head,
+// landing on main, by operator.
+func approvalNoteAt(t *testing.T, version int, head string) string {
+	t.Helper()
+	s := approvalStatement(changeID, "main", "operator", version)
+	s.Head = change.HeadPrefix + head
+	n, err := approval.Sign(s, approval.NewKey(approvalKey))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,11 +145,73 @@ func TestAnApprovalTakesTheApproveGrantAndHoldsOneNote(t *testing.T) {
 	}
 }
 
+// An approval names the head of the integration request it lands beside,
+// whether the push writes that request or the repository holds it, and a
+// version the change's record gives that head. An approval with no
+// request beside it is not compared, nor is a request the push deletes.
+func TestAnApprovalNamesTheHeadOfTheRequestBesideIt(t *testing.T) {
+	r := newRecords(t)
+	h1, h2 := r.source("one"), r.source("two")
+	req := requestPrefix + "main/" + change.RequestName(changeID)
+	ref := approval.Ref("main", changeID)
+	v1, v2 := r.blob(approvalNoteAt(t, 1, h1)), r.blob(approvalNoteAt(t, 2, h2))
+	r.expect("an approval with no request beside it", "operator", ref, zeroID, v1, "")
+	r.git("", "update-ref", req, h1)
+	r.expect("an approval beside a request of a change with no record", "operator", ref, zeroID, v1,
+		"it approves v1, and the repository holds no record of the change")
+	record := r.write(encode(t, next(first("alice", h1), "alice", h2)), h1)
+	r.git("", "update-ref", change.Ref("main", changeID), record)
+
+	r.expect("an approval of the request's head", "operator", ref, zeroID, v1, "")
+	r.expect("an approval of another head", "operator", ref, zeroID, v2,
+		"it approves the head "+h2+", and the integration request beside it files "+h1)
+	r.expect("an approval of another version at the request's head", "operator", ref, zeroID, r.blob(approvalNoteAt(t, 2, h1)),
+		"it approves v2 at "+h1+", and the change's record gives v2 no such head")
+	r.expect("an approval of a version the record lacks", "operator", ref, zeroID, r.blob(approvalNoteAt(t, 3, h1)),
+		"the change's record gives v3 no such head")
+
+	r.p.pushed = map[string]string{req: h2}
+	r.expect("an approval of the head the push files", "operator", ref, v1, v2, "")
+	r.expect("an approval of the head the push replaces", "operator", ref, v2, v1, "the integration request beside it files "+h2)
+	r.p.pushed = map[string]string{req: zeroID}
+	r.expect("an approval beside a request the push deletes", "operator", ref, zeroID, v2, "")
+	r.p.pushed = map[string]string{req: h2, change.Ref("main", changeID): r.write(encode(t, first("alice", h1)), h1)}
+	r.expect("an approval of a version the pushed record lacks", "operator", ref, zeroID, v2, "the change's record gives v2 no such head")
+	r.p.pushed = nil
+}
+
+// The request an approval lands beside is read by its exact name: refs
+// left beneath that name are neither listed nor taken for the request,
+// however many there are, and the request itself reads once it is there.
+func TestTheRequestBesideAnApprovalIsReadByItsName(t *testing.T) {
+	r := newRecords(t)
+	h := r.source("one")
+	req := requestPrefix + "main/" + change.RequestName(changeID)
+	var created, deleted strings.Builder
+	for i := 0; i < 2000; i++ {
+		fmt.Fprintf(&created, "create %s/beneath-%d %s\n", req, i, h)
+		fmt.Fprintf(&deleted, "delete %s/beneath-%d %s\n", req, i, h)
+	}
+	r.git(created.String(), "update-ref", "--stdin")
+	if oid, ok, err := (gitRepository{}).ref(req); ok || err != nil {
+		t.Fatalf("the request read as %q, %v, %v with only refs beneath its name", oid, ok, err)
+	}
+	r.expect("an approval beside refs beneath the request's name", "operator", approval.Ref("main", changeID), zeroID,
+		r.blob(approvalNoteAt(t, 1, strings.Repeat("2", 40))), "")
+	r.git(deleted.String(), "update-ref", "--stdin")
+	r.git("", "update-ref", req, h)
+	if oid, ok, err := (gitRepository{}).ref(req); !ok || err != nil || oid != h {
+		t.Fatalf("the request read as %q, %v, %v, not %s", oid, ok, err, h)
+	}
+}
+
 // An approval is published beside the change's integration request in one
 // atomic push, each ref leased: a create against no ref, a replacement or a
 // delete against the value read. The push goes through the real hook, run
 // by receive-pack. A stale lease on either ref, or an approval the hook
-// refuses, leaves both refs as they were.
+// refuses, leaves both refs as they were. So does an approval of another
+// head pushed alone beside a request another approver replaced, though
+// its lease on the approval ref holds.
 func TestAnApprovalIsPublishedWithItsRequestAtomicallyAndLeased(t *testing.T) {
 	hook, err := os.Executable()
 	if err != nil {
@@ -182,9 +258,20 @@ func TestAnApprovalIsPublishedWithItsRequestAtomicallyAndLeased(t *testing.T) {
 	req := requestPrefix + "main/" + change.RequestName(changeID)
 	ref := approval.Ref("main", changeID)
 	h1, h2 := commit("one"), commit("two")
-	a1 := blob(approvalNote(t, changeID, "main", "operator", 1))
-	a2 := blob(approvalNote(t, changeID, "main", "operator", 2))
+	a1, a2 := blob(approvalNoteAt(t, 1, h1)), blob(approvalNoteAt(t, 2, h2))
 	elsewhere := blob(approvalNote(t, strings.Repeat("k", 32), "main", "operator", 2))
+	// The change's record, giving v1 the head h1 and v2 the head h2,
+	// written into origin as the hook's record rules have admitted it.
+	rec, err := change.Encode(&change.Record{Schema: change.Schema, ChangeID: changeID, Target: "main", Owner: "alice",
+		State: change.Ready, Seq: 2, Active: 2, Versions: []change.Version{
+			{N: 1, Head: change.HeadPrefix + h1, Title: "one", Branch: "topic", Uploader: "alice"},
+			{N: 2, Head: change.HeadPrefix + h2, Title: "two", Branch: "topic", Uploader: "alice"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recBlob := gitIn(t, origin, string(rec), "hash-object", "-w", "--stdin")
+	recTree := gitIn(t, origin, "100644 blob "+recBlob+"\trecord.json\n", "mktree")
+	gitIn(t, origin, "", "update-ref", change.Ref("main", changeID), gitIn(t, origin, "", "-c", "user.name=t", "-c", "user.email=t@localhost", "commit-tree", recTree, "-m", "record"))
 
 	if ok, out := push("--force-with-lease="+req+":", "--force-with-lease="+ref+":", h1+":"+req, a1+":"+ref); !ok {
 		t.Fatalf("filing the request and its approval: %s", out)
@@ -211,11 +298,20 @@ func TestAnApprovalIsPublishedWithItsRequestAtomicallyAndLeased(t *testing.T) {
 		}
 	}
 
+	// Another approver replaces the request and its approval at h2. An
+	// approver who read the request at h1 and the approval at a2 pushes
+	// its approval of h1 alone, leased on a2.
 	if ok, out := push("--force-with-lease="+req+":"+h1, "--force-with-lease="+ref+":"+a1, h2+":"+req, a2+":"+ref); !ok {
 		t.Fatalf("replacing the request and its approval: %s", out)
 	}
 	if at(req) != h2 || at(ref) != a2 {
 		t.Fatalf("after replacing: the request is at %q and the approval at %q", at(req), at(ref))
+	}
+	if ok, out := push("--force-with-lease="+ref+":"+a2, a1+":"+ref); ok || !strings.Contains(out, "the integration request beside it files "+h2) {
+		t.Errorf("an approval of h1 beside the request at h2 was not refused for it: %s", out)
+	}
+	if at(req) != h2 || at(ref) != a2 {
+		t.Fatalf("after the refused approval: the request is at %q and the approval at %q", at(req), at(ref))
 	}
 	if ok, out := push("--force-with-lease="+req+":"+h2, "--force-with-lease="+ref+":"+a2, ":"+req, ":"+ref); !ok {
 		t.Fatalf("withdrawing the request and its approval: %s", out)

@@ -45,6 +45,9 @@ type repository interface {
 	// hasRecord reports whether the repository holds a record of the
 	// change with the ID given now.
 	hasRecord(id string) (bool, error)
+	// ref is the object the ref named exactly holds now, and false when
+	// the repository holds no such ref.
+	ref(name string) (string, bool, error)
 	// kind is the type of the object id names.
 	kind(id string) (string, error)
 	// records counts the change records the repository holds now, with
@@ -56,6 +59,27 @@ type repository interface {
 	// graph opens a reading of the plan graph's objects (knots.go),
 	// within the graph's own bounds.
 	graph() (graphReader, error)
+}
+
+// ref reads the one ref named, exactly, with show-ref --verify, which
+// lists nothing: however many refs a push has left beneath the name, the
+// read is one ref and its object ID. When that read fails, show-ref
+// --exists tells a ref that is not there (status 2) from a failure.
+func (gitRepository) ref(name string) (string, bool, error) {
+	out, err := run(nil, "show-ref", "--verify", "--hash", "--", name)
+	if err != nil {
+		_, missing := run(nil, "show-ref", "--exists", "--", name)
+		var exit *exec.ExitError
+		if errors.As(missing, &exit) && exit.ExitCode() == 2 {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	oid := strings.TrimSpace(string(out))
+	if !isHexID(oid, 20) && !isHexID(oid, 32) {
+		return "", false, fmt.Errorf("git show-ref read %q for %s, which is no object ID", oid, name)
+	}
+	return oid, true, nil
 }
 
 // budget is what one reading of pushed objects may cost: how deep its

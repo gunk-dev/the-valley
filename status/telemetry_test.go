@@ -20,8 +20,10 @@ import (
 )
 
 // TestMain runs the test binary as the fake ssh the telemetry tests put
-// on PATH, when it is invoked under that name, and as the checks read a
-// review starts, which runs this program's checkline (walk_test.go).
+// on PATH, when it is invoked under that name, as the checks read a
+// review starts, which runs this program's checkline (walk_test.go), and
+// as a signed approval's PIV device and racing receive-pack
+// (approvalsign_test.go).
 func TestMain(m *testing.M) {
 	if filepath.Base(os.Args[0]) == "ssh" {
 		if dir := os.Getenv("FAKE_SSH_UPLOAD"); dir != "" {
@@ -31,6 +33,13 @@ func TestMain(m *testing.M) {
 	}
 	if filepath.Base(os.Args[0]) == "attest" {
 		os.Exit(fakeAttest())
+	}
+	// A signed approval's stand-ins (approvalsign_test.go).
+	if scenario := os.Getenv("VALLEY_TEST_FAKE_PIV"); scenario != "" {
+		os.Exit(fakePIV(scenario))
+	}
+	if filepath.Base(os.Args[0]) == "racing-receive-pack" {
+		os.Exit(racingReceivePack(os.Args[1:]))
 	}
 	if len(os.Args) > 1 && os.Args[1] == checkBuildChild {
 		os.Exit(cli(os.Args[1:], os.Stdout, os.Stderr, os.Exit))

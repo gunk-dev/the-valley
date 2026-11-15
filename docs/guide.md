@@ -83,6 +83,16 @@ to the valley host, and Nix with flakes enabled.
    [Environment variables and configuration](./reference.md#environment-variables-and-configuration)
    for every client setting.
 
+5. To sign your approvals, select your approval key: a YubiKey's PIV slot, or a software key file.
+   The host must list it in the approval keys it publishes.
+
+   ```sh
+   export VALLEY_APPROVAL_PIV=9c
+   # or: export VALLEY_APPROVAL_KEY="$HOME/.ssh/valley-approve"
+   ```
+
+   This key is yours alone: it is not the attestation key, and an agent runner never holds it.
+
 To install updates into your user Nix profile, name the-valley's source repository:
 
 ```sh
@@ -314,6 +324,17 @@ A refusal says what stands in the way, and what to run about it:
 ```
 
 `valley approve -v` also prints the refs, evidence and signers behind that line.
+
+With an approval key selected, approval signs the approved version and publishes the signed note
+with the request. A YubiKey asks for its PIN and a touch, as its slot's policies say:
+
+```text
+✓ kqxm v3  signed and approved · checks passed · landing on main
+```
+
+`--approval-piv` or `--approval-key <file>` selects a key for one command. If the key does not sign,
+nothing is published and you must approve again. With no key selected, approval files the request
+and says that no signed approval was written.
 
 When a required `nix` check has no evidence on `origin` yet, approval still files the request at
 once, after the required `command` checks pass. Your approval is recorded, and no `nix` check is

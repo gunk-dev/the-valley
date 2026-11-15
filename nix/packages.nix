@@ -149,7 +149,12 @@ rec {
   # installs the tip of a branch of the-valley into the user's nix profile
   # (../selfupdate). checks prints which checks a change requires, as the
   # deriver (../derive) derives them from the policy the composed-policy
-  # reader (../composed) reads. Go, standard library only. It runs
+  # reader (../composed) reads. approve and review sign an approval, when
+  # an approval key is selected, in the approval format (../approval). On
+  # Linux a YubiKey's PIV slot signs through the PIV signer, fixed at build
+  # time as the approval command's is. The signer is Linux C, so elsewhere
+  # the binary carries none, and selecting a PIV slot is refused; a
+  # software key signs everywhere. Go, standard library only. It runs
   # whatever git, cue, less, attest and nats are on PATH, so checks that
   # put a failing stand-in for one ahead of it run this binary rather than
   # a wrapper. Its unit tests hold its shell quoting to bash, so they need
@@ -161,6 +166,7 @@ rec {
     pname = "valley-unwrapped";
     dir = ../status;
     modules = [
+      ../approval
       ../change
       ../composed
       ../delta
@@ -171,8 +177,11 @@ rec {
       ../selfupdate
       ../telemetry
     ];
-    excluded = [ ../status/testdata/plan ];
+    excluded = [ ../status/testdata/plan ] ++ approvalExtras;
     preBuild = readsGoMod;
+    ldflags = lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+      "-X main.pivSigner=${lib.getExe piv-signer}"
+    ];
     tests = {
       reads = [ ../schema/verification.cue ];
       nativeCheckInputs = [

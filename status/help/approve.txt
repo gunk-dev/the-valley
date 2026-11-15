@@ -1,6 +1,8 @@
-usage: valley approve [-v] [--head <sha>] [--build-here] <change>
+usage: valley approve [-v] [--head <sha>] [--build-here]
+                      [--approval-key <file> | --approval-piv] <change>
 
-  approve [-v] [--head <sha>] [--build-here] <change>
+  approve [-v] [--head <sha>] [--build-here]
+          [--approval-key <file> | --approval-piv] <change>
                    do what review's [a]pprove does for the change, without
                    paging it: the same checks, the same refusals, the same
                    leased request write and the same output. exits non-zero
@@ -111,10 +113,42 @@ usage: valley approve [-v] [--head <sha>] [--build-here] <change>
                    the bottom layer of a stack or a change alone, is
                    approved as it is, and the integrator merges it onto
                    main.
+                   with an approval key selected, approve also signs an
+                   approval of the version it files, and publishes the
+                   note at refs/the-valley/approvals/main/c-<change id>
+                   in the same atomic push, leased like the request:
+                     --approval-key FILE  sign with this unencrypted
+                                  OpenSSH ed25519 key. VALLEY_APPROVAL_KEY
+                                  selects it too.
+                     --approval-piv  sign with the key in a YubiKey's PIV
+                                  slot, VALLEY_APPROVAL_PIV or 9c, on the
+                                  reader VALLEY_APPROVAL_PIV_READER names.
+                                  the device asks for its PIN and a touch
+                                  as the slot's policies say. setting
+                                  VALLEY_APPROVAL_PIV selects it too. on
+                                  any platform but linux it is refused:
+                                  hardware signing is not available.
+                   a flag beats the environment, and selecting both kinds
+                   at one level is refused. the note signs the instance,
+                   the project origin's URL names, main, the change, the
+                   version and head approved, the record commit that
+                   version was read from, the principal and the time. the
+                   key must be listed in approval-signers, which the host
+                   publishes at refs/the-valley/signers, and in
+                   approval-signers-hardware when the policy sets
+                   approval.hardware. approve refuses and publishes
+                   nothing when the key is not listed, the publication is
+                   missing or changes before the push, the change has no
+                   recorded version (ready it first), or the key does not
+                   sign: no device, no PIN, no touch. it never falls back
+                   to an unsigned approval or another key. with no key
+                   selected, approve says no signed approval was written.
+                   landing does not check the note.
                    approve ends in one verdict line: the change, whether
                    it was approved, and what happens next, with one
                    indented line under it only when you must act:
                      ✓ nqyw v3  approved · checks passed · landing on main
+                     ✓ nqyw v3  signed and approved · checks passed · landing on main
                      ◐ nqyw v3  approved · lands when 3 checks pass (1/4 passed)
                      ◇ nqyw v3  approved · waiting for 2 checks (no worker building)
                        run: valley approve --build-here nqyw
@@ -126,7 +160,8 @@ usage: valley approve [-v] [--head <sha>] [--build-here] <change>
                      -v, --verbose  also print what approve read and
                                   published: the checks it reuses and who
                                   signed them, the tree's digest, the
-                                  evidence and request refs, and the
+                                  evidence and request refs, the approval
+                                  note's ref, principal and key, and the
                                   checks' own output and timings.
                    approve times each required check it runs, and
                    appends one JSON line per check to the timing log,

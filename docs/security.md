@@ -135,11 +135,15 @@ a signed `the-valley/approval/v1` statement (`implemented`, see
 [Approval statement](./reference.md#approval-statement-the-valleyapprovalv1)). The hook stores
 approvals, and takes them only from a holder of the `approve` grant: owning the change, holding
 `restack`, and being in `protection.writers` confer nothing (`implemented`, checked by
-`valleyhook-unit`). It checks an approval's form, not whose key signed it, so a stored approval
-proves nothing until a reader verifies it under its own approval keys. A project can declare
-`retainChangeRecords` so that no push deletes a record and its history shows any withdrawal
-(`implemented`; setting it is a **deployment choice**). Gating landings on approvals is **not
-built**; it would require retained records.
+`valleyhook-unit`). It checks an approval's form and that it names the head of any request beside it
+when written. It does not check whose key signed it, so a stored approval proves nothing until a
+reader verifies it under its own approval keys. A later request-only push or two racing non-atomic
+pushes can still leave a note beside a request it does not name; such a pair is not an approval, and
+the landing gate that would compare them is **not built** (see
+[Change records](./architecture.md#change-records)). A project can declare `retainChangeRecords` so
+that no push deletes a record and its history shows any withdrawal (`implemented`; setting it is a
+**deployment choice**). Gating landings on approvals is **not built**; it would require retained
+records.
 
 ### 3. Filing takes a touch (not built)
 
@@ -152,8 +156,12 @@ hardware-backed key and signing an approval statement on a YubiKey PIV slot are 
 [Approval statement](./reference.md#approval-statement-the-valleyapprovalv1)): the registry schema
 accepts `bound: "hardware"` with an attestation, the identity renderer verifies the attestation and
 lists touch-always keys in `approval-signers-hardware`, and the `approval` command signs statements
-with the key in a YubiKey's PIV slot. Enforcing a touch when an approval is filed or integrated is
-**not built**.
+with the key in a YubiKey's PIV slot. With an approval key selected, `valley approve` and review's
+`[a]pprove` sign the version they file and publish the note beside the request (`implemented`), and
+a refused signature publishes nothing. A YubiKey asks for a PIN and a touch as its slot's policies
+say. Selecting a PIV slot is the operator's choice of key; requiring a touch-always key belongs to
+`approval.hardware`, which accepts only keys `approval-signers-hardware` lists. Requiring a signed
+approval, or a touch, when a change is filed or integrated is **not built**.
 
 ### 4. Hosts deploy only what the operator signed (not built)
 

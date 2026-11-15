@@ -284,21 +284,23 @@ func runResolve(g git, args []string, w io.Writer) error {
 
 // versionsOf reads a change's record from origin, for approve, which
 // approves exactly one head of a change and refuses a head no version
-// records. It fails when origin holds no record of the change.
-func versionsOf(g git, id string) (*change.Record, error) {
+// records, with the record commit it was read from, which a signed
+// approval names. It fails when origin holds no record of the change.
+func versionsOf(g git, id string) (recorded, error) {
 	ref := change.Ref(recordTarget, id)
 	o, err := listOrigin(g, ref)
 	if err != nil {
-		return nil, err
+		return recorded{}, err
 	}
-	commit := o.refs[ref]
-	if commit == "" {
-		return nil, failure("origin holds no record of change " + id)
+	n := recorded{id: id, commit: o.refs[ref]}
+	if n.commit == "" {
+		return recorded{}, failure("origin holds no record of change " + id)
 	}
-	if err := fetch(g, commit); err != nil {
-		return nil, err
+	if err := fetch(g, n.commit); err != nil {
+		return recorded{}, err
 	}
-	return readRecord(g, commit)
+	n.record, err = readRecord(g, n.commit)
+	return n, err
 }
 
 // readAll reads every record origin holds, in the order of their IDs, as
@@ -352,20 +354,30 @@ func mayName(g git, u unreadRecord, head, tip string) bool {
 }
 
 // project is the name a change's handle is printed under: origin's
-// repository, as its URL names it, without .git.
+// repository, as its URL names it, without .git (originName), or origin
+// when the URL names none.
 func project(g git) string {
+	if name, err := originName(g); err == nil {
+		return name
+	}
+	return "origin"
+}
+
+// originName is origin's repository, as its URL names it: the last path
+// segment, without .git. A signed approval names the project so.
+func originName(g git) (string, error) {
 	url, err := g.output(true, "remote", "get-url", "origin")
 	if err != nil {
-		return "origin"
+		return "", failure("this repository has no origin")
 	}
 	url = strings.TrimRight(url, "/")
 	if i := strings.LastIndexAny(url, "/:"); i >= 0 {
 		url = url[i+1:]
 	}
 	if name := strings.TrimSuffix(url, ".git"); name != "" {
-		return name
+		return name, nil
 	}
-	return "origin"
+	return "", failure("origin's URL names no repository")
 }
 
 // writeRecord writes a record commit holding r, with the parents given,

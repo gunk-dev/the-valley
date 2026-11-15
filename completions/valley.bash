@@ -29,14 +29,16 @@ _valley() {
     mapfile -t COMPREPLY < <(compgen -W 'quick slow' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = checks ] && [ "${cur:0:1}" = - ]; then
     mapfile -t COMPREPLY < <(compgen -W '--schema --instance --project --names --cost' -- "$cur")
+  elif [[ "${COMP_WORDS[1]}" =~ ^(approve|review)$ ]] && [ "${COMP_WORDS[COMP_CWORD - 1]}" = --approval-key ]; then
+    mapfile -t COMPREPLY < <(compgen -f -- "$cur")
   elif [ "${COMP_WORDS[1]}" = approve ] && [ "${cur:0:1}" = - ]; then
-    mapfile -t COMPREPLY < <(compgen -W '--head --build-here --verbose' -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W '--head --build-here --verbose --approval-key --approval-piv' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = approve ] && [ "${COMP_WORDS[COMP_CWORD - 1]}" = --head ]; then
     return
   elif [ "${COMP_WORDS[1]}" = approve ]; then
     mapfile -t COMPREPLY < <(compgen -W "$(_valley_branches --no-merged=origin/main)" -- "$cur")
   elif [ "${COMP_WORDS[1]}" = review ] && [ "${cur:0:1}" = - ]; then
-    mapfile -t COMPREPLY < <(compgen -W '-v --build-here --repo' -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W '-v --build-here --repo --approval-key --approval-piv' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = rebase ] && [ "${cur:0:1}" = - ]; then
     mapfile -t COMPREPLY < <(compgen -W '--known-signers --integrator-name' -- "$cur")
   elif [ "$COMP_CWORD" -eq 2 ] && [[ "${COMP_WORDS[1]}" =~ ^(review|rebase)$ ]]; then

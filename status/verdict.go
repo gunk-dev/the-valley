@@ -12,6 +12,9 @@ package main
 //	⊘ nqyw v3  not approved · change is a draft
 //	  run: valley ready nqyw
 //
+// An approval whose signed note was published with the request opens
+// "signed and approved".
+//
 // The glyphs are plan's (plan.go): ✓ settled, ◐ under way, ◇ waiting on
 // nothing that will move by itself, ⊘ refused, and ? unknown. An approval
 // goes to stdout, a refusal to stderr. On a terminal the glyph has its
@@ -59,6 +62,7 @@ type verdict struct {
 	waiting  []string // required checks no evidence is published for yet
 	worker   bool     // a check worker builds the waiting checks
 	carried  bool     // the version is the later one the answer carried to, its checks the active version's
+	signed   bool     // a signed approval was published with the request
 	failed   []string
 	why      string // what stops the approval, or what is not known
 	run      string // the command the person runs next
@@ -112,10 +116,10 @@ func (v verdict) lines(t terminal) string {
 		if why == "" {
 			why = "state unknown"
 		}
-		clauses = []string{"approved", why, "see: valley status " + v.name}
+		clauses = []string{v.approved(), why, "see: valley status " + v.name}
 		action = ""
 	case "approved":
-		clauses = []string{"approved"}
+		clauses = []string{v.approved()}
 		switch {
 		case len(v.failed) > 0:
 			glyph, colour = "✗", colourRefused
@@ -159,6 +163,15 @@ func (v verdict) lines(t terminal) string {
 		line += "  " + action + "\n"
 	}
 	return line
+}
+
+// approved is the verdict's first clause on a filed request: approved, or
+// signed and approved when the approval's note was published with it.
+func (v verdict) approved() string {
+	if v.signed {
+		return "signed and approved"
+	}
+	return "approved"
 }
 
 // action is the line under a verdict that says what the person does next.

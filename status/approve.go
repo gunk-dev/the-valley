@@ -33,6 +33,11 @@ package main
 // The approved result names what was filed, after the attempt's own reads
 // of the record, with empty fields for a plain branch. unknown is a
 // request whose state the attempt could not establish after the push.
+//
+// With an approval key selected, the attempt also signs an approval of the
+// version it files and publishes the note in the same push
+// (approvalsign.go). With none, it says that no signed approval was
+// written, and does nothing else differently.
 
 import (
 	"context"
@@ -50,11 +55,12 @@ import (
 	"syscall"
 	"time"
 
+	approvals "the-valley/approval"
 	"the-valley/derive"
 	"the-valley/telemetry"
 )
 
-const approveUsage = "usage: valley approve [-v] [--head <sha>] [--build-here] <change>"
+const approveUsage = "usage: valley approve [-v] [--head <sha>] [--build-here] [--approval-key <file> | --approval-piv] <change>"
 
 // interruptedStatus is the exit status of an approval cut short by a
 // signal, as a shell reports a process SIGINT ended.
@@ -84,6 +90,17 @@ type approval struct {
 	reviewing          bool
 	result             []string // how the attempt ended, for review
 
+	// key is the approval key the approval is signed with, or nil when
+	// none is selected (approvalsign.go). auth is what the host published
+	// about approval keys when the attempt read it, and hardware whether
+	// the policy requires a hardware key. frozenRecord and frozenVersion
+	// are the record commit the bound head's version was first read from,
+	// and that version, which the statement names.
+	key                         *approvalKey
+	auth                        *approvalAuthority
+	hardware                    bool
+	frozenRecord, frozenVersion string
+
 	// carriedVersion is the later version review's answer carried to, and
 	// carriedHead its head: the version that lands, which the verdict
 	// names (carriedVerdict).
@@ -102,8 +119,9 @@ type approval struct {
 	tel                                *approveTelemetry
 	mu                                 sync.Mutex
 	interrupted, finished              bool
-	child                              *os.Process
+	child                              *os.Process // the checks, or the PIV signer's helper
 	childDone                          chan struct{}
+	tty                                *ttyState // the terminal's settings while the PIV signer runs
 	worktree                           string
 	signals                            chan os.Signal
 	unwatched                          chan struct{}
@@ -170,9 +188,19 @@ func runApprove(g git, args []string, stdout, stderr io.Writer, end func(int)) i
 	return a.run()
 }
 
-// verbFlags reads the approve verb's arguments, and returns --head's value.
+// verbFlags reads the approve verb's arguments, selects the approval key
+// they and the environment select, and returns --head's value.
 func (a *approval) verbFlags(args []string) (want string, err error) {
+	var keyFlags approvalFlags
 	for i := 0; i < len(args); i++ {
+		last, isKey, err := keyFlags.take(args, i)
+		if err != nil {
+			return "", err
+		}
+		if isKey {
+			i = last
+			continue
+		}
 		switch arg := args[i]; {
 		case arg == "--build-here":
 			a.buildHere = true
@@ -192,7 +220,8 @@ func (a *approval) verbFlags(args []string) (want string, err error) {
 	if a.name == "" {
 		return "", failure(approveUsage)
 	}
-	return want, nil
+	a.key, err = keyFlags.key()
+	return want, err
 }
 
 // reviewApproval is review r's [a]pprove of the change it shows, c, bound
@@ -207,7 +236,7 @@ func reviewApproval(r *review, c shownChange) *approval {
 	head, version := r.approveHead, r.approveVersion
 	a := &approval{g: r.g, stdin: r.stdin, stdout: r.stdout, stderr: r.stderr, v: r.verifier(), exit: r.exit,
 		reviewing: true, carriedVersion: r.carriedVersion, carriedHead: r.carriedHead,
-		verbose: r.verbose, buildHere: r.buildHere, name: c.name, bound: head}
+		verbose: r.verbose, buildHere: r.buildHere, key: r.key, name: c.name, bound: head}
 	if c.id == "" {
 		a.branch = c.branch
 		return a
@@ -291,13 +320,15 @@ func (a *approval) unwatch() {
 	close(a.unwatched)
 }
 
-// interrupt ends an attempt a signal cut short: it stops the checks
-// running, if any, waits for them to end, removes their worktree, records
+// interrupt ends an attempt a signal cut short: it stops the checks or the
+// PIV signer running, if any, waits for them to end, puts back the
+// terminal settings the signer started on, removes the worktree, records
 // the attempt's end as interrupted, keeps that result, and ends with 130
 // through exit. A second signal while the checks are ending kills them. A
 // signal that reaches the checks first ends them, and checking's caller
 // interrupts the attempt itself; whichever comes first ends it.
 func (a *approval) interrupt() {
+	interruptBegins(a)
 	a.mu.Lock()
 	if a.finished {
 		a.mu.Unlock()
@@ -308,7 +339,7 @@ func (a *approval) interrupt() {
 		select {} // the first interrupt ends the process
 	}
 	a.interrupted = true
-	child, done, t := a.child, a.childDone, a.tel
+	child, done, t, tty := a.child, a.childDone, a.tel, a.tty
 	a.mu.Unlock()
 	if child != nil {
 		_ = child.Signal(os.Interrupt)
@@ -319,11 +350,16 @@ func (a *approval) interrupt() {
 			<-done
 		}
 	}
+	tty.restore()
 	a.removeWorktree()
 	t.end("interrupted")
 	a.writeOutcome("interrupted")
 	a.exit(interruptedStatus)
 }
+
+// interruptBegins is told of each interrupt as it begins, before it takes
+// a.mu. A test observes an interrupt arriving through it.
+var interruptBegins = func(*approval) {}
 
 // finish marks the attempt ended, unless a signal has interrupted it,
 // when it reports false and the signal handler ends the process.
@@ -486,13 +522,18 @@ func readLine(r io.Reader) string {
 // heads, whichever version is active by then: a record that moves after
 // review cannot change what lands, since the request names the head
 // approved. It binds that version's number and title.
+//
+// A signed approval names the record commit the version was first read
+// from, and that version. The first read freezes both; a later read only
+// checks that the head is still that version's.
 func (a *approval) checkVersion(head string) error {
 	a.boundVersion, a.title = "", ""
-	r, err := versionsOf(a.g, a.id)
+	n, err := versionsOf(a.g, a.id)
 	if err != nil {
 		fmt.Fprintf(a.stderr, "valley: %s\n", err)
 		return a.declined("could not read the change's versions", act{})
 	}
+	r := n.record
 	var known []string
 	for _, v := range r.Versions {
 		known = append(known, fmt.Sprintf("v%d at %s", v.N, headOf(v)))
@@ -505,6 +546,14 @@ func (a *approval) checkVersion(head string) error {
 	}
 	if a.boundVersion == "" {
 		return a.declined(fmt.Sprintf("%s is none of its versions (%s)", a.short(head), strings.Join(known, ", ")),
+			act{see: "valley status " + a.handle})
+	}
+	switch {
+	case a.key == nil:
+	case a.frozenRecord == "":
+		a.frozenRecord, a.frozenVersion = n.commit, a.boundVersion
+	case a.boundVersion != a.frozenVersion:
+		return a.declined(fmt.Sprintf("its record now lists %s as v%s, not v%s", a.short(head), a.boundVersion, a.frozenVersion),
 			act{see: "valley status " + a.handle})
 	}
 	return nil
@@ -735,6 +784,11 @@ func (a *approval) attempt() error {
 		return a.declined("the branch's request name "+request+" is change "+strings.TrimPrefix(request, "c-")+"'s",
 			act{then: "rename the branch, or name the change by its ID"})
 	}
+	// A signed approval names a recorded version, and a plain branch has
+	// none to name.
+	if a.key != nil && a.id == "" {
+		return a.declined("no recorded version to sign", act{run: "valley ready " + a.quoted()})
+	}
 	base, err := g.output(true, "merge-base", tip, head)
 	if err != nil || !isObjectID(base) {
 		return a.declined("shares no history with main", act{})
@@ -768,10 +822,15 @@ func (a *approval) attempt() error {
 	// the floor from the owning valley's own tip when the tip names one. A
 	// change never supplies the policy that gates it, and neither does
 	// the checkout this runs from.
-	res, label, plabel, err := a.derive(root, tip, base, head)
+	res, label, plabel, hardware, err := a.derive(root, tip, base, head)
 	if err != nil {
 		fmt.Fprintf(a.stderr, "valley: %s\n", err)
 		return a.declined("the policy did not derive", act{})
+	}
+	if a.key != nil {
+		if err := a.prepareSigning(hardware); err != nil {
+			return err
+		}
 	}
 	required := res.Required
 	names := make([]string, len(required))
@@ -880,15 +939,39 @@ func (a *approval) attempt() error {
 		fmt.Fprintf(a.stdout, "%s requires no check under %s + %s; filing the request with no evidence\n", what, label, plabel)
 	}
 
+	// The approval is signed once the checks have passed, so a refusal
+	// costs no touch.
+	var signed *signedApproval
+	aref := approvals.Ref(recordTarget, a.id)
+	if a.key != nil {
+		if signed, err = a.sign(); err != nil {
+			a.reportEvidence(evidenceRefs)
+			return err
+		}
+	}
+
 	// What origin holds for this request, read once. Approving the same
 	// change twice is ordinary: evidence expires, and a change whose input
 	// closure moved under it is told to re-attest. So the request ref may
 	// already exist. A ref whose name ends in the request's, or in an
 	// evidence ref's, would take the push in its place.
-	pending, err := a.remoteRef(ref)
+	// A signed approval reads the request and the approval in one listing,
+	// so the two values it leases are ones origin held together.
+	var pending, standingApproval string
+	if signed != nil {
+		var refs map[string]string
+		refs, err = a.lsRemote(ref, aref)
+		pending, standingApproval = refs[ref], refs[aref]
+	} else {
+		pending, err = a.remoteRef(ref)
+	}
 	lookalike := ""
 	if err == nil {
-		lookalike, err = a.pushLookalike(append([]string{ref}, evidenceRefs...)...)
+		written := append([]string{ref}, evidenceRefs...)
+		if signed != nil {
+			written = append(written, aref)
+		}
+		lookalike, err = a.pushLookalike(written...)
 	}
 	if err != nil {
 		a.declined("could not read the request ref on origin", act{})
@@ -926,6 +1009,14 @@ func (a *approval) attempt() error {
 		lease = append(lease, "--force-with-lease="+ref+":"+pending)
 		push = append(push, head+":"+ref)
 	}
+	// The approval note replaces whatever approval stood for the change,
+	// under a lease on what was read there, as the request is written, and
+	// in the same atomic push, so another approver's pair written meanwhile
+	// fails this push at the note's ref rather than splitting the pair.
+	if signed != nil {
+		lease = append(lease, "--force-with-lease="+aref+":"+standingApproval)
+		push = append(push, signed.blob+":"+aref)
+	}
 
 	// The checks can take minutes, and the record may have moved
 	// meanwhile, so it is read once more just before anything is filed.
@@ -948,6 +1039,19 @@ func (a *approval) attempt() error {
 			return err
 		}
 	}
+	// The keys the approval was checked against are the ones the host
+	// still publishes, or nothing is pushed.
+	if signed != nil {
+		if same, err := a.auth.unchanged(a.g); err != nil || !same {
+			why := "the published approval keys changed meanwhile"
+			if err != nil {
+				why = "could not read the published approval keys again"
+			}
+			a.declined(why, act{run: "valley approve " + a.quoted()})
+			a.reportEvidence(evidenceRefs)
+			return errRefused
+		}
+	}
 
 	// With no new evidence and the request already at this head there is
 	// nothing to push, and a push with no refspec would fall back to
@@ -961,10 +1065,14 @@ func (a *approval) attempt() error {
 		processStarted()
 		if err := cmd.Run(); err != nil {
 			a.tel.emit("approve.request", map[string]any{"ref": ref, "result": "refused"})
-			if len(lease) == 0 && a.attestationStandsElsewhere(e.digest, evidenceRefs) {
+			switch {
+			case pending == head && a.attestationStandsElsewhere(e.digest, evidenceRefs):
 				a.declined("this key's evidence for the tree is on origin already",
 					act{then: "attest with another key: set VALLEY_ATTEST_KEY"})
-			} else {
+			case signed != nil && a.approvalMoved(aref, standingApproval):
+				a.declined("another approval of the change was published meanwhile",
+					act{run: "valley approve " + a.quoted()})
+			default:
 				a.diagnosePush(ref, pending)
 			}
 			a.reportEvidence(evidenceRefs)
@@ -994,8 +1102,10 @@ func (a *approval) attempt() error {
 			if err == nil {
 				v.why = "request consumed meanwhile"
 			}
+			v.signed = signed != nil
 			if !a.stopped() {
 				fmt.Fprint(a.stdout, v.lines(terminalOf(a.stdout)))
+				a.sayUnsigned()
 			}
 			a.reportEvidence(evidenceRefs)
 			return errUnknown
@@ -1007,6 +1117,10 @@ func (a *approval) attempt() error {
 			return errRefused
 		}
 		switch {
+		case pushed && signed != nil && len(evidenceRefs) == 0:
+			standing = append(standing, "the request already stood at this head; the signed approval is what was published")
+		case pushed && signed != nil:
+			standing = append(standing, "the request already stood at this head; the evidence and the signed approval are what was published")
 		case pushed:
 			standing = append(standing, "the request already stood at this head; the evidence is what was published")
 		case len(unbuilt) > 0:
@@ -1048,6 +1162,14 @@ func (a *approval) attempt() error {
 			}
 			fmt.Fprintf(w, "  checks   %s\n", strings.Join(names, ", "))
 		}
+		if signed != nil {
+			listed := "not listed as a hardware key"
+			if signed.hardware {
+				listed = "listed as a hardware key"
+			}
+			fmt.Fprintf(w, "  approval %s -> %s\n", aref, signed.blob)
+			fmt.Fprintf(w, "  signed   %s, key %08x, %s\n", signed.principal, signed.keyhash, listed)
+		}
 	}
 
 	// The verdict. Checks with no evidence yet are built by a check
@@ -1080,14 +1202,32 @@ func (a *approval) attempt() error {
 	if a.carriedHead != "" && !a.stopped() {
 		v = a.carriedVerdict()
 	}
+	v.signed = signed != nil
 	if !a.stopped() {
 		fmt.Fprint(a.stdout, v.lines(terminalOf(a.stdout)))
+		a.sayUnsigned()
 	}
 	a.filedID, a.filedHandle, a.filedVersion = a.id, a.handle, a.boundVersion
 	if a.id == "" {
 		a.filedVersion = ""
 	}
 	return nil
+}
+
+// sayUnsigned says, under the verdict of an approval no approval key was
+// selected for, that it published no signed approval.
+func (a *approval) sayUnsigned() {
+	if a.key == nil {
+		fmt.Fprintln(a.stdout, "no signed approval was written: no approval key is selected")
+	}
+}
+
+// approvalMoved reports whether origin's approval ref for the change is
+// no longer where the read before the push saw it, which is what makes
+// its lease refuse.
+func (a *approval) approvalMoved(ref, read string) bool {
+	now, err := a.remoteRef(ref)
+	return err == nil && now != read
 }
 
 // carriedVerdict is the verdict on an approval whose answer carried to a
@@ -1145,31 +1285,32 @@ func carriedVerdictOf(name, version string, checks *jsonVersionChecks) verdict {
 }
 
 // derive is what the policy at main's tip requires of the change from
-// base to head, and where each layer was read from.
-func (a *approval) derive(root, tip, base, head string) (res *derive.Result, label, plabel string, err error) {
+// base to head, where each layer was read from, and whether the policy
+// requires an approval to be signed with a hardware key.
+func (a *approval) derive(root, tip, base, head string) (res *derive.Result, label, plabel string, hardware bool, err error) {
 	g := a.g
 	schema, err := schemaFile(g, "")
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", "", false, err
 	}
 	src, done, err := resolveLayers(g, tip, "", "")
 	defer done()
 	if err != nil {
-		return nil, "", "", fmt.Errorf("%v; nothing derived", err)
+		return nil, "", "", false, fmt.Errorf("%v; nothing derived", err)
 	}
 	model, err := policyModel(schema, src.instance, src.project, false)
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", "", false, err
 	}
 	paths, err := derive.Diff(context.Background(), g.dir, g.env, base, head)
 	if err != nil {
-		return nil, "", "", fmt.Errorf("%v; nothing derived", err)
+		return nil, "", "", false, fmt.Errorf("%v; nothing derived", err)
 	}
 	if res, err = derive.Derive(model, paths); err != nil {
-		return nil, "", "", fmt.Errorf("%v; nothing derived", err)
+		return nil, "", "", false, fmt.Errorf("%v; nothing derived", err)
 	}
 	label, plabel = src.labels(root, "", "", "origin/main "+a.short(tip))
-	return res, label, plabel, nil
+	return res, label, plabel, model.HardwareApproval, nil
 }
 
 // check runs the missing checks over head in a throwaway worktree, signed

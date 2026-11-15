@@ -287,7 +287,7 @@ the plan graph by `knots-e2e`.
 | Protected refs (default `refs/heads/main`)                                    | Principals in `protection.writers` (default empty)                                               | The integrator moves them on disk, so it needs no place in `protection.writers`.                                                                                                                                                                                                                                                                          |
 | `refs/the-valley/attestations/<tree>/<key-hash>`                              | Any key                                                                                          | Create, and add notes. The ref must name a tree of notes within size bounds, and each note must verify under a known signer and be about that tree. An update keeps every note the ref holds and adds one; no push deletes one (`valleyhook/attestation.go`).                                                                                             |
 | `refs/the-valley/integration-requests/<target>/<c>`                           | Principals with the `approve` grant (also accepted as `request`)                                 | Create, update and delete. A change with a record is requested as `c-<change-id>` (see [The integrator](#the-integrator)).                                                                                                                                                                                                                                |
-| `refs/the-valley/approvals/main/c-<change-id>`                                | Principals with the `approve` grant (also accepted as `request`)                                 | Create, update and delete. One blob holding an approval note about that change and `main`, at most 2048 bytes; the hook checks its form and not its key (`valleyhook/approval.go`). Nothing reads it to decide a landing; gating landings on approvals is `not built`.                                                                                    |
+| `refs/the-valley/approvals/main/c-<change-id>`                                | Principals with the `approve` grant (also accepted as `request`)                                 | Create, update and delete. One blob holding an approval note about that change and `main`, at most 2048 bytes, naming the head of any request beside it when written; the hook checks its form and not its key (`valleyhook/approval.go`). Nothing reads it to decide a landing; gating landings on approvals is `not built`.                             |
 | `refs/the-valley/check-requests/<principal>/<worktree>/<attempt>`             | The named principal `<principal>`; `approve` holders also delete                                 | A commit whose required checks the check worker builds, outside any change. Create, update and delete. The worktree and the attempt are 16 lowercase hexadecimal digits each, and a principal holds at most 32 in a repository, a soft bound. Nothing reads it to decide a landing (see [Check requests](#check-requests), `valleyhook/checkrequest.go`). |
 | `refs/the-valley/changes/main/<change-id>`                                    | Any named principal creates; the owner, `approve` or `restack` holders update; `approve` deletes | A change record. The hook allows only the transitions in [Change records](#change-records) (`valleyhook/record.go`), and no delete in a project that sets `retainChangeRecords`. The integrator reads it to refuse.                                                                                                                                       |
 | `refs/the-valley/restack/main/<change-id>`                                    | Principals with the `restack` grant                                                              | A restack report about a change the repository records. Created and extended, never deleted (see [Restack reports](#restack-reports), `valleyhook/report.go`).                                                                                                                                                                                            |
@@ -348,12 +348,19 @@ change is readied first.
 
 `approval` writes, signs, and verifies `the-valley/approval/v1` statements
 (`approval/statement.go`). The hook admits one approval note per change at
-`refs/the-valley/approvals/main/c-<change-id>`, from an `approve` holder only (`implemented`). A
-client publishing an approval beside its request must lease each ref: a create against no ref, a
-replacement or a delete against the value it read. Because the hook cannot see leases, and an atomic
-push of both refs does not keep them together afterwards, a gate must compare what the approval
-names with the request and read both in its landing transaction. Signing approvals in
-`valley approve` and gating landings on them are **not built**.
+`refs/the-valley/approvals/main/c-<change-id>`, from an `approve` holder only (`implemented`). When
+the change has an integration request beside the note (written by the push or already stored), the
+note must name that request's head and a version the change's record gives that head
+(`implemented`). A note with no request beside it is not compared. With an approval key selected,
+`valley approve` signs and publishes the note beside its request in one atomic push, leasing each
+ref it writes against the value or absence it read (`implemented`).
+
+The hook compares a pair only when a push writes the note, so it does not keep a pair matched. Two
+atomic pushes that write a request and its note conflict on the note ref's old value, and one fails
+whole. Two non-atomic pushes can each win one ref and leave one's note beside the other's request. A
+later push of the request alone can also move it away from an admitted note. A mismatched pair is
+not an approval: a landing gate compares the signed statement with the request, reading both in its
+landing transaction, and that gate is **not built**.
 
 The ref `refs/the-valley/changes/main/<change-id>` points at a record commit. The commit's tree
 holds one entry, `record.json`, as a plain file. Its schema is `valley-change-record/v1`, read by

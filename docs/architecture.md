@@ -1344,14 +1344,16 @@ batch, and is never stopped because `main` moved: the next scan reads the new ti
 `status/worker.go`).
 
 The walk reads the policy without asking which requirements are mandatory, lists `origin`'s
-attestation refs once, and reads the host's signers once, so each commit costs about a tree digest
-(`implemented`, `status/mainstate.go`). Reading the floor from the owning valley and walking `main`
-still take a second or two, so a pass that finds no follow run to start on a tip records the tip in
-`main.json` in its state directory, with the failure key of a follow run waiting out its backoff. A
-later pass that finds the same tip, with that wait not over, reads neither for a project with no
-ready change, and ends after reading `origin` as an idle pass does. The record holds the tip alone,
-so a floor or known signers that change in the owning valley while `main` stays put are read at
-`main`'s next landing (`implemented`, `status/worker.go`).
+attestation refs once, and reads the host's signers once (in `valley pending`, shared with transfer
+verification). A tree's digest is remembered in the client cache by the tree's ID, so each commit
+costs a few git reads and an `attest verify` of each note it judges (`implemented`,
+`status/mainstate.go`). Reading the floor from the owning valley and walking `main` still take a
+second or two, so a pass that finds no follow run to start on a tip records the tip in `main.json`
+in its state directory, with the failure key of a follow run waiting out its backoff. A later pass
+that finds the same tip, with that wait not over, reads neither for a project with no ready change,
+and ends after reading `origin` as an idle pass does. The record holds the tip alone, so a floor or
+known signers that change in the owning valley while `main` stays put are read at `main`'s next
+landing (`implemented`, `status/worker.go`).
 
 `valley pending` opens a project whose policy declares follow checks with one line on `main`:
 **clear** when no follow check is due, **clearing** when some are due or running and none failed,

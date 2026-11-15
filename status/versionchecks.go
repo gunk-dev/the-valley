@@ -431,7 +431,9 @@ func runCheckLine(g git, args []string, stdout, stderr io.Writer) error {
 	if !g.succeeds(true, "rev-parse", "--git-dir") {
 		return failure("not a git repository")
 	}
-	changes, err := activeChecks(g, args, newCosts(), stderr)
+	c := newCosts()
+	defer c.close()
+	changes, err := activeChecks(g, args, c, stderr)
 	if err != nil {
 		return err
 	}

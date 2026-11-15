@@ -993,6 +993,12 @@ The operations:
 - `flush`: send this workstation's spooled records now, each spool to its own destination (see
   [The telemetry spool](#the-telemetry-spool)).
 
+A `valley` command runs `ssh` for a telemetry request with `ForkAfterAuthentication=no`, which needs
+OpenSSH 8.7 or later. On Linux, that `ssh` process ends with the command, however the command ends.
+Elsewhere, an `ssh` process left behind, such as when a signal ends the command, ends when the host
+ends the request or when ssh's keepalive gives up on a dead connection. A host that stalls while
+still answering keepalives keeps it running: the client does not bound it.
+
 `--logs` adds output: the units' own journal lines, the tail of each stream's newest build logs, and
 a workstation's `check.output` records. Every piece of it is a check's or a program's own text. It
 is marked untrusted, and every control character in it is shown escaped, such as `\x1b`. Without
@@ -1699,7 +1705,8 @@ nested phases) and `<phase>_procs` (processes started). The phases are `fetch` (
 `fetch`, `pending`'s and `rebase`'s fetch of origin included), `records` (reading change and outcome
 records), `transfers` (verifying transfer statements), `knots`, `changes` (the queue's change
 states), `checks` (the queue's check evidence), `conflicts` (merges comparing ready changes),
-`policy` (policy at main), `main` (main's follow checks and worker runs), `branches` (pending's
+`policy` (policy at main), `main` (main's follow checks), `telemetry` (waiting for the worker's
+telemetry read for main's lines, started by `pending` before reading origin), `branches` (pending's
 branches and stacks), `steps` (the reviews a walk runs), and `other`. With telemetry off, `valley`
 starts no extra process and writes no file: it reads the git configuration files directly and runs
 `git` only when one mentions telemetry or includes another file. With telemetry on, the command runs

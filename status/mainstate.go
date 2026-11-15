@@ -19,8 +19,10 @@ package main
 // not reach is due when a landing the walk read set it due, and when the
 // walk stopped at its bound rather than at main's first commit, since a
 // landing past the bound may have. The bound keeps a read of main's state
-// to about two seconds however long main is, most of it a tree digest per
-// commit; only follow checks of the nix runner are read.
+// short however long main is: a commit costs a few git reads and an attest
+// verify of each note judged, since its tree's digest is remembered
+// between commands (rememberedDigest). Only follow checks of the nix
+// runner are read.
 //
 // The check worker (worker.go) runs the due checks on main's tip, and
 // valley pending shows the same walk, with the worker's telemetry, as one
@@ -65,9 +67,10 @@ type mainWalk struct {
 	tip    string            // the tip's tree digest
 }
 
-// mainFollows walks main from tip under the policy model. It returns no
-// checks when the policy declares no nix follow check.
-func mainFollows(g git, tip string, model *composed.Model, stderr io.Writer) (mainWalk, error) {
+// mainFollows walks main from tip under the policy model, judging every
+// tree under the host's signers keys reads. It returns no checks when the
+// policy declares no nix follow check.
+func mainFollows(g git, tip string, model *composed.Model, keys *hostKeys, stderr io.Writer) (mainWalk, error) {
 	declared := map[string]bool{}
 	for _, c := range model.Classes {
 		for _, name := range c.Follows {
@@ -100,8 +103,7 @@ func mainFollows(g git, tip string, model *composed.Model, stderr io.Writer) (ma
 	if err != nil {
 		return mainWalk{}, failure("could not list the evidence origin holds")
 	}
-	var keys hostKeys
-	defer keys.done()
+	digest := func(_, commit string) (string, error) { return rememberedDigest(g, commit) }
 	rooted := false // whether the walk reached main's first commit
 	for _, commit := range strings.Fields(out) {
 		var asked []nixCheck
@@ -110,7 +112,7 @@ func mainFollows(g git, tip string, model *composed.Model, stderr io.Writer) (ma
 				asked = append(asked, q.nixCheck)
 			}
 		}
-		e, err := coverageIn(g, commit, o.refs, asked, &keys, stderr)
+		e, err := coverageIn(g, commit, o.refs, asked, keys, digest, stderr)
 		if err != nil {
 			return mainWalk{}, err
 		}

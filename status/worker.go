@@ -2084,7 +2084,9 @@ func followsUnder(g git, tip, instance, project string, stderr io.Writer) (mainW
 	if err != nil {
 		return mainWalk{}, err
 	}
-	return mainFollows(g, tip, model, stderr)
+	var keys hostKeys
+	defer keys.done()
+	return mainFollows(g, tip, model, &keys, stderr)
 }
 
 // failureRecord is the worker's record of what failed, project by

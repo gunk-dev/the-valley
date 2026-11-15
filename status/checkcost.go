@@ -20,10 +20,15 @@ package main
 // A listing reads the worker source once for each host it lists, with the
 // same command valley telemetry read runs (telemetry.go). The newest page
 // is read first, and then the older pages up to costRecords records, at
-// once, each from a cursor made from the newest page's. The reads run
-// while the listing reads the policy, so they add little to its time. A
+// once, each from a cursor made from the newest page's. valley pending
+// starts the reads before it reads origin, and the other listings while
+// they read the policy, so they add little to a listing's time. A
 // host that does not answer, or refuses, leaves every version it serves
-// without build times, and stderr says why, once.
+// without build times, and stderr says why, once. No read outlives the
+// command that started it: once the listing has what it needs, it closes
+// the reads, which cancels each one nobody waited for and returns once
+// every ssh they started has ended. A command that ends any other way,
+// by a signal or SIGPIPE, takes its reads' ssh with it (sshCommand).
 //
 // For each required nix check of a version:
 //
@@ -67,6 +72,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -146,11 +152,15 @@ type batchEnd struct {
 }
 
 // costs reads the worker's telemetry of each host a listing serves, once
-// a host, in the background.
+// a host, in the background, until close.
 type costs struct {
-	mu    sync.Mutex
-	reads map[string]*costRead // by destination identity
-	said  map[string]bool      // the reasons already said on stderr
+	mu      sync.Mutex
+	reads   map[string]*costRead // by destination identity
+	said    map[string]bool      // the reasons already said on stderr
+	ctx     context.Context      // every read's, done once closed
+	cancel  context.CancelFunc
+	closed  bool           // no read starts any more
+	running sync.WaitGroup // the reads not yet ended
 }
 
 type costRead struct {
@@ -162,7 +172,18 @@ type costRead struct {
 }
 
 func newCosts() *costs {
-	return &costs{reads: map[string]*costRead{}, said: map[string]bool{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &costs{reads: map[string]*costRead{}, said: map[string]bool{}, ctx: ctx, cancel: cancel}
+}
+
+// close cancels every read still running, whose answer nobody waits for
+// any more, and returns once each has ended with every ssh it started.
+func (c *costs) close() {
+	c.mu.Lock()
+	c.closed = true
+	c.mu.Unlock()
+	c.cancel()
+	c.running.Wait()
 }
 
 // start begins the read of the host g's telemetry remote names
@@ -179,11 +200,18 @@ func (c *costs) start(g git) *costRead {
 	if r := c.reads[dest.identity()]; r != nil {
 		return r
 	}
+	if c.closed {
+		r := &costRead{done: make(chan struct{}), why: "the command is ending"}
+		close(r.done)
+		return r
+	}
 	r := &costRead{done: make(chan struct{})}
 	c.reads[dest.identity()] = r
+	c.running.Add(1)
 	go func() {
+		defer c.running.Done()
 		defer close(r.done)
-		r.builds, r.mains, r.batches, r.why = readBuilds(dest)
+		r.builds, r.mains, r.batches, r.why = readBuilds(c.ctx, dest)
 	}()
 	return r
 }
@@ -208,9 +236,9 @@ func (c *costs) wait(r *costRead, warn func(format string, args ...any)) bool {
 // readBuilds reads up to costRecords of the newest records of the worker
 // source at dest, and returns the check builds among them, newest first,
 // the starts and ends of the batches run on main tips, and the ends of the
-// batches run for changes, newest first.
-func readBuilds(dest sshDest) ([]checkBuild, []mainRun, []batchEnd, string) {
-	first, err := readPage(dest, "")
+// batches run for changes, newest first. Each page's ssh ends with ctx.
+func readBuilds(ctx context.Context, dest sshDest) ([]checkBuild, []mainRun, []batchEnd, string) {
+	first, err := readPage(ctx, dest, "")
 	if err != nil {
 		return nil, nil, nil, err.Error()
 	}
@@ -235,7 +263,7 @@ func readBuilds(dest sshDest) ([]checkBuild, []mainRun, []batchEnd, string) {
 			defer wg.Done()
 			// An older page that cannot be read leaves the baselines
 			// shorter, and nothing else.
-			if page, err := readPage(dest, strings.Join(parts, ",")); err == nil {
+			if page, err := readPage(ctx, dest, strings.Join(parts, ",")); err == nil {
 				mu.Lock()
 				pages = append(pages, page)
 				mu.Unlock()
@@ -286,21 +314,45 @@ type keyedBuild struct {
 }
 
 // readPage reads one page of the worker source: the records after the
-// cursor, or the newest without one.
-func readPage(dest sshDest, cursor string) (workerPage, error) {
+// cursor, or the newest without one. When ctx ends, the ssh is killed and
+// the read of its answer stops, even if something it started, such as a
+// ProxyCommand, still holds the answer open. What ssh says comes through
+// a pipe the read owns rather than one os/exec copies, so the wait for
+// ssh ends when ssh does, never after the wait for a pipe something else
+// holds (sshCommand's WaitDelay), and its last sshSaidLimit bytes are
+// kept.
+func readPage(ctx context.Context, dest sshDest, cursor string) (workerPage, error) {
 	req := telemetry.Request{V: 1, Op: telemetry.OpRead, Source: workerSource, Cursor: cursor, Limit: telemetry.MaxReadLimit}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	ssh := sshCommand(ctx, dest, req.Command())
 	out, err := ssh.StdoutPipe()
 	if err != nil {
 		return workerPage{}, err
 	}
-	var sshErr strings.Builder
-	ssh.Stderr = &sshErr
-	if err := ssh.Start(); err != nil {
+	defer context.AfterFunc(ctx, func() { out.Close() })()
+	r, w, err := os.Pipe()
+	if err != nil {
 		return workerPage{}, fmt.Errorf("could not run ssh: %v", err)
 	}
+	ssh.Stderr = w
+	err = ssh.Start()
+	w.Close()
+	if err != nil {
+		r.Close()
+		return workerPage{}, fmt.Errorf("could not run ssh: %v", err)
+	}
+	said := &lastBytes{max: sshSaidLimit}
+	heard := make(chan struct{})
+	go func() {
+		io.Copy(said, r)
+		close(heard)
+	}()
+	stopHearing := func() {
+		r.Close()
+		<-heard
+	}
+	defer stopHearing()
 	page, refused, err := parsePage(out)
 	io.Copy(io.Discard, out)
 	waitErr := ssh.Wait()
@@ -310,12 +362,45 @@ func readPage(dest sshDest, cursor string) (workerPage, error) {
 	case err == nil:
 		return page, nil
 	}
-	if why := strings.TrimSpace(telemetry.Sanitize(sshErr.String())); why != "" {
+	// ssh has ended, but a process it started may hold its stderr open,
+	// and no event says it will never write again: the rest of what ssh
+	// said is waited for up to sshWaitDelay, as os/exec waits, and not at
+	// all once the read is cancelled.
+	select {
+	case <-heard:
+	case <-ctx.Done():
+	case <-time.After(sshWaitDelay):
+	}
+	stopHearing()
+	if why := strings.TrimSpace(telemetry.Sanitize(string(said.b))); why != "" {
 		err = fmt.Errorf("%v: %s", err, why)
 	} else if waitErr != nil {
 		err = fmt.Errorf("%v: %v", err, waitErr)
 	}
 	return workerPage{}, fmt.Errorf("the worker's telemetry on %s did not read: %v", dest.host, err)
+}
+
+// sshSaidLimit is how much of what ssh says on stderr a read keeps: its
+// last bytes, which say why it failed. A remote or a proxy that says more
+// fills neither memory nor storage.
+const sshSaidLimit = 4 << 10
+
+// lastBytes keeps the last max bytes written through it.
+type lastBytes struct {
+	b   []byte
+	max int
+}
+
+func (l *lastBytes) Write(p []byte) (int, error) {
+	if len(p) >= l.max {
+		l.b = append(l.b[:0], p[len(p)-l.max:]...)
+		return len(p), nil
+	}
+	if extra := len(l.b) + len(p) - l.max; extra > 0 {
+		l.b = append(l.b[:0], l.b[extra:]...)
+	}
+	l.b = append(l.b, p...)
+	return len(p), nil
 }
 
 // parsePage reads one answer, which must end, or says why the host

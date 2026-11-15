@@ -141,6 +141,11 @@ func (s *snapshot) strictAncestor(a, b string) bool { return s.land.StrictAncest
 // alone, so a change that includes another lands the other's content too.
 func (s *snapshot) includes(n recorded, candidates []recorded) []string {
 	head := headOf(n.record.ActiveVersion())
+	heads := []string{head}
+	for _, c := range candidates {
+		heads = append(heads, headOf(c.record.ActiveVersion()))
+	}
+	s.land.ReadReach(heads)
 	var below []recorded
 	for _, c := range candidates {
 		if c.id != n.id && s.strictAncestor(headOf(c.record.ActiveVersion()), head) {

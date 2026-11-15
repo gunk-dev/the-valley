@@ -66,6 +66,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -78,6 +79,7 @@ import (
 
 	"the-valley/change"
 	"the-valley/note"
+	"the-valley/rebase"
 )
 
 const predicatePure = "the-valley/check/pure/v1"
@@ -110,14 +112,17 @@ type originFailure struct{ error }
 func coverageOf(g git, head string, checks []nixCheck, stderr io.Writer) (evidence, error) {
 	var keys hostKeys
 	defer keys.done()
-	return coverageIn(g, head, nil, checks, &keys, stderr)
+	return coverageIn(g, head, nil, checks, &keys, func(repo, commit string) (string, error) {
+		return treeDigest(g, repo, commit)
+	}, stderr)
 }
 
 // coverageIn is coverageOf for a reader that judges many trees, as the
 // main walk does (mainstate.go): listed is origin's attestation refs,
-// listed once for every tree, or nil to list this tree's alone, and keys
-// reads the host's signers once for every tree judged under it.
-func coverageIn(g git, head string, listed map[string]string, checks []nixCheck, keys *hostKeys, stderr io.Writer) (evidence, error) {
+// listed once for every tree, or nil to list this tree's alone, keys
+// reads the host's signers once for every tree judged under it, and
+// digest gives a commit's tree digest, as treeDigest does.
+func coverageIn(g git, head string, listed map[string]string, checks []nixCheck, keys *hostKeys, digestOf func(repo, commit string) (string, error), stderr io.Writer) (evidence, error) {
 	oid, err := g.output(true, "rev-parse", "--verify", "--quiet", "--end-of-options", head+"^{commit}")
 	if err != nil || !isObjectID(oid) {
 		return evidence{}, failure("no such commit: " + head)
@@ -128,7 +133,7 @@ func coverageIn(g git, head string, listed map[string]string, checks []nixCheck,
 		repo = "."
 	}
 
-	digest, err := treeDigest(g, repo, head)
+	digest, err := digestOf(repo, head)
 	if err != nil {
 		return evidence{}, err
 	}
@@ -155,6 +160,18 @@ func treeDigest(g git, repo, head string) (string, error) {
 	out, err := attestTool(g, "digest", "--repo", repo, "--rev", head)
 	digest, ok := strings.CutPrefix(strings.TrimSpace(out), "valley-tree-v1:")
 	if err != nil || !ok || digest == "" {
+		return "", failure("could not digest the tree of " + head)
+	}
+	return digest, nil
+}
+
+// rememberedDigest is treeDigest worked out in this process, as attest
+// digest works it out, and remembered between commands by the tree's ID
+// (rebase.TreeDigest), so a reader that digests the same trees again and
+// again, as the main walk does, digests each once.
+func rememberedDigest(g git, head string) (string, error) {
+	digest, ok := rebase.TreeDigest(context.Background(), g.engine(), rebase.CacheDir(), head)
+	if !ok {
 		return "", failure("could not digest the tree of " + head)
 	}
 	return digest, nil
@@ -452,17 +469,24 @@ func verify(g git, repo, head, keys string, note []byte) (signers []string, refu
 }
 
 // hostKeys is the host's known-signers file, read by the first tree that
-// needs it and kept for every later one, until done removes it.
+// needs it and kept for every later one, until done removes it. With run,
+// the publication is the one this run verifies transfer statements with
+// (signerSource.publication), so a run that does both reads it once.
 type hostKeys struct {
 	keys, why string
 	p         *publishedSigners
 	once      bool
+	run       bool
 }
 
 // read is hostSigners, read once.
 func (h *hostKeys) read(g git) (keys string, p *publishedSigners, why string) {
 	if !h.once {
-		h.keys, h.p, h.why = hostSigners(g)
+		read := readSigners
+		if h.run {
+			read = verification.publication
+		}
+		h.keys, h.p, h.why = hostSignersFrom(g, read)
 		h.once = true
 	}
 	return h.keys, h.p, h.why
@@ -479,7 +503,12 @@ func (h *hostKeys) done() {
 // publishes, for attest verify to read, and returns its path and the
 // publication it came from. why says why there is none.
 func hostSigners(g git) (keys string, p *publishedSigners, why string) {
-	p, err := readSigners(g)
+	return hostSignersFrom(g, readSigners)
+}
+
+// hostSignersFrom is hostSigners with the publication read by read.
+func hostSignersFrom(g git, read func(git) (*publishedSigners, error)) (keys string, p *publishedSigners, why string) {
+	p, err := read(g)
 	switch {
 	case err != nil:
 		return "", nil, err.Error()

@@ -352,9 +352,11 @@ func readWalkQueue(g git, l listing, stderr io.Writer) (walkQueue, error) {
 			q.gaps = append(q.gaps, fmt.Sprintf("%s did not read: %v", r.name, r.err))
 		}
 	}
-	q.rows, q.moving = operatorQueue(q.repos, q.h, l, newCosts(), nil, stderr, func(_ listed, view jsonRepo) {
+	c := newCosts()
+	q.rows, q.moving = operatorQueue(q.repos, q.h, l, c, nil, stderr, func(_ listed, view jsonRepo) {
 		q.drafts, q.branches = q.drafts+len(*view.Drafts), q.branches+len(view.Branches)
 	})
+	c.close()
 	return q, nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -81,7 +82,95 @@ exec git upload-pack "$@"
 // main's tip, and one merges main back in, so its history meets main's at
 // two commits.
 func TestAncestryIsAnsweredAsGitAnswersIt(t *testing.T) {
-	w := newWorld(t)
+	w, commits, m2 := ancestryWorld(t)
+	want := map[[2]string]bool{}
+	for _, a := range commits {
+		for _, b := range commits {
+			want[[2]string{a, b}] = w.ancestor(a, b)
+		}
+	}
+
+	calls := logGit(t)
+	s, err := ReadSnapshot(context.Background(), w.g, Verifier{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range commits {
+		if got := s.Reaches(a); got != want[[2]string{a, m2}] {
+			t.Errorf("Reaches(%s) is %v, and git says %v", short(a), got, !got)
+		}
+		for _, b := range commits {
+			if got := s.StrictAncestor(a, b); got != (a != b && want[[2]string{a, b}]) {
+				t.Errorf("StrictAncestor(%s, %s) is %v, and git says %v", short(a), short(b), got, !got)
+			}
+		}
+	}
+	log, _ := os.ReadFile(calls)
+	if n := strings.Count(string(log), "merge-base --is-ancestor"); n != 0 {
+		t.Errorf("the snapshot asked git about %d pairs:\n%s", n, log)
+	}
+}
+
+// What many commits reach that main does not, read in one batch
+// (readReach), is what reading each alone gives, with one git for them
+// all. A name that is no commit is left to be read alone.
+func TestReachInOneBatchIsReachReadAlone(t *testing.T) {
+	w, commits, _ := ancestryWorld(t)
+	alone, err := ReadSnapshot(context.Background(), w.g, Verifier{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := logGit(t)
+	batched, err := ReadSnapshot(context.Background(), w.g, Verifier{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(calls)
+	batched.readReach(append([]string{"no-such-commit"}, commits...))
+	log, _ := os.ReadFile(calls)
+	if n, alone := strings.Count(string(log), "rev-list --parents --ignore-missing --stdin"), strings.Count(string(log), " ^"); n != 1 || alone != 0 {
+		t.Errorf("the batch started %d rev-lists, and read %d commits alone:\n%s", n, alone, log)
+	}
+	if _, read := batched.reachOf["no-such-commit"]; read {
+		t.Errorf("the batch answered for a name that is no commit")
+	}
+	sorted := func(s []string) string {
+		s = append([]string{}, s...)
+		sort.Strings(s)
+		return strings.Join(s, " ")
+	}
+	for _, c := range commits {
+		want, got := alone.reached(c), batched.reachOf[c]
+		if fmt.Sprint(want.commits) != fmt.Sprint(got.commits) || sorted(want.below) != sorted(got.below) {
+			t.Errorf("%s reaches %v, below %v, alone, and %v, below %v, in the batch", short(c), want.commits, want.below, got.commits, got.below)
+		}
+	}
+}
+
+// logGit puts a shim on PATH that logs every git started, one line of its
+// arguments each, to the file it returns.
+func logGit(t *testing.T) string {
+	t.Helper()
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shim, calls := t.TempDir(), filepath.Join(t.TempDir(), "calls")
+	script := fmt.Sprintf("#!/bin/sh\necho \"$*\" >> '%s'\nexec '%s' \"$@\"\n", calls, real)
+	if err := os.WriteFile(filepath.Join(shim, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shim+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return calls
+}
+
+// ancestryWorld is an origin whose main holds a merge. One branch forks
+// below it, one from the side it merged, one from main's tip, and one
+// merges main back in, so its history meets main's at two commits. It
+// returns every commit, and main's tip.
+func ancestryWorld(t *testing.T) (w *world, commits []string, tip string) {
+	t.Helper()
+	w = newWorld(t)
 	base := w.git("rev-parse", "HEAD")
 	m1 := w.commit("m1", "main.txt", "1\n")
 	w.git("checkout", "--quiet", "-b", "side", base)
@@ -102,43 +191,5 @@ func TestAncestryIsAnsweredAsGitAnswersIt(t *testing.T) {
 	w.git("merge", "--quiet", "--no-ff", "-m", "merge main", m2)
 	z := w.git("rev-parse", "HEAD")
 	w.git("push", "--quiet", "origin", "main", "x", "y", "s", "z")
-
-	commits := []string{base, m1, s1, merge, m2, x1, x2, y, s2, z}
-	want := map[[2]string]bool{}
-	for _, a := range commits {
-		for _, b := range commits {
-			want[[2]string{a, b}] = w.ancestor(a, b)
-		}
-	}
-
-	// Every git the snapshot starts goes through a shim that logs it.
-	real, err := exec.LookPath("git")
-	if err != nil {
-		t.Fatal(err)
-	}
-	shim, calls := t.TempDir(), filepath.Join(t.TempDir(), "calls")
-	script := fmt.Sprintf("#!/bin/sh\necho \"$*\" >> '%s'\nexec '%s' \"$@\"\n", calls, real)
-	if err := os.WriteFile(filepath.Join(shim, "git"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", shim+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	s, err := ReadSnapshot(context.Background(), w.g, Verifier{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, a := range commits {
-		if got := s.Reaches(a); got != want[[2]string{a, m2}] {
-			t.Errorf("Reaches(%s) is %v, and git says %v", short(a), got, !got)
-		}
-		for _, b := range commits {
-			if got := s.StrictAncestor(a, b); got != (a != b && want[[2]string{a, b}]) {
-				t.Errorf("StrictAncestor(%s, %s) is %v, and git says %v", short(a), short(b), got, !got)
-			}
-		}
-	}
-	log, _ := os.ReadFile(calls)
-	if n := strings.Count(string(log), "merge-base --is-ancestor"); n != 0 {
-		t.Errorf("the snapshot asked git about %d pairs:\n%s", n, log)
-	}
+	return w, []string{base, m1, s1, merge, m2, x1, x2, y, s2, z}, m2
 }

@@ -1,10 +1,97 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
+
+// A host or a proxy that says far more on ssh's stderr than a read keeps
+// costs it no more than sshSaidLimit bytes: the read's error carries the
+// last of what was said, which says why it failed.
+func TestAReadKeepsTheLastOfWhatSSHSaid(t *testing.T) {
+	dir := t.TempDir()
+	toolsOnPath(t, dir)
+	ssh := "#!/bin/sh\nhead -c 1048576 /dev/zero | tr '\\0' x >&2\necho ' the host went away' >&2\nexit 255\n"
+	if err := os.WriteFile(filepath.Join(dir, "bin", "ssh"), []byte(ssh), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := readPage(context.Background(), sshDest{host: "valley-host"}, "")
+	if err == nil || !strings.HasSuffix(err.Error(), "x the host went away") || len(err.Error()) > sshSaidLimit+200 {
+		t.Errorf("the read said %d bytes, ending %q", len(fmt.Sprint(err)), fmt.Sprint(err)[max(len(fmt.Sprint(err))-60, 0):])
+	}
+}
+
+// lastBytes keeps the last bytes written through it, however they come.
+func TestLastBytes(t *testing.T) {
+	l := &lastBytes{max: 4}
+	for _, w := range []string{"ab", "cde", "f", "ghijklm", "n"} {
+		l.Write([]byte(w))
+	}
+	if string(l.b) != "klmn" {
+		t.Errorf("kept %q, not the last four bytes", l.b)
+	}
+}
+
+// Closing the reads cancels one still running at once, even when a
+// process its ssh started, as a ProxyCommand is, holds ssh's output open:
+// close never waits for that output, which a wait for ssh would take up
+// to sshWaitDelay to give up on.
+func TestClosingAReadDoesNotWaitForOutputHeldOpen(t *testing.T) {
+	dir := t.TempDir()
+	toolsOnPath(t, dir, "git")
+	said := filepath.Join(dir, "ssh.pids")
+	if err := syscall.Mkfifo(said, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// ssh starts a process that holds its output, says both process IDs,
+	// and stalls.
+	ssh := fmt.Sprintf("#!/bin/sh\nsleep 86397 &\necho \"$! $$\" > '%s'\nexec sleep 86396\n", said)
+	if err := os.WriteFile(filepath.Join(dir, "bin", "ssh"), []byte(ssh), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(dir, "repo")
+	for _, args := range [][]string{{"init", "--quiet", repo}, {"-C", repo, "config", "valley.telemetry.remote", "ssh://git@valley-host/app.git"}} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	c := newCosts()
+	read := c.start(git{env: os.Environ(), dir: repo})
+	pids := make(chan []string, 1)
+	go func() {
+		data, _ := os.ReadFile(said)
+		pids <- strings.Fields(string(data))
+	}()
+	var held []string
+	select {
+	case held = <-pids:
+	case <-read.done:
+		unheard(said)
+		t.Fatalf("the read ended before ssh started: %s", read.why)
+	case <-time.After(time.Minute):
+		unheard(said)
+		t.Fatal("the read's ssh did not start in a minute")
+	}
+	for _, p := range held {
+		if n, err := strconv.Atoi(p); err == nil {
+			defer syscall.Kill(n, syscall.SIGKILL)
+		}
+	}
+	began := time.Now()
+	c.close()
+	if took := time.Since(began); took >= sshWaitDelay {
+		t.Errorf("closing the read took %s, waiting for the output a process its ssh started held open", took)
+	}
+}
 
 // A build has grown only when it is slower than its baseline by more than
 // both 20% and 30 s.

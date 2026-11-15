@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -298,6 +299,158 @@ func TestPendingStartsCueOncePerProject(t *testing.T) {
 	}
 }
 
+// pending starts as many git processes for a project with five landed
+// changes, five withdrawn ones and five branches no change is on as for
+// one with one of each, beside a draft: what the landed heads reach, what
+// the branches reach, and what the heads a draft may include reach, is
+// read in one batch each, however many there are.
+func TestPendingStartsGitAsOftenWhateverItLists(t *testing.T) {
+	dir := t.TempDir()
+	starts := toolsOnPath(t, dir, "git", "cue")
+	project := func(n int) (string, int) {
+		t.Helper()
+		sh, head := policyProject(t, filepath.Join(dir, fmt.Sprint(n)), 1)
+		for i := 0; i < n; i++ {
+			branch := fmt.Sprintf("landed-%d", i)
+			head(branch, strings.Repeat(string(rune('p'+i)), 32))
+			sh("checkout", "--quiet", "main")
+			sh("merge", "--quiet", "--ff-only", branch)
+			sh("push", "--quiet", "origin", "main")
+		}
+		for i := 0; i < n; i++ {
+			sh("checkout", "--quiet", "-b", fmt.Sprintf("stray-%d", i), "main")
+			sh("commit", "--quiet", "--allow-empty", "-m", fmt.Sprintf("stray %d", i))
+			sh("push", "--quiet", "origin", "HEAD")
+		}
+		valley := func(args ...string) {
+			t.Helper()
+			var stdout, stderr bytes.Buffer
+			if code := run(args, &stdout, &stderr, os.Exit); code != 0 {
+				t.Fatalf("%s: %s", strings.Join(args, " "), stderr.String())
+			}
+		}
+		for i := 0; i < n; i++ {
+			id := strings.Repeat(string(rune('u'+i)), 32)
+			head(fmt.Sprintf("withdrawn-%d", i), id)
+			valley("withdraw", id)
+		}
+		draft := strings.Repeat("z", 32)
+		head("draft", draft)
+		valley("unready", draft)
+		out, started := runCounted(t, starts, "pending")
+		return out, started["git"]
+	}
+	few, small := project(1)
+	many, large := project(5)
+	if !strings.Contains(few, "1 branch no change is on") || !strings.Contains(many, "5 branches no change is on") {
+		t.Fatalf("pending does not count the stray branches:\n%s\n%s", few, many)
+	}
+	if small == 0 || large != small {
+		t.Errorf("pending started git %d times for one landed change, withdrawn change and stray branch, and %d times for five of each", small, large)
+	}
+}
+
+// A host that refuses the read of the worker's telemetry, as it does when
+// the principal already has every observe request it may have open,
+// leaves main's line without the worker's runs: pending says why once,
+// asks the host once, and prints main's line from the walk alone.
+func TestPendingAsksARefusingHostOnce(t *testing.T) {
+	dir := t.TempDir()
+	starts := toolsOnPath(t, dir, "git", "cue")
+	refusal := `{"kind":"error","error":"operator already has 4 observe requests open; try again when one ends"}`
+	ssh := fmt.Sprintf("#!/bin/sh\necho ssh >> '%s'\necho '%s'\n", starts, refusal)
+	if err := os.WriteFile(filepath.Join(dir, "bin", "ssh"), []byte(ssh), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	followProject(t, filepath.Join(dir, "origin"))
+
+	os.Remove(starts)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"pending"}, &stdout, &stderr, os.Exit); code != 0 {
+		t.Fatalf("pending: %s", stderr.String())
+	}
+	log, _ := os.ReadFile(starts)
+	if n := strings.Count(string(log), "ssh"); n != 1 {
+		t.Errorf("pending asked the refusing host %d times", n)
+	}
+	if n := strings.Count(stderr.String(), "refused"); n != 1 || strings.Count(stderr.String(), "\n") != 1 {
+		t.Errorf("pending said, of the refusal:\n%s", stderr.String())
+	}
+	if !strings.HasPrefix(stdout.String(), "main  ◐ clearing · f-1 due · covers ") {
+		t.Errorf("pending's main line, with the host refusing:\n%s", stdout.String())
+	}
+}
+
+// followProject is policyProject with a class that check f-1 follows, a
+// landing on main that sets it due, and its telemetry read from an ssh
+// host, so valley pending waits on the worker's telemetry for main's line.
+func followProject(t *testing.T, root string) {
+	t.Helper()
+	sh, head := policyProject(t, root, 1)
+	sh("config", "valley.telemetry.remote", "ssh://git@valley-host/origin.git")
+	floor := "package verification\nfloor: {\n" +
+		"\tchecks: \"c-1\": {runner: \"nix\", attribute: \"c-1\"}\n" +
+		"\tchecks: \"f-1\": {runner: \"nix\", attribute: \"f-1\"}\n" +
+		"\tclasses: src: {paths: \"src/**\": true, requires: \"c-1\": true, follows: \"f-1\": true}\n" +
+		"\tunclassified: \"c-1\": true\n}\n"
+	if err := os.WriteFile(filepath.Join("policy", "instance", "floor.cue"), []byte(floor), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sh("commit", "--quiet", "-a", "-m", "follow f-1")
+	sh("push", "--quiet", "origin", "main")
+	head("landed", strings.Repeat("p", 32))
+	sh("checkout", "--quiet", "main")
+	sh("merge", "--quiet", "--ff-only", "landed")
+	sh("push", "--quiet", "origin", "main")
+}
+
+// A host that accepts the read of the worker's telemetry and then stalls
+// does not hold valley pending, nor outlive it: with no follow check and
+// nothing ready, nothing waits on the read, so pending cancels it as it
+// returns, and no ssh it started is left running.
+func TestPendingEndsAReadNobodyWaitsFor(t *testing.T) {
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		t.Skip("no /proc to find a child left running in")
+	}
+	dir := t.TempDir()
+	toolsOnPath(t, dir, "git", "cue")
+	// ssh is the host: it says the answer's first line, and stalls as a
+	// sleep of a length nothing else in this process sleeps.
+	header := `{"kind":"header","host":"valley-host","format":"valley-telemetry/v1"}`
+	stall := fmt.Sprintf("#!/bin/sh\necho '%s'\nexec sleep 86399\n", header)
+	if err := os.WriteFile(filepath.Join(dir, "bin", "ssh"), []byte(stall), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sh, _ := policyProject(t, filepath.Join(dir, "origin"), 1)
+	sh("config", "valley.telemetry.remote", "ssh://git@valley-host/origin.git")
+
+	began := time.Now()
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"pending"}, &stdout, &stderr, os.Exit); code != 0 {
+		t.Fatalf("pending: %s", stderr.String())
+	}
+	// The read's own time limit is 30 s: a pending that waited for it
+	// would take that long.
+	if took := time.Since(began); took > 20*time.Second {
+		t.Errorf("pending took %s beside a stalled host", took)
+	}
+	if !strings.Contains(stdout.String(), "nothing needs you") || stderr.Len() != 0 {
+		t.Errorf("pending beside a stalled host printed:\n%s\nand said:\n%s", stdout.String(), stderr.String())
+	}
+	stats, _ := filepath.Glob("/proc/[0-9]*/stat")
+	for _, stat := range stats {
+		data, err := os.ReadFile(stat)
+		if err != nil {
+			continue
+		}
+		f := strings.Fields(string(data[bytes.LastIndexByte(data, ')')+1:]))
+		cmdline, _ := os.ReadFile(filepath.Join(filepath.Dir(stat), "cmdline"))
+		if len(f) > 1 && f[1] == fmt.Sprint(os.Getpid()) && strings.Contains(string(cmdline), "86399") {
+			t.Errorf("pending left its ssh running: %s", filepath.Dir(stat))
+		}
+	}
+}
+
 // pending --checks reads a draft's checks only when --drafts lists the
 // drafts. A listing starts attest only to read checks, once for each head
 // to digest its tree. Without --drafts, two drafts start no attest, add
@@ -508,5 +661,13 @@ func TestPendingSaysWhenTheWorkersBuildFailed(t *testing.T) {
 		if reported {
 			t.Errorf("with the worker's telemetry refused, %s carries a worker's report: %+v", id, c)
 		}
+	}
+}
+
+// unheard opens a FIFO to write and closes it, so a reader still waiting
+// on it reads nothing and ends.
+func unheard(fifo string) {
+	if f, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+		f.Close()
 	}
 }

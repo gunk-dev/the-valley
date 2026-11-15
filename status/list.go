@@ -807,6 +807,7 @@ func runChanges(g git, args []string, stdout, stderr io.Writer) error {
 	writeHandleCache(g, repos, h)
 	doc := jsonChanges{Schema: changesSchema, Host: host, Repos: []jsonRepo{}}
 	c, p := newCosts(), newPairing()
+	defer c.close()
 	for _, r := range repos {
 		view := r.repoView(h, everyChange, unlanded)
 		r.addConflicts(&view, p, stderr)

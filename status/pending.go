@@ -252,6 +252,16 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// The worker's telemetry, which main's lines and the checks read, is
+	// read while origin is, so they wait on it only once the rest is read.
+	// A read nobody waited for is cancelled as the command ends.
+	c := newCosts()
+	defer c.close()
+	if !l.asJSON || l.checks {
+		for _, s := range list {
+			c.start(s.g)
+		}
+	}
 	repos := readSources(list, newVerifier())
 	defer closeSources(repos)
 	readKnots(repos, l.verbose, stderr)
@@ -260,7 +270,7 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 	defer warnUnverified(repos, stderr)
 	if l.asJSON {
 		doc := jsonChanges{Schema: pendingSchema, Host: host, Repos: []jsonRepo{}}
-		c, p := newCosts(), newPairing()
+		p := newPairing()
 		for _, r := range repos {
 			view := r.pendingView(h)
 			r.addCarried(&view, stderr)
@@ -273,7 +283,7 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 		}
 		return writeDocument(stdout, doc)
 	}
-	writePending(repos, h, l, newCosts(), stdout, stderr, terminalOf(stdout), len(repos) > 1 || l.all || l.repo != "")
+	writePending(repos, h, l, c, stdout, stderr, terminalOf(stdout), len(repos) > 1 || l.all || l.repo != "")
 	return nil
 }
 
@@ -556,7 +566,9 @@ func (r listed) mainState(h handleMap, c *costs, stderr io.Writer, t terminal, n
 	model, err := r.snap.model()
 	walk := mainWalk{}
 	if err == nil {
-		walk, err = mainFollows(r.g, r.snap.tip, model, io.Discard)
+		keys := hostKeys{run: true}
+		defer keys.done()
+		walk, err = mainFollows(r.g, r.snap.tip, model, &keys, io.Discard)
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "valley: %s: main's state did not read: %v\n", r.name, err)
@@ -566,7 +578,9 @@ func (r listed) mainState(h handleMap, c *costs, stderr io.Writer, t terminal, n
 		return nil
 	}
 	read := c.start(r.g)
+	waited := phase("telemetry")
 	<-read.done
+	waited()
 	if read.why != "" {
 		fmt.Fprintf(stderr, "valley: %s: main's state shows no worker runs: %s\n", r.name, read.why)
 	}

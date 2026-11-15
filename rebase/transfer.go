@@ -32,6 +32,7 @@ package rebase
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -372,24 +373,38 @@ func (s *Snapshot) verified(t transferStatement, head string) bool {
 	return true
 }
 
-// digest is the valley-tree-v1 digest of a commit's tree, read with
-// replacement refs off, so the tree is the one the commit names.
+// digest is the valley-tree-v1 digest of a commit's tree (TreeDigest),
+// read once per snapshot.
 func (s *Snapshot) digest(commit string) (string, bool) {
 	if d, ok := s.digestOf[commit]; ok {
 		return d, d != ""
 	}
-	git := func(args ...string) *exec.Cmd {
-		return s.g.command(s.ctx, append([]string{"--no-replace-objects"}, args...)...)
-	}
-	d := ""
-	if tree, err := s.g.output(s.ctx, true, "--no-replace-objects", "rev-parse", "--verify", "--quiet", commit+"^{tree}"); err == nil && IsObjectID(tree) {
-		if cached, ok := s.cache.tree(tree); ok {
-			d = cached
-		} else if entries, err := statement.GitTree(git, tree); err == nil {
-			d = statement.TreeDigest(entries)
-			s.cache.putTree(tree, d)
-		}
-	}
+	d, _ := TreeDigest(s.ctx, s.g, s.cache.dir, commit)
 	s.digestOf[commit] = d
 	return d, d != ""
+}
+
+// TreeDigest is the valley-tree-v1 digest of a commit's tree, as attest
+// digest computes it, read with replacement refs off, so the tree is the
+// one the commit names. It is remembered in dir by the tree's ID
+// (cache.go), so a tree is digested once; dir "" remembers nothing.
+func TreeDigest(ctx context.Context, g Git, dir, commit string) (string, bool) {
+	git := func(args ...string) *exec.Cmd {
+		return g.command(ctx, append([]string{"--no-replace-objects"}, args...)...)
+	}
+	tree, err := g.output(ctx, true, "--no-replace-objects", "rev-parse", "--verify", "--quiet", commit+"^{tree}")
+	if err != nil || !IsObjectID(tree) {
+		return "", false
+	}
+	c := cache{dir: dir}
+	if cached, ok := c.tree(tree); ok {
+		return cached, true
+	}
+	entries, err := statement.GitTree(git, tree)
+	if err != nil {
+		return "", false
+	}
+	d := statement.TreeDigest(entries)
+	c.putTree(tree, d)
+	return d, true
 }

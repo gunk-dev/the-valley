@@ -263,17 +263,28 @@ func remoteDest(config func(key string) (string, bool), remote string) (sshDest,
 }
 
 // sshCommand runs one command on dest. The command is built from parsed
-// flags, never from text the caller wrote.
+// flags, never from text the caller wrote. The ssh is killed when this
+// process dies, however it dies (dieWithParent), so a request never
+// outlives the command that made it, nor holds one of the principal's
+// observe requests open after it. ForkAfterAuthentication=no keeps an ssh
+// configuration that forks ssh into the background, out of reach of both,
+// from doing so; the option needs OpenSSH 8.7 or later. A ProxyCommand the
+// user configures is ssh's own child, outside this control.
 func sshCommand(ctx context.Context, dest sshDest, command string) *exec.Cmd {
-	args := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15"}
+	args := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ForkAfterAuthentication=no"}
 	if dest.port != "" {
 		args = append(args, "-p", dest.port)
 	}
 	args = append(args, "--", dest.host, command)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
-	cmd.WaitDelay = 2 * time.Second
+	cmd.WaitDelay = sshWaitDelay
+	cmd.SysProcAttr = dieWithParent()
 	return cmd
 }
+
+// sshWaitDelay is how long a wait for ssh goes on, once ssh has ended or
+// been killed, for output a process it started still holds.
+const sshWaitDelay = 2 * time.Second
 
 // renderer prints answer lines: as they are with --json, or as text.
 // Every string from the host is made safe to show again here.

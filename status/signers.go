@@ -86,6 +86,30 @@ type signerSource struct {
 	found, signer string              // what resolve answered
 	projects      note.SignerProjects // and the signer projects file
 	temp          string              // the published file, written out for the snapshot to read
+
+	published map[string]publicationRead // each repository's publication, by its directory, once read
+}
+
+// publicationRead is what readSigners answered.
+type publicationRead struct {
+	p   *publishedSigners
+	err error
+}
+
+// publication is readSigners for g's repository, read once in a run:
+// resolve reads it through here, and so does main's walk (mainstate.go),
+// so a run that verifies transfer statements and judges main's evidence
+// reads the host's signers once.
+func (s *signerSource) publication(g git) (*publishedSigners, error) {
+	if r, read := s.published[g.dir]; read {
+		return r.p, r.err
+	}
+	p, err := readSigners(g)
+	if s.published == nil {
+		s.published = map[string]publicationRead{}
+	}
+	s.published[g.dir] = publicationRead{p, err}
+	return p, err
 }
 
 // verification is the current run's source, which run sets up. A walk
@@ -155,7 +179,7 @@ func (s *signerSource) resolve() (keys, signer string, projects map[string]map[s
 		n = setting{value: os.Getenv("VALLEY_INTEGRATOR_SIGNER"), from: "VALLEY_INTEGRATOR_SIGNER"}
 	}
 	if k.value == "" || n.value == "" {
-		p, err := readSigners(s.g)
+		p, err := s.publication(s.g)
 		if err != nil {
 			fmt.Fprintf(s.stderr, "valley: %v\n", err)
 		}

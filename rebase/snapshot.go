@@ -113,6 +113,7 @@ type Snapshot struct {
 	firstParent map[string]int       // main's first-parent history, down to its first merge, and each commit's number of parents; nil until read
 	reachesOf   map[string]bool
 	reachOf     map[string]reached
+	landedHeads []string           // the head of every landed version, in the order of the changes' IDs and their versions; nil until read
 	ancestorOf  map[[2]string]bool // "is a an ancestor of b", as git answered it
 	history     *history           // every commit main reaches; nil until read, or when it does not read
 	historyRead bool
@@ -557,6 +558,83 @@ func (s *Snapshot) reached(oid string) reached {
 	return r
 }
 
+// ReadReach reads what each of oids reaches that main does not, as Reach
+// answers it, for every one not read yet, in one batch (readReach): a
+// reader about to ask of many heads asks git once.
+func (s *Snapshot) ReadReach(oids []string) { s.readReach(oids) }
+
+// readReach reads what each of oids reaches that main does not, as
+// reached reads it, for every one not read yet, with one rev-list rather
+// than one each: every commit any of them reaches that main does not,
+// with its parents, from which each one's own is taken. A commit main
+// does not reach is reached from an oid exactly when a path of such
+// commits leads to it, so the answers are reached's. An oid the batch
+// does not list, such as a name that is not a commit's ID, which the
+// batch passes over, is left for reached to read alone, unless main's
+// history holds it, which makes its answer empty. A batch that does not
+// read leaves every oid to reached.
+func (s *Snapshot) readReach(oids []string) {
+	var todo []string
+	asked := map[string]bool{}
+	for _, oid := range oids {
+		if _, read := s.reachOf[oid]; !read && oid != "" && !asked[oid] {
+			asked[oid] = true
+			todo = append(todo, oid)
+		}
+	}
+	if len(todo) < 2 {
+		return
+	}
+	stdin := strings.Join(todo, "\n") + "\n"
+	if s.Tip != "" {
+		stdin += "^" + s.Tip + "\n"
+	}
+	out, err := s.g.input(s.ctx, true, strings.NewReader(stdin), "rev-list", "--parents", "--ignore-missing", "--stdin")
+	if err != nil {
+		return
+	}
+	var order []string
+	parents := map[string][]string{}
+	for _, line := range strings.Split(out, "\n") {
+		if fields := strings.Fields(line); len(fields) > 0 {
+			order = append(order, fields[0])
+			parents[fields[0]] = fields[1:]
+		}
+	}
+	for _, oid := range todo {
+		if _, listed := parents[oid]; !listed {
+			if h := s.mainHistory(); s.Tip != "" && h != nil && h.has(oid) {
+				s.reachOf[oid] = reached{commits: map[string]bool{}}
+			}
+			continue
+		}
+		r := reached{commits: map[string]bool{oid: true}}
+		for walk := []string{oid}; len(walk) > 0; {
+			c := walk[len(walk)-1]
+			walk = walk[:len(walk)-1]
+			for _, p := range parents[c] {
+				if _, listed := parents[p]; listed && !r.commits[p] {
+					r.commits[p] = true
+					walk = append(walk, p)
+				}
+			}
+		}
+		seen := map[string]bool{}
+		for _, c := range order {
+			if !r.commits[c] {
+				continue
+			}
+			for _, p := range parents[c] {
+				if !r.commits[p] && !seen[p] {
+					seen[p] = true
+					r.below = append(r.below, p)
+				}
+			}
+		}
+		s.reachOf[oid] = r
+	}
+}
+
 // StrictAncestor reports whether a is an ancestor of b, and not b itself.
 // A commit main does not reach is an ancestor of b exactly when it is in
 // Reach(b). A commit main reaches is one exactly when b is a commit main
@@ -642,6 +720,18 @@ func (s *Snapshot) Unrecorded() []BranchHead {
 	for _, n := range s.Changes {
 		active[HeadOf(n.Record.ActiveVersion())] = true
 	}
+	// Each branch tip outside main's history has its reach read, by
+	// Reaches, in one batch.
+	var outside []string
+	if h := s.mainHistory(); h != nil {
+		for ref, oid := range s.Refs {
+			if name, ok := strings.CutPrefix(ref, "refs/heads/"); ok && name != Target && !active[oid] && !h.has(oid) {
+				outside = append(outside, oid)
+			}
+		}
+		sort.Strings(outside)
+		s.readReach(outside)
+	}
 	var branches []BranchHead
 	for ref, oid := range s.Refs {
 		name, ok := strings.CutPrefix(ref, "refs/heads/")
@@ -657,13 +747,22 @@ func (s *Snapshot) Unrecorded() []BranchHead {
 // underLanded reports whether a landed version's head is oid or reaches
 // it. Each version's landing is decided once per snapshot, before
 // anything is walked, and only a landed version's head has its reach
-// read, once per snapshot.
+// read, once per snapshot, every head's in one batch (readReach).
 func (s *Snapshot) underLanded(oid string) bool {
-	for _, n := range s.Changes {
-		for _, v := range n.Record.Versions {
-			if h := HeadOf(v); s.IsLanded(n.ID, v) && (h == oid || s.Reach(h)[oid]) {
-				return true
+	if s.landedHeads == nil {
+		s.landedHeads = []string{}
+		for _, n := range s.Changes {
+			for _, v := range n.Record.Versions {
+				if s.IsLanded(n.ID, v) {
+					s.landedHeads = append(s.landedHeads, HeadOf(v))
+				}
 			}
+		}
+		s.readReach(s.landedHeads)
+	}
+	for _, h := range s.landedHeads {
+		if h == oid || s.Reach(h)[oid] {
+			return true
 		}
 	}
 	return false

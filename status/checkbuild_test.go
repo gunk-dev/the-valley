@@ -183,6 +183,13 @@ func treeBatchEnd(result string) workerRecord {
 	return record("batch.end", "p1", rigTree, map[string]any{"attest_run": "attest-1", "result": result})
 }
 
+// resultFor is a check.result for the tree, with data.
+func resultFor(check string, data map[string]any) workerRecord {
+	rec := record("check.result", "attest-1", rigTree, data)
+	rec.Check = check
+	return rec
+}
+
 func published() workerRecord {
 	return record("publish.end", "p1", rigTree, map[string]any{"result": "passed"})
 }
@@ -264,6 +271,28 @@ func TestCheckBuildPassEndNeedsItsStart(t *testing.T) {
 	}
 }
 
+// A pass ends only once none of its batches runs, so its end settles the
+// batches for the tree it started, even one whose batch.end the stream
+// lost. Another pass's end does not: another worker writing to the same
+// stream can end a pass while this one builds the tree.
+func TestCheckBuildPassEndSettlesItsOwnBatches(t *testing.T) {
+	r := newBuildRig(t, "fast")
+	r.reads = []fakeRead{{}}
+	waited := false
+	r.stream.follows = []fakeFollow{
+		{records: []workerRecord{{Seq: 11, Type: "pass.start", Run: "pa"},
+			record("batch.start", "pa", rigTree, map[string]any{"attest_run": "attest-1"}),
+			{Seq: 13, Type: "pass.start", Run: "pb"}, {Seq: 14, Type: "pass.end", Run: "pb"}}},
+		{before: func() { waited = true }, records: []workerRecord{{Seq: 20, Type: "pass.end", Run: "pa"}}},
+		{records: []workerRecord{published()}},
+	}
+	r.run(1)
+	r.says(&r.out, "not established · a worker pass ended")
+	if !waited {
+		t.Error("another pass's end ended the wait while a batch for the tree ran")
+	}
+}
+
 // Each wake-up ends the wait in the last read; with every check covered
 // there, it passes.
 func TestCheckBuildWakes(t *testing.T) {
@@ -280,8 +309,6 @@ func TestCheckBuildWakes(t *testing.T) {
 		{name: "a quick worker's batch fails before the mark", follow: fakeFollow{records: []workerRecord{
 			func() workerRecord { r := treeBatchEnd("failed"); r.Seq = 5; return r }()}},
 			status: 1, says: "not established · the worker's batch for this tree ended with failures"},
-		{name: "a producer lost records", follow: fakeFollow{records: []workerRecord{{Type: "check.output", Data: map[string]any{"dropped_before": float64(2)}}}},
-			status: 1, says: "not established · telemetry lost records"},
 		{name: "the follow fails", follow: fakeFollow{err: errors.New("the host refused")}, status: 1, says: "not established · telemetry unreadable"},
 		{name: "the stream cannot be read", endErr: errors.New("no observe grant"), status: 1, says: "not established · telemetry unreadable"},
 	} {
@@ -295,6 +322,116 @@ func TestCheckBuildWakes(t *testing.T) {
 				t.Errorf("origin holds %q; %d reads, want the first and the last", r.requests(), r.read)
 			}
 		})
+	}
+}
+
+// A gap in the stream, before, between or after the tree's results, a
+// producer's dropped_before or the host's gap, ends nothing, and the wait
+// passes on evidence that covers every check once the worker publishes.
+// Reads for gaps and the periodic reads keep one pace, never two within
+// readEvery: the first gap is read for, the gaps that follow it are not,
+// the periodic read comes a readEvery later, and a gap just after that
+// read is not read for either.
+func TestCheckBuildWaitsThroughGaps(t *testing.T) {
+	r := newBuildRig(t, "fast", "slow")
+	r.reads = []fakeRead{{}}
+	clock := time.Unix(1_000_000, 0)
+	r.a.readEvery, r.a.now = time.Minute, func() time.Time { return clock }
+	readsBefore := 0
+	r.stream.follows = []fakeFollow{
+		{before: func() { clock = clock.Add(time.Second) }, records: []workerRecord{{gap: true}}},
+		{records: []workerRecord{resultFor("fast", map[string]any{"result": "passed", "dropped_before": float64(2)})}},
+		{records: []workerRecord{resultFor("slow", map[string]any{"result": "passed"})}},
+		{records: []workerRecord{{gap: true}}},
+		{before: func() { clock = clock.Add(time.Minute) }},
+		{before: func() { clock = clock.Add(time.Second) }, records: []workerRecord{{gap: true}}},
+		{before: func() {
+			readsBefore, r.reads = r.read, []fakeRead{{covered: []string{"fast", "slow"}}}
+		}, records: []workerRecord{published()}},
+	}
+	r.run(0)
+	r.says(&r.out, "✓ "+r.head[:7]+"  2 checks passed")
+	r.says(&r.states, "lost\n")
+	if readsBefore != 3 || r.requests() != "" {
+		t.Errorf("%d reads before the publish, want the first, the first gap's and the periodic one; origin holds %q", readsBefore, r.requests())
+	}
+}
+
+// A gap's read passes when it covers every check: the publish's record
+// the gap hid is no longer needed.
+func TestCheckBuildGapReadPasses(t *testing.T) {
+	r := newBuildRig(t, "fast")
+	r.reads = []fakeRead{{}, {covered: []string{"fast"}}}
+	r.stream.follows = []fakeFollow{
+		{records: []workerRecord{resultFor("fast", map[string]any{"result": "passed"})}},
+		{records: []workerRecord{{gap: true}}},
+	}
+	r.run(0)
+	r.says(&r.out, "✓ "+r.head[:7]+"  1 check passed")
+	if r.read != 2 || r.requests() != "" {
+		t.Errorf("%d reads, want the first and the gap's; origin holds %q", r.read, r.requests())
+	}
+}
+
+// A gap does not hide a failure the stream still carries: the wait ends
+// at the failed batch, prints the failed check, and says the worker's
+// records may be incomplete, as the parent does from the state pipe.
+func TestCheckBuildFailureAfterAGap(t *testing.T) {
+	r := newBuildRig(t, "fast", "slow")
+	r.reads = []fakeRead{{}, {covered: []string{"slow"}}}
+	failed := record("check.result", "attest-1", rigTree, map[string]any{"result": "failed", "dropped_before": float64(1)})
+	failed.Check = "fast"
+	r.stream.follows = []fakeFollow{{records: []workerRecord{failed, treeBatchEnd("failed")}}}
+	r.run(1)
+	lost := "  the worker's stream lost records, so those for this tree may be incomplete\n"
+	r.says(&r.out, "not established · the worker's batch for this tree ended with failures", lost,
+		"    fast  failed", "  fast · failed\n")
+	var s childState
+	s.read(strings.NewReader(r.states.String()))
+	var out bytes.Buffer
+	report(&out, s.results, s.attrs, s.lost)
+	if !strings.HasPrefix(out.String(), lost) {
+		t.Errorf("the parent's report does not say the records may be incomplete:\n%s", out.String())
+	}
+}
+
+// On the wire, a gap the host reports in a follow reaches the wait in its
+// place among the records, and the follow reads on to its end; a refusal
+// still ends it.
+func TestWorkerStreamHandsOnGaps(t *testing.T) {
+	dir, bin := t.TempDir(), t.TempDir()
+	self, err := filepath.Abs(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(self, filepath.Join(bin, "ssh")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_SSH_DIR", dir)
+	answer := filepath.Join(dir, "valley-host.answer")
+	follow := func(lines ...string) ([]workerRecord, string, error) {
+		os.WriteFile(answer, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
+		records := make(chan workerRecord, 8)
+		cursor, err := sshStream{sshDest{host: "valley-host"}}.follow(context.Background(), "worker=0123456789abcdef:4", 10, records)
+		close(records)
+		var got []workerRecord
+		for r := range records {
+			got = append(got, r)
+		}
+		return got, cursor, err
+	}
+	got, cursor, err := follow(`{"kind":"header","format":"valley-telemetry/v1"}`,
+		`{"kind":"record","stream":"worker","seq":5,"type":"pass.start","run":"p1"}`,
+		`{"kind":"gap","stream":"worker","reason":"retention","from":6,"to":8}`,
+		`{"kind":"record","stream":"worker","seq":9,"type":"pass.end","run":"p1"}`,
+		`{"kind":"end","cursor":"worker=0123456789abcdef:9"}`)
+	if err != nil || cursor != "worker=0123456789abcdef:9" || len(got) != 3 ||
+		got[0].Seq != 5 || got[0].gap || !got[1].gap || got[2].Seq != 9 || got[2].gap {
+		t.Errorf("the follow handed %+v, ended at %q, %v", got, cursor, err)
+	}
+	if _, _, err := follow(`{"kind":"error","error":"no observe grant"}`); err == nil || !strings.Contains(err.Error(), "the host refused") {
+		t.Errorf("a refusal ended the follow with %v", err)
 	}
 }
 
@@ -564,7 +701,7 @@ func TestCheckBuildStateCannotBeInjected(t *testing.T) {
 	} {
 		rec := record("check.result", c.run, rigTree, map[string]any{"result": c.result})
 		rec.Check = c.check
-		r.a.wake(rec, map[string]bool{}, map[string]bool{})
+		r.a.wake(rec, map[string]bool{}, map[string]map[string]bool{})
 	}
 	r.a.state("filing", "refs/x", "abc")
 	r.a.state("result", "x\nsettled")
@@ -581,7 +718,7 @@ func TestCheckBuildStateCannotBeInjected(t *testing.T) {
 	for _, data := range []map[string]any{{"result": "failed", "drv": drv, "build_error": "signal: killed\nsettled"}, {"result": "error", "error": "no\nsettled such check"}} {
 		rec := record("check.result", "attest-1", rigTree, data)
 		rec.Check = "fast"
-		r.a.wake(rec, map[string]bool{}, map[string]bool{})
+		r.a.wake(rec, map[string]bool{}, map[string]map[string]bool{})
 	}
 	s = childState{}
 	s.read(&r.states)
@@ -601,7 +738,7 @@ func TestCheckBuildStateCannotBeInjected(t *testing.T) {
 func TestCheckBuildReportEscapes(t *testing.T) {
 	var out bytes.Buffer
 	drv := "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-a?b=c.drv"
-	report(&out, []treeResult{{run: "attest-1", check: "fa\x1b[31mst\nsettled", result: "failed", ms: 1000, drv: drv}}, nil)
+	report(&out, []treeResult{{run: "attest-1", check: "fa\x1b[31mst\nsettled", result: "failed", ms: 1000, drv: drv}}, nil, false)
 	for _, want := range []string{`    fa\x1b[31mst\nsettled  failed · 1s`, "  run: nix log '" + drv + "'\n",
 		"  see: valley telemetry read --source worker --logs · when nix log has none\n"} {
 		if !strings.Contains(out.String(), want) {
@@ -609,7 +746,7 @@ func TestCheckBuildReportEscapes(t *testing.T) {
 		}
 	}
 	out.Reset()
-	report(&out, []treeResult{{run: "attest-1", check: "fast", result: "passed", ms: 1000, drv: drv}}, nil)
+	report(&out, []treeResult{{run: "attest-1", check: "fast", result: "passed", ms: 1000, drv: drv}}, nil, false)
 	if strings.Contains(out.String(), "see:") {
 		t.Errorf("a report with no failed check points at the worker's output: %q", out.String())
 	}

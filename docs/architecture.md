@@ -1486,12 +1486,29 @@ reads or creates the worktree's token. Under that lock, it deletes any earlier r
 worktree (each leased on its listed commit), takes a cursor at the end of the worker's telemetry,
 and files a request with a new attempt token. It follows telemetry from that cursor only to know
 when to stop waiting and reread `origin`: when a batch for the tree fails, when a publish for the
-tree ends, when a pass ends with no batch for the tree running (provided its `pass.start` came after
-the filing), when a record reports lost records, or when the stream cannot be read. Taking the
-cursor before filing ensures a fast worker is not missed; checking `pass.start` against a second
-stream-end read after the push returns prevents an earlier pass that may not have seen the request
-from ending the wait. The command also rereads `origin` every three minutes, so a missed wake-up
-costs only minutes.
+tree ends, when a pass ends with no batch for the tree running in another pass (provided its
+`pass.start` came after the filing), or when the stream cannot be read. Each record names its pass
+by the emitter run that wrote it. A pass ends only once none of its batches is running, so its end
+settles the batches it started for the tree even if `batch.end` was lost; a batch running in another
+pass (such as a second worker sharing the stream) holds the wait. Taking the cursor before filing
+ensures a fast worker is not missed; checking `pass.start` against a second stream-end read after
+the push returns prevents an earlier pass that may not have seen the request from ending the wait.
+The command also rereads `origin` every three minutes.
+
+The stream has gaps by design: an emitter drops a record rather than hold up its producer, and the
+next record it stores carries `dropped_before`; the host reports a `gap` when records since the
+cursor are gone. Evidence decides the outcome and the stream only wakes the command, so a gap ends
+nothing. A gap means a wake-up may be missing, so the command rereads `origin` once the records
+already received are handled and goes on waiting. Gap reads and periodic reads share one pace, never
+two within three minutes: a gap sooner after a read waits for the next periodic read, keeping steady
+gaps within that pace. When the wait ends without passing after a gap, the command notes that the
+worker's printed records may be incomplete.
+
+Recovery is therefore one-sided. A lost wake-up for published evidence costs at most three minutes
+until the next read. A lost failure record is not recovered: a failed batch publishes no evidence,
+and the worker builds a failed request again only once its ref moves, so losing both the failed
+batch's end and its pass's end leaves only `--wait` to end the wait. The worker marks a request
+whose batch failed in `failures.json` in its own state directory, which no client reads.
 
 A parent process enforces `--wait` and signals by running the work in a dedicated process group. On
 expiry or signal, it kills the group—so no program left in that group outlives the command, though a

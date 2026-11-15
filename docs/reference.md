@@ -802,23 +802,25 @@ valley checks [--schema <file>] [--instance <dir>] [--project <dir>] [--names [-
     Otherwise it first deletes any earlier requests from this worktree, each leased on its listed
     commit. It then files a check request for `HEAD` under `valley.principal`, follows the worker's
     telemetry (requiring the telemetry `observe` grant) only to know when to reread `origin`, and
-    deletes the request on exit, leased on `HEAD`. Whenever a deletion is not confirmed—such as
-    after a push that did not report success—it prints the leased `git push` command to delete the
-    request. Only one `--build` runs at a time in a worktree, and it exits `130` when interrupted.
-    It has two outcomes:
+    deletes the request on exit, leased on `HEAD`. A telemetry gap (a record reporting records
+    dropped before it, or the host reporting records since the cursor are gone) ends nothing: the
+    command rereads `origin`, never twice within three minutes, and keeps waiting. Whenever a
+    deletion is not confirmed—such as after a push that did not report success—it prints the leased
+    `git push` command to delete the request. Only one `--build` runs at a time in a worktree, and
+    it exits `130` when interrupted. It has two outcomes:
     - **passed** (exit `0`): its last read of `origin`'s evidence completes and covers every check.
     - **not established** (exit `1`, or `130` when interrupted): anything else. It says why it
       stopped (the time limit, a worker pass that ended, the worker's batch or publish for the tree,
-      telemetry it could not read or that lost records) and prints the `check.result` records the
-      worker wrote for `HEAD`'s tree while it waited. These may belong to any batch for the tree,
-      not this request. For each failed check it prints the escaped, untrusted `error` and
-      `build_error` its result records, if any, and `nix log <drv>` when its `drv` is a `.drv` path
-      in `/nix/store` ([telemetry records](#telemetry-answers-valley-telemetryv1)); otherwise, with
-      no `error`, it prints the `nix build` command that reproduces it. With any failed check it
-      prints `see: valley telemetry read --source worker --logs · when nix log has none`: Nix holds
-      no log for a check whose dependency failed to build, and the worker's output names that
-      dependency. Evidence that does not count for a check is treated as no evidence, never a
-      failure.
+      telemetry it could not read) and prints the `check.result` records the worker wrote for
+      `HEAD`'s tree while it waited. These may belong to any batch for the tree, not this request,
+      and after a gap it says they may be incomplete. For each failed check it prints the escaped,
+      untrusted `error` and `build_error` its result records, if any, and `nix log <drv>` when its
+      `drv` is a `.drv` path in `/nix/store`
+      ([telemetry records](#telemetry-answers-valley-telemetryv1)); otherwise, with no `error`, it
+      prints the `nix build` command that reproduces it. With any failed check it prints
+      `see: valley telemetry read --source worker --logs · when nix log has none`: Nix holds no log
+      for a check whose dependency failed to build, and the worker's output names that dependency.
+      Evidence that does not count for a check is treated as no evidence, never a failure.
   - `--wait <duration>`: With `--build`, the maximum time the whole command takes, as a Go duration
     such as `30m` (default `2h`). When the limit expires, every program in its process group is
     killed, the request is deleted within a further 30 seconds, and the outcome is not established.
@@ -834,6 +836,13 @@ valley checks [--schema <file>] [--instance <dir>] [--project <dir>] [--names [-
       the evidence passes without clearing them. List your own requests with
       `git ls-remote origin 'refs/the-valley/check-requests/<principal>/*'` and delete one with
       `git push --force-with-lease=<ref>:<commit> origin :<ref>`.
+    - Lost telemetry never makes the command pass. A lost wake-up for published evidence is
+      recovered by the next read, within three minutes. A lost failure record is not: when the
+      stream loses both the end of a failed batch for `HEAD`'s tree and the end of its pass,
+      evidence stays incomplete and the wait runs to `--wait`.
+    - When several workers share one telemetry stream, another worker's pass that ends before this
+      request's batch has started ends the wait as not established, because no record says which
+      projects a pass read.
 - **Behavior:** Reads all added, modified, deleted, renamed (both old and new paths), and copied
   paths from `git diff --no-relative --name-status -M -z <base> <head>`, matches them against
   `policy.classes` (and `policy.unclassified` when any path matches no class), probes whether each

@@ -20,11 +20,27 @@ package main
 // ends unpassed, when a publish for the tree ends (a batch that passed
 // publishes before the evidence is on origin, so its batch.end is no
 // wake-up), when a pass ends whose pass.start came after the stream's end
-// read once the push returned, with no batch for the tree running, when a
-// record says its producer lost records (dropped_before), or when the
-// stream cannot be read. The cursor comes before the filing so a worker
-// quick to finish is not missed. It also reads origin's evidence every
-// evidenceEvery. No record is taken as this request's result.
+// read once the push returned, with no batch for the tree running in
+// another pass, or when the stream cannot be read. A pass's records name
+// it by the run its emitter writes. A pass ends only once none of its
+// batches runs, so its end settles the batches for the tree it started,
+// even those whose end the stream lost; a batch another pass runs, as
+// another worker writing to the same stream does, holds the wait. The
+// cursor comes before the filing so a worker quick to finish is not
+// missed. It also reads origin's evidence every evidenceEvery. No record
+// is taken as this request's result.
+//
+// A gap in the stream may hide a wake-up, and ends nothing: a record
+// saying its producer dropped records before it (dropped_before), or the
+// host saying records since the cursor are gone, makes the wait read
+// origin's evidence once the records already received are taken, and go
+// on. Reads for gaps and the periodic reads keep one pace, never two
+// within evidenceEvery: a gap that comes sooner after a read waits for
+// the next periodic one. The worker's records it prints are then
+// labelled possibly incomplete. A lost wake-up for evidence that is
+// published costs a read's wait; a gap that loses both a failed batch's
+// end and its pass's end leaves nothing but the time limit to end the
+// wait.
 //
 // It has two outcomes. Passed (exit 0) only when one read, the last,
 // completes and covers every check. Anything else is not established
@@ -222,7 +238,7 @@ func watch(g git, self string, wait time.Duration, stdout, stderr io.Writer, sig
 		subject = "HEAD"
 	}
 	fmt.Fprintln(stdout, t.tint(colourWaiting, "◇")+" "+t.strong(subject)+"  not established · "+why)
-	report(stdout, s.results, s.attrs)
+	report(stdout, s.results, s.attrs, s.lost)
 	if why == "interrupted" {
 		return interruptedStatus
 	}
@@ -230,11 +246,12 @@ func watch(g git, self string, wait time.Duration, stdout, stderr io.Writer, sig
 }
 
 // childState is what the child told the parent. settled means the child
-// tried to delete its request, and said so when it could not; stale is
-// each earlier request whose delete the child started and did not end.
+// tried to delete its request, and said so when it could not; lost that
+// the worker's stream had a gap while it waited; stale is each earlier
+// request whose delete the child started and did not end.
 type childState struct {
 	short, ref, head, pushed string
-	settled, passed          bool
+	settled, passed, lost    bool
 	attrs, stale             map[string]string
 	results                  []treeResult
 	err                      error
@@ -277,6 +294,8 @@ func (s *childState) read(r io.Reader) {
 			s.settled = true
 		case len(f) == 1 && f[0] == "passed":
 			s.passed = true
+		case len(f) == 1 && f[0] == "lost":
+			s.lost = true
 		case len(f) == 3 && f[0] == "stale":
 			s.stale[f[1]] = f[2]
 		case len(f) == 2 && f[0] == "cleared":
@@ -404,7 +423,8 @@ type asking struct {
 	states         io.Writer // the pipe to the parent
 	began          time.Time
 	readEvery      time.Duration
-	lock           *os.File // the worktree's lock, held while the process runs
+	now            func() time.Time // the wait's clock, which paces its reads
+	lock           *os.File         // the worktree's lock, held while the process runs
 
 	head, short, project, tree string
 	mark                       int64 // the stream's newest record once the request was filed
@@ -413,6 +433,9 @@ type asking struct {
 	commands                   []string
 	ref                        string
 	results                    []treeResult
+	// lost is whether the worker's stream had a gap during the wait, and
+	// unread whether origin's evidence has gone unread since a gap.
+	lost, unread bool
 
 	derive func() error
 	cover  func(checks []nixCheck) (evidence, error)
@@ -421,7 +444,7 @@ type asking struct {
 
 func newAsking(g git, stdout, stderr io.Writer) *asking {
 	a := &asking{g: g, stdout: stdout, stderr: stderr, t: terminalOf(stdout), states: io.Discard,
-		began: time.Now(), readEvery: evidenceEvery}
+		began: time.Now(), readEvery: evidenceEvery, now: time.Now}
 	a.derive = a.prepare
 	a.cover = func(checks []nixCheck) (evidence, error) {
 		if _, err := exec.LookPath("attest"); err != nil {
@@ -604,8 +627,9 @@ func (a *asking) recoverStale(principal, token string) {
 }
 
 // wait follows the worker's telemetry from cursor, taken before the
-// filing, until a wake-up, reading origin's evidence every a.readEvery. It
-// returns why it stopped, or the read that covered every check.
+// filing, until a wake-up, reading origin's evidence every a.readEvery and
+// after a gap, never twice within a.readEvery. It returns why it stopped,
+// or the read that covered every check.
 func (a *asking) wait(cursor string) (string, map[string]bool) {
 	// Where the stream ended once the push returned: a pass that starts
 	// after it started after the filing.
@@ -617,10 +641,13 @@ func (a *asking) wait(cursor string) (string, map[string]bool) {
 		return "telemetry unreadable", nil
 	}
 	a.say("◇", colourWaiting, a.short, "waiting for the worker")
-	started, running := map[string]bool{}, map[string]bool{}
-	last := time.Now()
+	started, running := map[string]bool{}, map[string]map[string]bool{}
+	// last is when the wait last read origin's evidence, or began, and
+	// paces the periodic reads; lastRead is when it last read, zero before
+	// its first, and paces the reads for gaps. Every read sets both.
+	last, lastRead := a.now(), time.Time{}
 	for {
-		seconds := int(max(a.readEvery-time.Since(last), 0)/time.Second) + 1
+		seconds := int(max(a.readEvery-a.now().Sub(last), 0)/time.Second) + 1
 		ctx, cancel := context.WithCancel(context.Background())
 		records := make(chan workerRecord, 256)
 		var next string
@@ -629,16 +656,28 @@ func (a *asking) wait(cursor string) (string, map[string]bool) {
 			defer close(records)
 			next, ferr = a.stream.follow(ctx, cursor, seconds, records)
 		}()
-		why := ""
+		why, covered := "", map[string]bool(nil)
 		for r := range records {
-			if why == "" {
-				if why = a.wake(r, started, running); why != "" {
-					cancel()
-				}
+			if why != "" || covered != nil {
+				continue
+			}
+			why = a.wake(r, started, running)
+			// A gap is read for once no received record waits, so a
+			// burst of gaps costs one read, and only when the wait has
+			// not read within a.readEvery, so gaps that come one at a
+			// time wait for the periodic read.
+			if why == "" && a.unread && len(records) == 0 && a.now().Sub(lastRead) >= a.readEvery {
+				last, lastRead = a.now(), a.now()
+				covered = a.covering()
+			}
+			if why != "" || covered != nil {
+				cancel()
 			}
 		}
 		cancel()
 		switch {
+		case covered != nil:
+			return "", covered
 		case why != "":
 			return why, nil
 		case ferr != nil:
@@ -646,39 +685,59 @@ func (a *asking) wait(cursor string) (string, map[string]bool) {
 			return "telemetry unreadable", nil
 		}
 		cursor = next
-		if time.Since(last) >= a.readEvery {
-			last = time.Now()
-			if covered, err := a.read(); err == nil && len(covered) == len(a.nix) {
+		if a.now().Sub(last) >= a.readEvery {
+			last, lastRead = a.now(), a.now()
+			if covered := a.covering(); covered != nil {
 				return "", covered
 			}
 		}
 	}
 }
 
-// wake takes one worker record, keeps a check.result for the tree, and
-// says why the wait should end, or "".
-func (a *asking) wake(r workerRecord, started, running map[string]bool) string {
-	if n, _ := r.Data["dropped_before"].(float64); n > 0 {
-		return "telemetry lost records"
+// covering reads origin's evidence during the wait, and returns the read
+// when it covers every check, or nil.
+func (a *asking) covering() map[string]bool {
+	a.unread = false
+	if covered, err := a.read(); err == nil && len(covered) == len(a.nix) {
+		return covered
 	}
-	switch r.Type {
-	case "pass.start":
+	return nil
+}
+
+// wake takes one worker record, keeps a check.result for the tree, notes
+// a gap, and says why the wait should end, or "". started is whether each
+// pass started after the filing, and running each batch for the tree the
+// stream showed a pass start and not end, both by the pass's run.
+func (a *asking) wake(r workerRecord, started map[string]bool, running map[string]map[string]bool) string {
+	if n, _ := r.Data["dropped_before"].(float64); n > 0 || r.gap {
+		if !a.lost {
+			a.state("lost")
+		}
+		a.lost, a.unread = true, true
+	}
+	switch {
+	case r.gap:
+		return ""
+	case r.Type == "pass.start":
 		started[r.Run] = r.Seq > a.mark
 		return ""
-	case "pass.end":
+	case r.Type == "pass.end":
+		delete(running, r.Run)
 		if started[r.Run] && len(running) == 0 {
 			return "a worker pass ended"
 		}
 		return ""
-	}
-	if r.Project != a.project || r.Tree != a.tree {
+	case r.Project != a.project || r.Tree != a.tree:
 		return ""
 	}
 	run, _ := r.Data["attest_run"].(string)
 	result, _ := r.Data["result"].(string)
 	switch r.Type {
 	case "batch.start":
-		running[run] = true
+		if running[r.Run] == nil {
+			running[r.Run] = map[string]bool{}
+		}
+		running[r.Run][run] = true
 	case "check.result":
 		if _, required := a.attrs()[r.Check]; !required || !runName.MatchString(r.Run) ||
 			result != checkPassed && result != checkFailed && result != "error" {
@@ -701,8 +760,10 @@ func (a *asking) wake(r workerRecord, started, running map[string]bool) string {
 		a.state("result", r.Run, r.Check, result, strconv.FormatInt(ms, 10),
 			cmp.Or(t.drv, "-"), encoded(t.err), encoded(t.buildErr))
 	case "batch.end":
+		if delete(running[r.Run], run); len(running[r.Run]) == 0 {
+			delete(running, r.Run)
+		}
 		// A batch that passed publishes next, and its publish.end says so.
-		delete(running, run)
 		if result == checkFailed {
 			return "the worker's batch for this tree ended with failures"
 		} else if result != checkPassed {
@@ -742,7 +803,7 @@ func (a *asking) verdict(covered map[string]bool, readErr error, why string) int
 	}
 	a.say("◇", colourWaiting, a.short, "not established", why,
 		fmt.Sprintf("%d of %d with evidence", len(covered), len(a.nix)), took)
-	report(a.stdout, a.results, a.attrs())
+	report(a.stdout, a.results, a.attrs(), a.lost)
 	return 1
 }
 
@@ -756,14 +817,18 @@ func (a *asking) attrs() map[string]string {
 }
 
 // report prints the check.results the worker wrote for HEAD's tree while
-// the command waited, which any batch for the tree may have written. For
+// the command waited, which any batch for the tree may have written, and
+// with lost says the stream had a gap, so some may be missing. For
 // each failed check it prints the error its result records, and the nix
 // log command that reads the build log of the derivation it names from
 // the worker's nix store, or, with neither, the command that builds the
 // check here. With any failed check it points at the worker's output:
 // nix holds no log for a check whose dependency failed to build, and the
 // worker's output names that dependency.
-func report(w io.Writer, results []treeResult, attrs map[string]string) {
+func report(w io.Writer, results []treeResult, attrs map[string]string, lost bool) {
+	if lost {
+		fmt.Fprintln(w, "  the worker's stream lost records, so those for this tree may be incomplete")
+	}
 	if len(results) > 0 {
 		fmt.Fprintln(w, "  the worker's recent records for this tree, not this request's result:")
 	}
@@ -930,6 +995,9 @@ type workerRecord struct {
 	Tree    string         `json:"tree"`
 	Check   string         `json:"check"`
 	Data    map[string]any `json:"data"`
+	// gap is set, on a record holding nothing else, where the host said
+	// the stream lost records since the cursor.
+	gap bool
 }
 
 // workerStream reads the worker's telemetry.
@@ -972,10 +1040,10 @@ func (s sshStream) follow(ctx context.Context, cursor string, seconds int, recor
 }
 
 // answer runs one telemetry request on the host, hands each record of
-// the worker's stream it answers with to onRecord, and returns the cursor
-// it ended at. A refusal, a line that is not JSON,
-// a gap, a source that could not be read, or an answer that never ends is
-// an error.
+// the worker's stream it answers with to onRecord, and each gap in it as
+// a record marked so, and returns the cursor it ended at. A refusal, a
+// line that is not JSON, a source that could not be read, or an answer
+// that never ends is an error.
 func (s sshStream) answer(ctx context.Context, req telemetry.Request, timeout time.Duration, onRecord func(workerRecord)) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -995,7 +1063,7 @@ func (s sshStream) answer(ctx context.Context, req telemetry.Request, timeout ti
 	sc.Buffer(make([]byte, 64<<10), telemetry.MaxResponseBytes)
 	for why == "" && sc.Scan() {
 		var m struct {
-			Kind, Error, What, Reason, Cursor, Stream string
+			Kind, Error, What, Cursor, Stream string
 			workerRecord
 		}
 		if json.Unmarshal(sc.Bytes(), &m) != nil {
@@ -1007,8 +1075,8 @@ func (s sshStream) answer(ctx context.Context, req telemetry.Request, timeout ti
 			why = "the host refused: " + telemetry.Sanitize(m.Error)
 		case m.Kind == "unavailable" && m.What != "journal":
 			why = fmt.Sprintf("the host could not read %s: %s", telemetry.Sanitize(m.What), telemetry.Sanitize(m.Error))
-		case m.Kind == "gap":
-			why = fmt.Sprintf("the worker's stream lost records since the cursor (%s)", telemetry.Sanitize(m.Reason))
+		case m.Kind == "gap" && m.Stream == workerSource && onRecord != nil:
+			onRecord(workerRecord{gap: true})
 		case m.Kind == "record" && m.Stream == workerSource && onRecord != nil:
 			onRecord(m.workerRecord)
 		case m.Kind == "end":

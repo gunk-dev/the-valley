@@ -59,7 +59,8 @@ func TestMain(m *testing.M) {
 
 // fakeSSH is a telemetry receiver per destination: it keeps every report
 // line it is sent in $FAKE_SSH_DIR/<destination>.jsonl and acknowledges
-// the newest record of each sender epoch, as the collector does. A
+// the newest record of each sender epoch, as the collector does, and
+// answers any other request with <destination>.answer there. A
 // destination with a .down file beside it cannot be reached.
 func fakeSSH(args []string) int {
 	var rest []string
@@ -83,7 +84,13 @@ func fakeSSH(args []string) int {
 		return 255
 	}
 	if command != "valley-telemetry report" {
-		return 1
+		// A read or follow answers with $FAKE_SSH_DIR/<destination>.answer.
+		answer, err := os.ReadFile(filepath.Join(dir, dest+".answer"))
+		if err != nil {
+			return 1
+		}
+		os.Stdout.Write(answer)
+		return 0
 	}
 	body, _ := io.ReadAll(os.Stdin)
 	f, err := os.OpenFile(filepath.Join(dir, dest+".jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)

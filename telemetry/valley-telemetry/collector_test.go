@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -230,6 +232,118 @@ func TestFollowStreamsBuildOutputAsItIsWritten(t *testing.T) {
 	if end := kind(lines, "end"); len(end) != 1 || !strings.HasPrefix(end[0]["cursor"].(string), "worker=") {
 		t.Fatalf("end %v", end)
 	}
+}
+
+// A principal's follows and its bounded requests draw from pools of
+// their own: four bounded requests at once are admitted, as one valley
+// pending's history reads four pages together (status/checkcost.go); with
+// every follow slot held, a sources, snapshot and read are answered and a
+// fifth follow is refused, naming follows; with every bounded slot held,
+// a read is refused, naming them, and a follow is admitted.
+func TestFollowsAndBoundedRequestsTakeSeparateSlots(t *testing.T) {
+	c, out, _ := testCollector(t)
+	as := func(op string) telemetry.Request { return telemetry.Request{V: 1, Principal: "operator", Op: op} }
+	hold := func(op string, n int) []func() {
+		t.Helper()
+		var held []func()
+		for range n {
+			release, err := c.slot(as(op))
+			if err != nil {
+				t.Fatalf("%s slot %d: %v", op, len(held), err)
+			}
+			held = append(held, release)
+		}
+		return held
+	}
+	refused := func(op, what string) {
+		t.Helper()
+		status, lines := ask(c, out, as(op), "")
+		errs := kind(lines, "error")
+		if status == 0 || len(errs) != 1 {
+			t.Fatalf("%s was not refused: %d %v", op, status, lines)
+		}
+		if e := errs[0]["error"].(string); !telemetry.IsSlotRefusal(e) || !strings.Contains(e, what) {
+			t.Errorf("%s was refused with %q", op, e)
+		}
+	}
+
+	for _, release := range hold(telemetry.OpRead, 4) {
+		release()
+	}
+
+	follows := hold(telemetry.OpFollow, telemetry.FollowSlots)
+	for _, op := range []string{telemetry.OpSources, telemetry.OpSnapshot, telemetry.OpRead} {
+		if status, lines := ask(c, out, as(op), ""); status != 0 || len(kind(lines, "end")) != 1 {
+			t.Errorf("%s with every follow slot held: %d %v", op, status, lines)
+		}
+	}
+	refused(telemetry.OpFollow, "4 follow requests")
+	for _, release := range follows {
+		release()
+	}
+
+	bounded := hold(telemetry.OpSnapshot, telemetry.BoundedSlots)
+	refused(telemetry.OpRead, "4 bounded requests")
+	hold(telemetry.OpFollow, 1)[0]()
+	for _, release := range bounded {
+		release()
+	}
+}
+
+// A slot's holder that dies releases it: a process holds every follow
+// slot, a follow is refused, and once the process is killed a follow is
+// admitted.
+func TestADeadHolderReleasesItsSlots(t *testing.T) {
+	follow := telemetry.Request{V: 1, Principal: "operator", Op: telemetry.OpFollow}
+	if state := os.Getenv("VALLEY_TEST_SLOT_STATE"); state != "" {
+		c := &collector{state: state}
+		var held []func()
+		for range telemetry.FollowSlots {
+			release, err := c.slot(follow)
+			if err != nil {
+				fmt.Println(err)
+				os.Exit(1)
+			}
+			held = append(held, release)
+		}
+		fmt.Println("held")
+		time.Sleep(time.Hour)
+		// The lock files stay referenced, so no finalizer closes them
+		// before the kill.
+		runtime.KeepAlive(held)
+		os.Exit(1)
+	}
+	c, _, _ := testCollector(t)
+	holder := exec.Command(os.Args[0], "-test.run=^TestADeadHolderReleasesItsSlots$")
+	holder.Env = append(os.Environ(), "VALLEY_TEST_SLOT_STATE="+c.state)
+	stdout, err := holder.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stopped := false
+	stop := func() {
+		if !stopped {
+			stopped = true
+			holder.Process.Kill()
+			holder.Wait()
+		}
+	}
+	defer stop()
+	if line, _ := bufio.NewReader(stdout).ReadString('\n'); line != "held\n" {
+		t.Fatalf("the holder said %q", line)
+	}
+	if _, err := c.slot(follow); err == nil {
+		t.Fatal("a follow was admitted while another process held every follow slot")
+	}
+	stop()
+	release, err := c.slot(follow)
+	if err != nil {
+		t.Fatalf("a dead holder's slot was not given: %v", err)
+	}
+	release()
 }
 
 // One principal cannot take every slot.

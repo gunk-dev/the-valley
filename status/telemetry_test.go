@@ -29,6 +29,9 @@ func TestMain(m *testing.M) {
 		if dir := os.Getenv("FAKE_SSH_UPLOAD"); dir != "" {
 			os.Exit(fakeUpload(dir, os.Args[1:]))
 		}
+		if dir := os.Getenv("FAKE_SSH_POOL"); dir != "" {
+			os.Exit(fakePooledSSH(dir, os.Args[1:]))
+		}
 		os.Exit(fakeSSH(os.Args[1:]))
 	}
 	if filepath.Base(os.Args[0]) == "attest" {
@@ -63,21 +66,10 @@ func TestMain(m *testing.M) {
 // answers any other request with <destination>.answer there. A
 // destination with a .down file beside it cannot be reached.
 func fakeSSH(args []string) int {
-	var rest []string
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "-o", "-p":
-			i++
-		case "--":
-			rest = args[i+1:]
-			i = len(args)
-		}
-	}
-	if len(rest) != 2 {
-		fmt.Fprintln(os.Stderr, "fake ssh: no destination and command")
+	dest, command, ok := sshDestCommand(args)
+	if !ok {
 		return 255
 	}
-	dest, command := rest[0], rest[1]
 	dir := os.Getenv("FAKE_SSH_DIR")
 	if _, err := os.Stat(filepath.Join(dir, dest+".down")); err == nil {
 		fmt.Fprintf(os.Stderr, "ssh: connect to host %s: Connection refused\n", dest)
@@ -112,6 +104,25 @@ func fakeSSH(args []string) int {
 	ack, _ := json.Marshal(map[string]any{"kind": "ack", "acked": acked})
 	fmt.Printf("%s\n{\"kind\":\"end\"}\n", ack)
 	return 0
+}
+
+// sshDestCommand is the destination and command of ssh's arguments.
+func sshDestCommand(args []string) (dest, command string, ok bool) {
+	var rest []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-o", "-p":
+			i++
+		case "--":
+			rest = args[i+1:]
+			i = len(args)
+		}
+	}
+	if len(rest) != 2 {
+		fmt.Fprintln(os.Stderr, "fake ssh: no destination and command")
+		return "", "", false
+	}
+	return rest[0], rest[1], true
 }
 
 // received is what a fake receiver holds: each record by its client ID.

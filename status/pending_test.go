@@ -351,13 +351,13 @@ func TestPendingStartsGitAsOftenWhateverItLists(t *testing.T) {
 }
 
 // A host that refuses the read of the worker's telemetry, as it does when
-// the principal already has every observe request it may have open,
+// the principal already has every bounded request it may have open,
 // leaves main's line without the worker's runs: pending says why once,
 // asks the host once, and prints main's line from the walk alone.
 func TestPendingAsksARefusingHostOnce(t *testing.T) {
 	dir := t.TempDir()
 	starts := toolsOnPath(t, dir, "git", "cue")
-	refusal := `{"kind":"error","error":"operator already has 4 observe requests open; try again when one ends"}`
+	refusal := `{"kind":"error","error":"operator already has 4 bounded requests open; try again when one ends"}`
 	ssh := fmt.Sprintf("#!/bin/sh\necho ssh >> '%s'\necho '%s'\n", starts, refusal)
 	if err := os.WriteFile(filepath.Join(dir, "bin", "ssh"), []byte(ssh), 0o755); err != nil {
 		t.Fatal(err)

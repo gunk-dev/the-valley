@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"the-valley/telemetry"
 )
 
 // A host or a proxy that says far more on ssh's stderr than a read keeps
@@ -27,6 +31,121 @@ func TestAReadKeepsTheLastOfWhatSSHSaid(t *testing.T) {
 	if err == nil || !strings.HasSuffix(err.Error(), "x the host went away") || len(err.Error()) > sshSaidLimit+200 {
 		t.Errorf("the read said %d bytes, ending %q", len(fmt.Sprint(err)), fmt.Sprint(err)[max(len(fmt.Sprint(err))-60, 0):])
 	}
+}
+
+// One valley pending's history reads its older pages of the worker's
+// stream at once, and a host whose collector gives the principal
+// telemetry.BoundedSlots bounded slots admits every one: each page's
+// build is read, none refused. Each older page's read joins a barrier
+// and tells it whether it took a slot; an admitted one keeps its slot and
+// answers only once every older page has told, so the slots held when
+// the last one tells are held at once, and every one must be.
+func TestAHistoryReadFitsTheBoundedSlots(t *testing.T) {
+	dir, bin := t.TempDir(), t.TempDir()
+	if err := os.Symlink(os.Args[0], filepath.Join(bin, "ssh")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_SSH_POOL", dir)
+	barrier, err := net.Listen("unix", filepath.Join(dir, "barrier"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	older := costRecords/telemetry.MaxReadLimit - 1
+	held := make(chan int, 1)
+	go func() {
+		var joined []net.Conn
+		defer func() {
+			for _, c := range joined {
+				c.Close()
+			}
+		}()
+		n := 0
+		for len(joined) < older {
+			c, err := barrier.Accept()
+			if err != nil {
+				held <- -1
+				return
+			}
+			joined = append(joined, c)
+			c.SetReadDeadline(time.Now().Add(time.Minute))
+			told, err := bufio.NewReader(c).ReadString('\n')
+			if err != nil {
+				held <- -1
+				return
+			}
+			if told == "held\n" {
+				n++
+			}
+		}
+		for _, c := range joined {
+			c.Write([]byte("go\n"))
+		}
+		held <- n
+	}()
+	builds, _, _, why := readBuilds(context.Background(), sshDest{host: "valley-host"})
+	barrier.Close()
+	if n := <-held; n != older {
+		t.Errorf("%d of the %d older pages' reads held a slot at once", n, older)
+	}
+	if pages := costRecords / telemetry.MaxReadLimit; why != "" || len(builds) != pages {
+		t.Errorf("the history read %d of %d pages' builds: %q", len(builds), pages, why)
+	}
+}
+
+// fakePooledSSH is a host whose collector admits telemetry.BoundedSlots
+// reads at once, as it does for one principal, and refuses any more. The
+// newest page answers at once. An older page's read joins the test's
+// barrier, tries for a slot and tells the barrier whether it holds one;
+// admitted, it answers once the barrier says go, and fails when the
+// barrier closes without saying it.
+func fakePooledSSH(dir string, args []string) int {
+	_, command, ok := sshDestCommand(args)
+	if !ok {
+		return 255
+	}
+	req, err := telemetry.ParseCommand(command)
+	if err != nil || req.Op != telemetry.OpRead {
+		return 1
+	}
+	answer := func(seq, end int64) {
+		fmt.Printf(`{"kind":"record","stream":"worker","seq":%d,"type":"check.result","project":"app","tree":"t1","check":"c-%d","data":{"result":"passed","build_ms":1000}}`+"\n", seq, seq)
+		fmt.Printf(`{"kind":"end","cursor":"worker=0123456789abcdef:%d"}`+"\n", end)
+	}
+	if req.Cursor == "" {
+		answer(costRecords, costRecords)
+		return 0
+	}
+	cursor, _ := telemetry.ParseCursor(req.Cursor)
+	after := cursor["worker"].Seq
+	barrier, err := net.Dial("unix", filepath.Join(dir, "barrier"))
+	if err != nil {
+		return 1
+	}
+	defer barrier.Close()
+	var slot *os.File
+	for i := range telemetry.BoundedSlots {
+		f, err := os.OpenFile(filepath.Join(dir, fmt.Sprintf("slot.%d", i)), os.O_CREATE|os.O_RDWR, 0o600)
+		if err == nil && syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil {
+			slot = f
+			break
+		}
+		f.Close()
+	}
+	if slot == nil {
+		barrier.Write([]byte("refused\n"))
+		fmt.Printf(`{"kind":"error","error":%q}`+"\n", telemetry.SlotRefusal("operator", telemetry.BoundedSlots, "bounded"))
+		return 0
+	}
+	defer slot.Close()
+	if _, err := barrier.Write([]byte("held\n")); err != nil {
+		return 1
+	}
+	if said, _ := bufio.NewReader(barrier).ReadString('\n'); said != "go\n" {
+		return 1
+	}
+	answer(after+1, after+telemetry.MaxReadLimit)
+	return 0
 }
 
 // lastBytes keeps the last bytes written through it, however they come.

@@ -15,15 +15,18 @@ usage: valley telemetry [--remote <remote>] [--json] <operation> [flags]
   follow [--source <name>] [--since <cursor>] [--seconds <n>] [--logs]
                           records as they are stored, and with --logs build
                           output as it is written, for --seconds (default
-                          60, at most 300); ends with a cursor to resume from
+                          60, at most 300); ends with a cursor to resume
+                          from. without --source, every stream at once
   flush                   send this workstation's spooled records now
 
-Reading needs a key whose principal holds the host's observe grant. The
-remote is the checkout's valley.telemetry.remote, else origin, or the one
---remote names (a remote, an ssh URL, or user@host:path); its URL is read
-and never run. --json prints the valley-telemetry/v1 answer lines as they
-come. A gap, a cut-short answer or an error is said; an answer that does
-not end exits 1.
+Reading needs a key whose principal holds the host's observe grant. A
+principal may have four follows and four bounded requests (sources,
+snapshot, read) open on a host at once; one more of a kind is refused
+until one ends. The remote is the checkout's valley.telemetry.remote, else
+origin, or the one --remote names (a remote, an ssh URL, or
+user@host:path); its URL is read and never run. --json prints the
+valley-telemetry/v1 answer lines as they come. A gap, a cut-short answer or
+an error is said; an answer that does not end exits 1.
 
 With `git config valley.telemetry true`, every valley command records a
 command record: its verb (and knot's or telemetry's subverb), the names of

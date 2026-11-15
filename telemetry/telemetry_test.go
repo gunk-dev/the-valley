@@ -50,6 +50,36 @@ func TestTheCommandGrammarIsClosed(t *testing.T) {
 	}
 }
 
+// A slot refusal is recognised only whole: a principal, a small count,
+// and a kind an observe request draws on, in the words SlotRefusal
+// writes. Other text that ends the same way is another refusal.
+func TestASlotRefusalIsRecognisedWhole(t *testing.T) {
+	for _, ok := range []string{
+		SlotRefusal("operator", FollowSlots, "follow"),
+		SlotRefusal("alice.ws-1", BoundedSlots, "bounded"),
+		"operator already has 4 observe requests open; try again when one ends",
+	} {
+		if !IsSlotRefusal(ok) {
+			t.Errorf("not recognised: %q", ok)
+		}
+	}
+	for _, no := range []string{
+		SlotRefusal("alice", ReportSlots, "report"),
+		"operator already has 4 grant requests open; try again when one ends",
+		"the host is down; try again when one ends",
+		"operator already has 4000 follow requests open; try again when one ends",
+		"operator already has 0 follow requests open; try again when one ends",
+		"-operator already has 4 follow requests open; try again when one ends",
+		"op erator already has 4 follow requests open; try again when one ends",
+		"operator already has 4 follow requests open; try again when one ends, or not",
+		"\noperator already has 4 follow requests open; try again when one ends",
+	} {
+		if IsSlotRefusal(no) {
+			t.Errorf("recognised: %q", no)
+		}
+	}
+}
+
 // The collector checks the request line again, and clamps its limits
 // whatever was asked.
 func TestARequestIsCheckedAgainAndClamped(t *testing.T) {

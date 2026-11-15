@@ -60,6 +60,18 @@ const (
 	MaxCommandBytes      = 4096
 )
 
+// The slots a collector gives each principal: how many requests of each
+// kind it may have open at once. Follows and bounded requests (sources,
+// snapshot, read) draw from pools of their own, so a principal's follows
+// never refuse its reads. BoundedSlots holds the reads one valley pending
+// runs at once: its history asks for four older pages together
+// (status/checkcost.go).
+const (
+	FollowSlots  = 4
+	BoundedSlots = 4
+	ReportSlots  = 1
+)
+
 // Request is what the shell passes to the collector: the operation and
 // its flags as the command gave them, and the principal the shell derived
 // from the key sshd authenticated. Nothing in the command names it.
@@ -226,6 +238,24 @@ func (r *Request) Check() error {
 	r.Seconds = min(r.Seconds, MaxFollowSeconds)
 	return nil
 }
+
+// SlotRefusal is the error a collector answers with when principal
+// already has n requests of kind open, every slot of its pool, so a
+// reader knows which to end. It names no fault, and a request made once
+// one of them ends is admitted.
+func SlotRefusal(principal string, n int, kind string) string {
+	return fmt.Sprintf("%s already has %d %s requests open; try again when one ends", principal, n, kind)
+}
+
+// slotRefusalRE is a SlotRefusal of an observe request, whole: a
+// principal, a count, and the kind of a pool observe requests draw from,
+// follow, bounded, or observe (one pool for every observe request).
+var slotRefusalRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127} already has [1-9][0-9]{0,2} (follow|bounded|observe) requests open; try again when one ends$`)
+
+// IsSlotRefusal reports whether a collector's error refuses an observe
+// request for lack of a slot. The error line has no field that says so,
+// so it reads the text, and only text of that whole shape.
+func IsSlotRefusal(err string) bool { return slotRefusalRE.MatchString(err) }
 
 // DecodeRequest reads the one line the shell sends.
 func DecodeRequest(line []byte) (Request, error) {

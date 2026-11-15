@@ -804,18 +804,23 @@ valley checks [--schema <file>] [--instance <dir>] [--project <dir>] [--names [-
     telemetry (requiring the telemetry `observe` grant) only to know when to reread `origin`, and
     deletes the request on exit, leased on `HEAD`. A telemetry gap (a record reporting records
     dropped before it, or the host reporting records since the cursor are gone) ends nothing: the
-    command rereads `origin`, never twice within three minutes, and keeps waiting. Whenever a
-    deletion is not confirmed—such as after a push that did not report success—it prints the leased
-    `git push` command to delete the request. Only one `--build` runs at a time in a worktree, and
-    it exits `130` when interrupted. It has two outcomes:
+    command rereads `origin`, never twice within three minutes, and keeps waiting. A follow refused
+    because the principal is at its follow limit ([`valley telemetry`](#valley-telemetry)) also ends
+    nothing: the command says so once, rereads `origin`'s evidence and its request's ref every three
+    minutes, and tries to follow from where it stopped after each read. Until a follow is admitted,
+    the wait ends if `origin` lists its request as gone or at another commit, as after a holder of
+    the `approve` grant deletes it. Whenever a deletion is not confirmed—such as after a push that
+    did not report success—it prints the leased `git push` command to delete the request. Only one
+    `--build` runs at a time in a worktree, and it exits `130` when interrupted. It has two
+    outcomes:
     - **passed** (exit `0`): its last read of `origin`'s evidence completes and covers every check.
     - **not established** (exit `1`, or `130` when interrupted): anything else. It says why it
       stopped (the time limit, a worker pass that ended, the worker's batch or publish for the tree,
-      telemetry it could not read) and prints the `check.result` records the worker wrote for
-      `HEAD`'s tree while it waited. These may belong to any batch for the tree, not this request,
-      and after a gap it says they may be incomplete. For each failed check it prints the escaped,
-      untrusted `error` and `build_error` its result records, if any, and `nix log <drv>` when its
-      `drv` is a `.drv` path in `/nix/store`
+      its request gone from `origin`, telemetry it could not read) and prints the `check.result`
+      records the worker wrote for `HEAD`'s tree while it waited. These may belong to any batch for
+      the tree, not this request, and after a gap it says they may be incomplete. For each failed
+      check it prints the escaped, untrusted `error` and `build_error` its result records, if any,
+      and `nix log <drv>` when its `drv` is a `.drv` path in `/nix/store`
       ([telemetry records](#telemetry-answers-valley-telemetryv1)); otherwise, with no `error`, it
       prints the `nix build` command that reproduces it. With any failed check it prints
       `see: valley telemetry read --source worker --logs · when nix log has none`: Nix holds no log
@@ -840,6 +845,14 @@ valley checks [--schema <file>] [--instance <dir>] [--project <dir>] [--names [-
       recovered by the next read, within three minutes. A lost failure record is not: when the
       stream loses both the end of a failed batch for `HEAD`'s tree and the end of its pass,
       evidence stays incomplete and the wait runs to `--wait`.
+    - While the host refuses its follow, the command sees published evidence up to three minutes
+      late, and sees a failed batch only if a follow is admitted while the stream still holds its
+      records. A principal whose other follows keep every slot full therefore waits for a failure
+      until `--wait`.
+    - The command takes the host's word for a refusal: an answer shaped as a slot refusal keeps it
+      waiting, up to `--wait`, and never makes it pass. A connection the host drops because its 16
+      telemetry connections are open reads as an answer that did not end, and ends the wait as
+      telemetry it could not read.
     - When several workers share one telemetry stream, another worker's pass that ends before this
       request's batch has started ends the wait as not established, because no record says which
       projects a pass read.
@@ -998,9 +1011,22 @@ The operations:
   exit statuses and kills.
 - `follow [--source=<name>] [--since=<cursor>] [--seconds=<n>] [--logs]`: records as they are
   stored, for `--seconds`, 60 by default and 300 at most. A heartbeat every 10 seconds carries the
-  cursor.
+  cursor. Without `--source`, a follow receives every stream, so a client that watches several
+  streams holds one follow on the host.
 - `flush`: send this workstation's spooled records now, each spool to its own destination (see
   [The telemetry spool](#the-telemetry-spool)).
+
+A principal may have four follows, four bounded requests (`sources`, `snapshot`, and `read`), and
+one `report` open on a host at once. Follows and bounded requests draw from separate pools, so a
+principal's own follows never cause its reads to be refused. A request beyond its pool is refused,
+naming the kind that is full, such as
+`operator already has 4 follow requests open; try again when one ends`; once one ends, a new request
+is admitted. Each principal can run three `valley checks --build` waits alongside a client following
+every stream on one connection; a fifth concurrent follow is refused, and `--build` then waits by
+rereading `origin`. The pools bound each principal, and the host's 16 telemetry connections bound
+all principals together: one principal at every bound holds 9, and several principals' follows can
+fill all 16. Until one ends, any further connection is dropped unanswered and reads as an answer
+that did not end.
 
 A `valley` command runs `ssh` for a telemetry request with `ForkAfterAuthentication=no`, which needs
 OpenSSH 8.7 or later. On Linux, that `ssh` process ends with the command, however the command ends.

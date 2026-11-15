@@ -78,3 +78,6 @@ usage: valley checks [--schema FILE] [--instance DIR] [--project DIR] [--names [
                    'refs/the-valley/check-requests/<principal>/*' and
                    delete one with git push
                    --force-with-lease=<ref>:<commit> origin :<ref>.
+                   while the principal's other follows hold every follow
+                   it may open on the host, the wait reads origin every
+                   three minutes and follows again after each read.

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"the-valley/change"
+	"the-valley/telemetry"
 )
 
 const rigTree = "71ee"
@@ -397,7 +398,9 @@ func TestCheckBuildFailureAfterAGap(t *testing.T) {
 
 // On the wire, a gap the host reports in a follow reaches the wait in its
 // place among the records, and the follow reads on to its end; a refusal
-// still ends it.
+// still ends it, and one for lack of a slot, of any kind an observe
+// request draws on, is told from the others, as is other text that ends
+// the same way.
 func TestWorkerStreamHandsOnGaps(t *testing.T) {
 	dir, bin := t.TempDir(), t.TempDir()
 	self, err := filepath.Abs(os.Args[0])
@@ -430,8 +433,72 @@ func TestWorkerStreamHandsOnGaps(t *testing.T) {
 		got[0].Seq != 5 || got[0].gap || !got[1].gap || got[2].Seq != 9 || got[2].gap {
 		t.Errorf("the follow handed %+v, ended at %q, %v", got, cursor, err)
 	}
-	if _, _, err := follow(`{"kind":"error","error":"no observe grant"}`); err == nil || !strings.Contains(err.Error(), "the host refused") {
-		t.Errorf("a refusal ended the follow with %v", err)
+	var busy noSlot
+	for _, why := range []string{"no observe grant", "the host is busy; try again when one ends"} {
+		if _, _, err := follow(`{"kind":"error","error":"` + why + `"}`); err == nil || !strings.Contains(err.Error(), "the host refused") || errors.As(err, &busy) {
+			t.Errorf("a refusal ended the follow with %v", err)
+		}
+	}
+	for _, why := range []string{
+		telemetry.SlotRefusal("operator", telemetry.FollowSlots, "follow"),
+		"operator already has 4 observe requests open; try again when one ends",
+	} {
+		if _, _, err := follow(`{"kind":"error","error":"` + why + `"}`); !errors.As(err, &busy) {
+			t.Errorf("a refusal for lack of a slot ended the follow with %v", err)
+		}
+	}
+}
+
+// A follow the host refuses for lack of a slot, at the start or when the
+// wait follows again, ends nothing: the wait says so once, reads origin
+// every readEvery, follows again after each read, and passes once origin
+// holds the evidence. With no follow, a request gone from origin ends the
+// wait, and any other error ends it as telemetry unreadable.
+func TestCheckBuildWaitsThroughARefusedFollow(t *testing.T) {
+	busy := noSlot{"the host refused: " + telemetry.SlotRefusal("alice", telemetry.FollowSlots, "follow")}
+	for _, c := range []struct {
+		name    string
+		follows func(r *buildRig) []fakeFollow
+		reads   []fakeRead
+		status  int
+		says    string
+		paced   time.Duration
+	}{
+		{name: "refused at the start and again, it passes on origin's evidence",
+			follows: func(*buildRig) []fakeFollow { return []fakeFollow{{err: busy}, {}, {err: busy}} },
+			reads:   []fakeRead{{}, {}, {covered: []string{"fast"}}},
+			status:  0, says: "1 check passed", paced: 2 * time.Minute},
+		{name: "refused, and then refused for another reason",
+			follows: func(*buildRig) []fakeFollow {
+				return []fakeFollow{{err: busy}, {err: errors.New("the host refused: alice does not hold the telemetry observe grant")}}
+			},
+			reads:  []fakeRead{{}},
+			status: 1, says: "not established · telemetry unreadable", paced: time.Minute},
+		{name: "refused, and the request deleted from origin",
+			follows: func(r *buildRig) []fakeFollow {
+				return []fakeFollow{{err: busy, before: func() {
+					r.git(r.origin, "update-ref", "-d", strings.Fields(r.requests())[0])
+				}}}
+			},
+			reads:  []fakeRead{{}},
+			status: 1, says: "not established · the check request is gone from origin", paced: time.Minute},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newBuildRig(t, "fast")
+			r.reads, r.stream.follows = c.reads, c.follows(r)
+			clock, paced := time.Unix(1_000_000, 0), time.Duration(0)
+			r.a.readEvery, r.a.now = time.Minute, func() time.Time { return clock }
+			r.a.sleep = func(d time.Duration) { clock, paced = clock.Add(d), paced+d }
+			r.run(c.status)
+			r.says(&r.out, c.says)
+			if n := strings.Count(r.errs.String(), "follow requests open"); n != 1 {
+				t.Errorf("the refusal was said %d times:\n%s", n, r.errs.String())
+			}
+			if paced != c.paced || r.requests() != "" {
+				t.Errorf("the wait slept %s, want %s; origin holds %q", paced, c.paced, r.requests())
+			}
+			r.saysNot(&r.states, "lost\n")
+		})
 	}
 }
 

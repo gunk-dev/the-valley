@@ -42,6 +42,18 @@ package main
 // end and its pass's end leaves nothing but the time limit to end the
 // wait.
 //
+// A follow the host refuses for lack of a slot, as when the principal's
+// other follows hold every one, ends nothing either: the wait says so
+// once, reads origin's evidence and the request's ref every
+// evidenceEvery, and follows again from the same cursor after each read.
+// Records the stream still holds then arrive; those it no longer holds
+// read as a gap. The command deletes its request only once the wait has
+// ended, so a request origin lists gone or moved during the wait was
+// deleted or moved by another, as a holder of the approve grant may. The
+// worker starts no batch for a request origin does not list at its
+// commit, and stops a running one unless a ready change holds the tree;
+// with no follow to show which, such a request ends the wait.
+//
 // It has two outcomes. Passed (exit 0) only when one read, the last,
 // completes and covers every check. Anything else is not established
 // (exit 1): it says why it stopped, and prints the check.result records
@@ -423,8 +435,9 @@ type asking struct {
 	states         io.Writer // the pipe to the parent
 	began          time.Time
 	readEvery      time.Duration
-	now            func() time.Time // the wait's clock, which paces its reads
-	lock           *os.File         // the worktree's lock, held while the process runs
+	now            func() time.Time    // the wait's clock, which paces its reads
+	sleep          func(time.Duration) // waits on that clock
+	lock           *os.File            // the worktree's lock, held while the process runs
 
 	head, short, project, tree string
 	mark                       int64 // the stream's newest record once the request was filed
@@ -444,7 +457,7 @@ type asking struct {
 
 func newAsking(g git, stdout, stderr io.Writer) *asking {
 	a := &asking{g: g, stdout: stdout, stderr: stderr, t: terminalOf(stdout), states: io.Discard,
-		began: time.Now(), readEvery: evidenceEvery, now: time.Now}
+		began: time.Now(), readEvery: evidenceEvery, now: time.Now, sleep: time.Sleep}
 	a.derive = a.prepare
 	a.cover = func(checks []nixCheck) (evidence, error) {
 		if _, err := exec.LookPath("attest"); err != nil {
@@ -628,8 +641,10 @@ func (a *asking) recoverStale(principal, token string) {
 
 // wait follows the worker's telemetry from cursor, taken before the
 // filing, until a wake-up, reading origin's evidence every a.readEvery and
-// after a gap, never twice within a.readEvery. It returns why it stopped,
-// or the read that covered every check.
+// after a gap, never twice within a.readEvery. While the host refuses the
+// follow for lack of a slot, it reads origin every a.readEvery instead,
+// and follows again after each read. It returns why it stopped, or the
+// read that covered every check.
 func (a *asking) wait(cursor string) (string, map[string]bool) {
 	// Where the stream ended once the push returned: a pass that starts
 	// after it started after the filing.
@@ -646,7 +661,22 @@ func (a *asking) wait(cursor string) (string, map[string]bool) {
 	// paces the periodic reads; lastRead is when it last read, zero before
 	// its first, and paces the reads for gaps. Every read sets both.
 	last, lastRead := a.now(), time.Time{}
+	// refused is whether the host refused the last follow for lack of a
+	// slot; said whether the wait has said so.
+	refused, said := false, false
 	for {
+		if refused {
+			// Nothing tells the wait when a slot frees or evidence lands,
+			// so it keeps the periodic reads' pace.
+			a.sleep(a.readEvery - a.now().Sub(last))
+			last, lastRead = a.now(), a.now()
+			if covered := a.covering(); covered != nil {
+				return "", covered
+			}
+			if why := a.requestGone(); why != "" {
+				return why, nil
+			}
+		}
 		seconds := int(max(a.readEvery-a.now().Sub(last), 0)/time.Second) + 1
 		ctx, cancel := context.WithCancel(context.Background())
 		records := make(chan workerRecord, 256)
@@ -675,15 +705,23 @@ func (a *asking) wait(cursor string) (string, map[string]bool) {
 			}
 		}
 		cancel()
+		var busy noSlot
 		switch {
 		case covered != nil:
 			return "", covered
 		case why != "":
 			return why, nil
+		case errors.As(ferr, &busy):
+			if !said {
+				fmt.Fprintf(a.stderr, "valley: %s · waiting by reading origin every %s\n", oneLine(ferr.Error()), a.readEvery)
+			}
+			refused, said = true, true
+			continue
 		case ferr != nil:
 			fmt.Fprintf(a.stderr, "valley: %s\n", oneLine(ferr.Error()))
 			return "telemetry unreadable", nil
 		}
+		refused = false
 		cursor = next
 		if a.now().Sub(last) >= a.readEvery {
 			last, lastRead = a.now(), a.now()
@@ -702,6 +740,23 @@ func (a *asking) covering() map[string]bool {
 		return covered
 	}
 	return nil
+}
+
+// requestGone reads the request's ref on origin, and says why the wait
+// ends when origin lists it gone or naming another commit, as after a
+// holder of the approve grant deleted it: the command itself deletes it
+// only after the wait. A listing that fails says nothing.
+func (a *asking) requestGone() string {
+	out, err := a.g.output(true, "ls-remote", "--refs", "origin", a.ref)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if oid, ref, _ := strings.Cut(line, "\t"); ref == a.ref && oid == a.head {
+			return ""
+		}
+	}
+	return "the check request is gone from origin"
 }
 
 // wake takes one worker record, keeps a check.result for the tree, notes
@@ -1009,6 +1064,15 @@ type workerStream interface {
 	follow(ctx context.Context, cursor string, seconds int, records chan<- workerRecord) (string, error)
 }
 
+// noSlot is the host's refusal of a request for lack of a slot: the
+// principal already has every request of its kind open that it may, and
+// one of them ending admits it. The host's word is taken: a refusal of
+// that shape keeps the wait going, up to --wait, and never makes it
+// pass, which only evidence on origin does.
+type noSlot struct{ why string }
+
+func (e noSlot) Error() string { return e.why }
+
 // brokenStream is a stream that cannot be reached, and why.
 type brokenStream struct{ err error }
 
@@ -1043,7 +1107,7 @@ func (s sshStream) follow(ctx context.Context, cursor string, seconds int, recor
 // the worker's stream it answers with to onRecord, and each gap in it as
 // a record marked so, and returns the cursor it ended at. A refusal, a
 // line that is not JSON, a source that could not be read, or an answer
-// that never ends is an error.
+// that never ends is an error; a refusal for lack of a slot is a noSlot.
 func (s sshStream) answer(ctx context.Context, req telemetry.Request, timeout time.Duration, onRecord func(workerRecord)) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -1058,7 +1122,7 @@ func (s sshStream) answer(ctx context.Context, req telemetry.Request, timeout ti
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("could not run ssh: %v", err)
 	}
-	cursor, ended, why := "", false, ""
+	cursor, ended, why, busy := "", false, "", false
 	sc := bufio.NewScanner(out)
 	sc.Buffer(make([]byte, 64<<10), telemetry.MaxResponseBytes)
 	for why == "" && sc.Scan() {
@@ -1072,7 +1136,7 @@ func (s sshStream) answer(ctx context.Context, req telemetry.Request, timeout ti
 		}
 		switch {
 		case m.Kind == "error":
-			why = "the host refused: " + telemetry.Sanitize(m.Error)
+			why, busy = "the host refused: "+telemetry.Sanitize(m.Error), telemetry.IsSlotRefusal(m.Error)
 		case m.Kind == "unavailable" && m.What != "journal":
 			why = fmt.Sprintf("the host could not read %s: %s", telemetry.Sanitize(m.What), telemetry.Sanitize(m.Error))
 		case m.Kind == "gap" && m.Stream == workerSource && onRecord != nil:
@@ -1088,6 +1152,8 @@ func (s sshStream) answer(ctx context.Context, req telemetry.Request, timeout ti
 	}
 	waitErr := cmd.Wait()
 	switch {
+	case busy:
+		return "", noSlot{why}
 	case why != "":
 		return "", errors.New(why)
 	case !ended:

@@ -159,20 +159,22 @@ func (c *collector) handle(in *bufio.Reader, conn net.Conn) int {
 	return 0
 }
 
-// slots: how many requests of one kind one principal may have open at
-// once. The socket's own MaxConnections bounds them all together.
-const (
-	observeSlots = 4
-	reportSlots  = 1
-)
-
 // slot takes one of the principal's slots for the request's kind, or
-// says that all are taken. A slot is a lock file; the lock is the open
-// file's, so a collector that dies releases it.
+// says that all are taken: telemetry.FollowSlots for a follow,
+// telemetry.ReportSlots for a report, and telemetry.BoundedSlots for any
+// other request. The pools bound each principal; the socket's
+// MaxConnections (16, nix/telemetry.nix) bounds every principal's
+// requests together, so one principal at every bound holds 9 connections
+// and leaves 7 to all others. A slot is a lock file named for the
+// principal and the kind; the lock is the open file's, so a collector
+// that dies releases it.
 func (c *collector) slot(req telemetry.Request) (func(), error) {
-	n, kind := observeSlots, "observe"
-	if req.Op == telemetry.OpReport {
-		n, kind = reportSlots, "report"
+	n, kind := telemetry.BoundedSlots, "bounded"
+	switch req.Op {
+	case telemetry.OpFollow:
+		n, kind = telemetry.FollowSlots, "follow"
+	case telemetry.OpReport:
+		n, kind = telemetry.ReportSlots, "report"
 	}
 	dir := filepath.Join(c.state, "slots")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -188,7 +190,7 @@ func (c *collector) slot(req telemetry.Request) (func(), error) {
 		}
 		f.Close()
 	}
-	return nil, fmt.Errorf("%s already has %d %s requests open; try again when one ends", req.Principal, n, kind)
+	return nil, errors.New(telemetry.SlotRefusal(req.Principal, n, kind))
 }
 
 func readLine(in *bufio.Reader, max int) ([]byte, error) {

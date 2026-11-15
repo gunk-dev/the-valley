@@ -43,8 +43,9 @@
 //
 // Checks are counted as valley changes --checks reads them
 // (versionchecks.go): for each project with a ready change, or with a
-// draft that --drafts --checks lists, one read of the policy and an
-// attest verify for each note, and nothing for a project without one.
+// draft that --drafts --checks lists, one read of the policy and one
+// attest verify for each head, over all of its notes, and nothing for a
+// project without one.
 // When nothing waits on an approval, one line says so in place of needs
 // you, and moving is left out when nothing moves. Older versions of a
 // change are never listed.
@@ -276,7 +277,7 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 			r.addCarried(&view, stderr)
 			r.addConflicts(&view, p, stderr)
 			if l.checks {
-				r.addChecks(&view, l.drafts, c, stderr)
+				r.addChecks(&view, l.drafts, c, listEvidence, stderr)
 			}
 			utf8Branches(&view, stderr)
 			doc.Repos = append(doc.Repos, view)
@@ -347,7 +348,7 @@ func writePending(repos []listed, h handleMap, l listing, c *costs, w, stderr io
 	defer phase("branches")()
 	var drafts, branches []block
 	nDrafts, nBranches := 0, 0
-	waiting, moving := operatorQueue(repos, h, l, c, newPairing(), stderr, func(r listed, view jsonRepo) {
+	waiting, moving := operatorQueue(repos, h, l, c, newPairing(), listEvidence, stderr, func(r listed, view jsonRepo) {
 		nDrafts, nBranches = nDrafts+len(*view.Drafts), nBranches+len(view.Branches)
 		if l.drafts && len(*view.Drafts) > 0 {
 			drafts = append(drafts, block{r.name, r.draftStacks(view, h, l)})
@@ -566,9 +567,9 @@ func (r listed) mainState(h handleMap, c *costs, stderr io.Writer, t terminal, n
 	model, err := r.snap.model()
 	walk := mainWalk{}
 	if err == nil {
-		keys := hostKeys{run: true}
+		keys := hostKeys{use: listEvidence}
 		defer keys.done()
-		walk, err = mainFollows(r.g, r.snap.tip, model, &keys, io.Discard)
+		walk, err = mainFollows(r.g, r.snap.tip, model, &keys, r.snap.evidence(), io.Discard)
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "valley: %s: main's state did not read: %v\n", r.name, err)

@@ -32,7 +32,8 @@ var RecordPatterns = []string{change.RefPrefix + Target + "/*"}
 // InventoryPatterns are the ls-remote patterns of every ref a snapshot
 // reads: every branch, every record, every integration request, outcome
 // record and landing record, every attestation ref, and every restack
-// report.
+// report. The plan graph's ref is listed too, so a listing that shows
+// which knots link each change reads origin once.
 var InventoryPatterns = []string{
 	"refs/heads/*",
 	change.RefPrefix + Target + "/*",
@@ -41,7 +42,11 @@ var InventoryPatterns = []string{
 	LandingPrefix + "*",
 	AttestationRefs + "*",
 	RestackPrefix + "*",
+	KnotsRef,
 }
+
+// KnotsRef is the plan graph's ref (knot.Ref).
+const KnotsRef = "refs/the-valley/knots"
 
 // Origin is one ls-remote snapshot of the refs a reader reads.
 type Origin struct {

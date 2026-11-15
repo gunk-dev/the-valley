@@ -23,7 +23,8 @@ func git(repo string, args ...string) (string, error) {
 }
 
 // gitCommand is every git this program runs to read or write the
-// repository: with replacement refs off, and in a fixed environment.
+// repository: with replacement refs off, in a fixed environment, and
+// killed if attest dies (dieWithParent).
 //
 // A replacement ref makes one object stand in for another wherever git
 // looks it up. Left on, a refs/replace/* in the repository could make the
@@ -43,6 +44,7 @@ func gitCommand(repo string, args ...string) *exec.Cmd {
 	cmd := exec.Command("git", append([]string{"--no-replace-objects"}, args...)...)
 	cmd.Dir = repo
 	cmd.Env = gitEnvironment(os.Environ())
+	cmd.SysProcAttr = dieWithParent()
 	return cmd
 }
 
@@ -51,11 +53,13 @@ func gitCommand(repo string, args ...string) *exec.Cmd {
 // configuration — how a remote's URL is rewritten, which ssh command
 // reaches it — because nothing they read is signed: what a fetch brings is
 // only kept beside the new notes and pushed back, where the remote's hook
-// checks it. Replacement refs are still off.
+// checks it. Replacement refs are still off, and the git is killed if
+// attest dies (dieWithParent).
 func gitRemote(repo string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"--no-replace-objects"}, args...)...)
 	cmd.Dir = repo
 	cmd.Env = append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1")
+	cmd.SysProcAttr = dieWithParent()
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb

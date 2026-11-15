@@ -125,12 +125,25 @@ lets nix collect the output. A root that cannot be added is a warning,
 never a failure. Without --gc-roots, run roots nothing.
 
 verify flags:
-  --note FILE         the signed note, as stored
+  --note FILE         the signed note, as stored; repeatable with --verdicts
+  --verdicts          print one verdict line for each note, and nothing else
   --known-keys FILE   verifier keys the reader accepts, one per line
   --signer NAME       signer whose signature must be present, repeatable
   --schema FILE       attestation schema to vet against
   --repo DIR          repository to re-check the recorded digests against
   --rev REV           revision in it (default: HEAD)
+
+verify --verdicts checks each note as it would check that note alone,
+reading the keys and the tree once and vetting the statements in one cue
+run, each alone again when that run fails. It prints nothing until every
+note is checked, then one line for each, in the order given, and a line
+that counts them. Every value is a Go string literal:
+
+  verdict 1 verified "worker/attestations+74a84b34"
+  verdict 2 refused "tree digest mismatch: …"
+  end 2
+
+It exits 1 when any note is refused.
 
 digest flags:
   --repo DIR          repository (default: the git toplevel here)

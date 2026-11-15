@@ -353,7 +353,7 @@ func readWalkQueue(g git, l listing, stderr io.Writer) (walkQueue, error) {
 		}
 	}
 	c := newCosts()
-	q.rows, q.moving = operatorQueue(q.repos, q.h, l, c, nil, stderr, func(_ listed, view jsonRepo) {
+	q.rows, q.moving = operatorQueue(q.repos, q.h, l, c, nil, assessEvidence, stderr, func(_ listed, view jsonRepo) {
 		q.drafts, q.branches = q.drafts+len(*view.Drafts), q.branches+len(view.Branches)
 	})
 	c.close()

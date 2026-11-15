@@ -19,8 +19,8 @@ package main
 // not reach is due when a landing the walk read set it due, and when the
 // walk stopped at its bound rather than at main's first commit, since a
 // landing past the bound may have. The bound keeps a read of main's state
-// short however long main is: a commit costs a few git reads and an attest
-// verify of each note judged, since its tree's digest is remembered
+// short however long main is: a commit costs a few git reads and one
+// attest verify of the notes judged, since its tree's digest is remembered
 // between commands (rememberedDigest). Only follow checks of the nix
 // runner are read.
 //
@@ -68,9 +68,10 @@ type mainWalk struct {
 }
 
 // mainFollows walks main from tip under the policy model, judging every
-// tree under the host's signers keys reads. It returns no checks when the
-// policy declares no nix follow check.
-func mainFollows(g git, tip string, model *composed.Model, keys *hostKeys, stderr io.Writer) (mainWalk, error) {
+// tree under the host's signers keys reads, by the attestation refs
+// listed, or by a listing of its own when listed is nil. It returns no
+// checks when the policy declares no nix follow check.
+func mainFollows(g git, tip string, model *composed.Model, keys *hostKeys, listed map[string]string, stderr io.Writer) (mainWalk, error) {
 	declared := map[string]bool{}
 	for _, c := range model.Classes {
 		for _, name := range c.Follows {
@@ -99,9 +100,12 @@ func mainFollows(g git, tip string, model *composed.Model, keys *hostKeys, stder
 	}
 	// One listing of origin's attestation refs, and one read of the host's
 	// signers, serve every tree the walk judges.
-	o, err := listOrigin(g, attestationRefs+"*")
-	if err != nil {
-		return mainWalk{}, failure("could not list the evidence origin holds")
+	if listed == nil {
+		o, err := listOrigin(g, attestationRefs+"*")
+		if err != nil {
+			return mainWalk{}, failure("could not list the evidence origin holds")
+		}
+		listed = o.refs
 	}
 	digest := func(_, commit string) (string, error) { return rememberedDigest(g, commit) }
 	rooted := false // whether the walk reached main's first commit
@@ -112,7 +116,7 @@ func mainFollows(g git, tip string, model *composed.Model, keys *hostKeys, stder
 				asked = append(asked, q.nixCheck)
 			}
 		}
-		e, err := coverageIn(g, commit, o.refs, asked, keys, digest, stderr)
+		e, err := coverageIn(g, commit, listed, asked, keys, digest, stderr)
 		if err != nil {
 			return mainWalk{}, err
 		}

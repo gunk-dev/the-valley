@@ -360,6 +360,12 @@ func (r remote) read() (knotState, error) {
 	if err != nil {
 		return knotState{}, failure("could not read origin")
 	}
+	return r.readTip(tip)
+}
+
+// readTip reads the graph at tip, the commit origin's knot.Ref names, or
+// an empty graph when tip is "".
+func (r remote) readTip(tip string) (knotState, error) {
 	if tip == "" {
 		return knotState{graph: knot.Empty(), blobs: map[string][]byte{}}, nil
 	}

@@ -736,8 +736,11 @@ func fakeUpload(dir string, args []string) int {
 }
 
 // fakeAttest is attest for TestCheckBuildDeadline: every tree has one
-// digest.
+// digest. With VALLEY_TEST_ATTEST_VERIFY set, its verify is fakeVerify.
 func fakeAttest() int {
+	if mode := os.Getenv("VALLEY_TEST_ATTEST_VERIFY"); mode != "" && len(os.Args) > 1 && os.Args[1] == "verify" {
+		return fakeVerify(mode, os.Args[2:])
+	}
 	fmt.Println("valley-tree-v1:" + strings.Repeat("ab", 32))
 	return 0
 }

@@ -56,10 +56,15 @@ type doers map[string][]knotRef
 // or pull requests. When the graph is missing or unreadable, it returns an
 // empty map and, if verbose, warns on stderr.
 func readDoers(g git, project string, verbose bool, stderr io.Writer) doers {
+	return readDoersBy(g, project, verbose, stderr, remote.read)
+}
+
+// readDoersBy is readDoers with the graph read by read.
+func readDoersBy(g git, project string, verbose bool, stderr io.Writer, read func(remote) (knotState, error)) doers {
 	if !verbose {
 		g.stderr = io.Discard
 	}
-	s, err := remote{g: g, name: project}.read()
+	s, err := read(remote{g: g, name: project})
 	switch {
 	case err != nil:
 		if verbose {

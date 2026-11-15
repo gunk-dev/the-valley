@@ -575,7 +575,11 @@ func readKnots(repos []listed, verbose bool, stderr io.Writer) {
 	for i := range repos {
 		if repos[i].err == nil {
 			end := phase("knots")
-			repos[i].knots = readDoers(repos[i].g, repos[i].name, verbose, stderr)
+			read := remote.read
+			if tip, listed := repos[i].snap.knotsTip(); listed {
+				read = func(r remote) (knotState, error) { return r.readTip(tip) }
+			}
+			repos[i].knots = readDoersBy(repos[i].g, repos[i].name, verbose, stderr, read)
 			end()
 		}
 	}
@@ -812,7 +816,7 @@ func runChanges(g git, args []string, stdout, stderr io.Writer) error {
 		view := r.repoView(h, everyChange, unlanded)
 		r.addConflicts(&view, p, stderr)
 		if l.checks {
-			r.addChecks(&view, true, c, stderr)
+			r.addChecks(&view, true, c, listEvidence, stderr)
 		}
 		utf8Branches(&view, stderr)
 		doc.Repos = append(doc.Repos, view)

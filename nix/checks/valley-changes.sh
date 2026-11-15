@@ -765,6 +765,10 @@ git fetch --quiet origin
 branch chk-pass origin/main chk-pass
 ready "$K1" chk-pass
 evidence chk-pass passed
+# The same note at a second ref for the tree: attest verifies the head's
+# two notes in one run.
+git -C "$data/open.git" update-ref "refs/the-valley/attestations/$(tree_digest chk-pass)/00000000" \
+  "refs/the-valley/attestations/$(tree_digest chk-pass)/$workerhash"
 branch chk-fail origin/main chk-fail
 ready "$K2" chk-fail
 evidence chk-fail failed

@@ -248,14 +248,22 @@ moving (3)
   after it says `on <base>`. A block also says `includes <handle>` for an unlanded change its head
   contains that is not listed, such as a `withdrawn` one, `uncertain` when the version may have
   landed without its evidence being stored, and what a current restack report says.
+- **Signers:** `valley pending` and `valley changes` display evidence and authorise nothing. Each
+  reads the host's signers publication once per repository directory in a command, and checks
+  transfer statements, evidence and, in `pending`, main's walk against it. With `--all`, a command
+  reads once for each project, and may read one host's publication once for transfer verification
+  and again for a project's evidence. A key revoked while a listing runs is honoured by the next.
+  `approve`, the approve step of `review` and `valley checks --build` assess evidence, to authorise
+  or to report a build result, and read the publication afresh at each assessment.
 - **Cost:** For each project with a ready change, or with a draft that `--drafts --checks` lists,
-  reading the checks reads the policy once, lists and fetches the evidence on `origin` once for
-  every head, and runs `attest verify` for each note. It costs nothing for a project without one.
-  For a project with two or more ready changes, comparing them runs one `git merge-tree` for each
-  pair whose answer is not remembered. An answer depends only on `main`'s tip and the two heads, so
-  it is kept in the client cache, under `$XDG_CACHE_HOME/valley/transfers/pairs`, and a listing that
-  has compared a pair before runs no merge for it. `valley pending` also writes the shell-completion
-  handle cache for the current repository at `<git-common-dir>/valley/handles`.
+  reading the checks reads the policy once, takes the evidence refs from the listing's read of
+  `origin`, fetches the evidence once for all heads, and runs one `attest verify` per head over all
+  its notes, the heads side by side, at most one per CPU. It costs nothing for a project without
+  one. For a project with two or more ready changes, comparing them runs one `git merge-tree` for
+  each pair whose answer is not remembered. An answer depends only on `main`'s tip and the two
+  heads, so it is kept in the client cache, under `$XDG_CACHE_HOME/valley/transfers/pairs`, and a
+  listing that has compared a pair before runs no merge for it. `valley pending` also writes the
+  shell-completion handle cache for the current repository at `<git-common-dir>/valley/handles`.
 
 ```sh
 valley pending
@@ -1032,7 +1040,10 @@ A `valley` command runs `ssh` for a telemetry request with `ForkAfterAuthenticat
 OpenSSH 8.7 or later. On Linux, that `ssh` process ends with the command, however the command ends.
 Elsewhere, an `ssh` process left behind, such as when a signal ends the command, ends when the host
 ends the request or when ssh's keepalive gives up on a dead connection. A host that stalls while
-still answering keepalives keeps it running: the client does not bound it.
+still answering keepalives keeps it running: the client does not bound it. On Linux, the
+`attest verify` a command runs to judge evidence also ends with the command, and the `git` and `cue`
+that `attest` starts end with `attest`, however the parent ends; elsewhere each runs until its
+verification finishes.
 
 `--logs` adds output: the units' own journal lines, the tail of each stream's newest build logs, and
 a workstation's `check.output` records. Every piece of it is a check's or a program's own text. It
@@ -1148,7 +1159,14 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     - Runs the `command` checks after the `nix` checks, one at a time, in the order given.
     - Prints each check's `check` and `time` lines, then the log of every check that failed, under
       `--- <name> ---` on `stderr`. Publishes nothing unless every check passed, and exits `1`.
-  - `attest verify --note <file> --known-keys <file> [--signer <name>]... [--schema <file>] [--repo <dir>] [--rev <rev>]`
+  - `attest verify [--verdicts] --note <file> --known-keys <file> [--signer <name>]... [--schema <file>] [--repo <dir>] [--rev <rev>]`
+    - With `--verdicts`, `--note` may be given more than once. Each note is checked as it would be
+      alone, with the keys and the tree read once. The statements are vetted in one `cue vet`, and
+      each alone again when that run fails, so a refusal reads as it would for that note alone.
+      Nothing is printed until every note is checked; it then prints one line per note in the order
+      given (`verdict <n> verified "<signer>"...` or `verdict <n> refused "<why>"`), followed by
+      `end <count>`. Every value is a double-quoted Go string literal, so no embedded newline can
+      start a new line. Exits `1` when any note is refused.
   - `attest digest [--repo <dir>] [--rev <rev>]` — prints `valley-tree-v1:<64-hex>`.
   - `attest inputs [--repo <dir>] [--rev <rev>] [--check <name>[=<attr>]]... [--system <system>]` —
     prints `<check> valley-inputs-v1:<64-hex> sha256:<64-hex-drv>` per check without building.

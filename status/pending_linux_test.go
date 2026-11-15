@@ -119,6 +119,97 @@ func TestPendingsSSHEndsWithIt(t *testing.T) {
 	}
 }
 
+// However valley pending ends while attest verifies the evidence origin
+// holds, the verify ends with it: SIGTERM and SIGKILL while main's walk
+// judges the two notes stored for main's tree. The system kills the
+// attest as pending dies (dieWithParent), and this process, the reaper of
+// what pending leaves, waits for it.
+func TestPendingsAttestEndsWithIt(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, signal := range []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL} {
+		t.Run(signal.String(), func(t *testing.T) {
+			reapOrphans(t)
+			dir := t.TempDir()
+			toolsOnPath(t, dir, "git", "cue")
+			pid := filepath.Join(dir, "attest.pid")
+			if err := syscall.Mkfifo(pid, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// attest says its process ID and stalls.
+			stall := fmt.Sprintf("#!/bin/sh\necho $$ > '%s'\nexec sleep 86397\n", pid)
+			if err := os.WriteFile(filepath.Join(dir, "bin", "attest"), []byte(stall), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			followProject(t, filepath.Join(dir, "origin"))
+			storeMainEvidence(t, filepath.Join(dir, "origin", "origin.git"))
+			cmd := exec.Command(self, "pending")
+			cmd.Stdin = strings.NewReader("x")
+			var out bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &out, &out
+			cmd.Env = append(os.Environ(), "VALLEY_TEST_AS_MAIN=1")
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			exited := make(chan error, 1)
+			go func() { exited <- cmd.Wait() }()
+			said := make(chan int, 1)
+			go func() {
+				data, _ := os.ReadFile(pid)
+				n, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+				said <- n
+			}()
+			var verifying int
+			select {
+			case verifying = <-said:
+			case err := <-exited:
+				unheard(pid)
+				t.Fatalf("pending ended before it verified main's evidence: %v\n%s", err, out.String())
+			case <-time.After(time.Minute):
+				cmd.Process.Kill()
+				<-exited
+				unheard(pid)
+				t.Fatalf("pending did not verify main's evidence in a minute\n%s", out.String())
+			}
+			cmd.Process.Signal(signal)
+			err := <-exited
+			var ee *exec.ExitError
+			if !errors.As(err, &ee) || !ee.Sys().(syscall.WaitStatus).Signaled() || ee.Sys().(syscall.WaitStatus).Signal() != signal {
+				t.Errorf("pending ended with %v, not by %s\n%s", err, signal, out.String())
+			}
+			if ws, ok := waitOrphan(t, verifying); ok && (!ws.Signaled() || ws.Signal() != syscall.SIGKILL) {
+				t.Errorf("the attest verify ended with %v, not killed as pending died", ws)
+			}
+		})
+	}
+}
+
+// storeMainEvidence stores in origin, the bare repository of a project
+// followProject made, two notes about f-1 for the tree of main's tip, one
+// signer's each, and publishes the host's signers, so main's walk verifies
+// both in one attest run. The project reads no worker telemetry.
+func storeMainEvidence(t *testing.T, origin string) {
+	t.Helper()
+	if out, err := exec.Command("git", "config", "--unset", "valley.telemetry.remote").CombinedOutput(); err != nil {
+		t.Fatalf("git config --unset: %v\n%s", err, out)
+	}
+	in := bareGit(t, origin)
+	tip := in("", "rev-parse", "main")
+	digest, err := rememberedDigest(git{env: gitEnvironment(os.Environ()), dir: origin}, tip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publishSigners(t, origin, "integrator", "worker")
+	stored := in("predicate.check.name f-1\n\n— worker signature\n", "hash-object", "-w", "--stdin")
+	check := in(fmt.Sprintf("100644 blob %s\tstatement.note\n", stored), "mktree")
+	tree := in(fmt.Sprintf("040000 tree %s\tf-1\n", check), "mktree")
+	for _, hash := range []string{"00000001", "00000002"} {
+		in("", "update-ref", attestationRefs+digest+"/"+hash, tree)
+	}
+}
+
 // reapOrphans makes this process the reaper of the processes its children
 // leave when they die (PR_SET_CHILD_SUBREAPER), until the test ends, so a
 // test can wait for them.

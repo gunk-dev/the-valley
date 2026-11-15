@@ -2,17 +2,21 @@ package main
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"the-valley/note"
 	"the-valley/telemetry"
 )
 
@@ -452,17 +456,16 @@ func TestPendingEndsAReadNobodyWaitsFor(t *testing.T) {
 }
 
 // pending --checks reads a draft's checks only when --drafts lists the
-// drafts. A listing starts attest only to read checks, once for each head
-// to digest its tree. Without --drafts, two drafts start no attest, add
-// nothing to what --checks starts, and change no row; with it, each
-// draft's tree is digested and its block shows its checks.
+// drafts. With no evidence on origin it starts no attest: a head's tree
+// digest is worked out in-process. Without --drafts, two drafts add
+// nothing to what --checks starts and change no row; with it, each
+// draft's checks are read and its block shows them.
 func TestPendingReadsDraftChecksOnlyWhenListed(t *testing.T) {
 	dir := t.TempDir()
 	starts := toolsOnPath(t, dir, "git", "cue")
-	// attest logs its start as the shims do and answers with one digest:
-	// when origin holds no evidence, a listing asks it only to digest each
-	// head's tree, and the digest decides nothing.
-	stand := fmt.Sprintf("#!/bin/sh\necho attest >> '%s'\necho valley-tree-v1:0123\n", starts)
+	// attest logs its start as the shims do. Origin holds no evidence, and
+	// a head's tree digest is worked out in-process, so nothing starts it.
+	stand := fmt.Sprintf("#!/bin/sh\necho attest >> '%s'\n", starts)
 	if err := os.WriteFile(filepath.Join(dir, "bin", "attest"), []byte(stand), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -478,9 +481,10 @@ func TestPendingReadsDraftChecksOnlyWhenListed(t *testing.T) {
 		out, with := runCounted(t, starts, append([]string{"pending", "--checks"}, args...)...)
 		return ages.ReplaceAllString(out, ""), with["attest"], with[""] - without[""]
 	}
+	listing() // so every count is of a listing whose caches are warm
 	before, attest, added := listing()
-	if attest != 1 {
-		t.Fatalf("pending --checks started attest %d times for one ready head", attest)
+	if attest != 0 {
+		t.Fatalf("pending --checks started attest %d times for one ready head and no evidence", attest)
 	}
 	for _, id := range []string{"q", "r"} {
 		head("draft-"+id, strings.Repeat(id, 32))
@@ -497,9 +501,10 @@ func TestPendingReadsDraftChecksOnlyWhenListed(t *testing.T) {
 	if want := before + "\n2 drafts · valley pending --drafts\n"; after != want {
 		t.Errorf("pending --checks printed, with two drafts:\n%s\nand with none:\n%s", after, before)
 	}
-	out, listed, _ := listing("--drafts")
-	if listed != attest+2 {
-		t.Errorf("pending --drafts --checks started attest %d times for one ready head and two drafts", listed)
+	out, listed, addedListed := listing("--drafts")
+	if listed != 0 || addedListed <= added {
+		t.Errorf("pending --drafts --checks started attest %d times, and --checks added %d processes, not more than %d, for one ready head and two drafts",
+			listed, addedListed, added)
 	}
 	for _, d := range []string{"qqqq v1 on draft-q  2 checks pending", "rrrr v1 on draft-r  2 checks pending"} {
 		if !strings.Contains(out, "\n"+d) {
@@ -521,18 +526,10 @@ func TestPendingReadsDraftChecksOnlyWhenListed(t *testing.T) {
 func TestPendingSaysWhenTheWorkersBuildFailed(t *testing.T) {
 	dir := t.TempDir()
 	toolsOnPath(t, dir, "git", "cue")
-	// attest only digests each head's tree, since origin holds no
-	// evidence, and gives every head one digest: the worker's records
-	// about that tree are about the ready change's and the draft's. ssh
-	// answers the worker's read from a file, as the host would.
+	// ssh answers the worker's read from a file, as the host would.
 	answer := filepath.Join(dir, "answer")
-	for tool, script := range map[string]string{
-		"attest": "#!/bin/sh\necho valley-tree-v1:0123\n",
-		"ssh":    fmt.Sprintf("#!/bin/sh\ncat '%s'\n", answer),
-	} {
-		if err := os.WriteFile(filepath.Join(dir, "bin", tool), []byte(script), 0o755); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.WriteFile(filepath.Join(dir, "bin", "ssh"), []byte(fmt.Sprintf("#!/bin/sh\ncat '%s'\n", answer)), 0o755); err != nil {
+		t.Fatal(err)
 	}
 	sh, head := policyProject(t, filepath.Join(dir, "origin"), 3)
 	sh("config", "valley.telemetry.remote", "ssh://git@valley-host/origin.git")
@@ -543,10 +540,27 @@ func TestPendingSaysWhenTheWorkersBuildFailed(t *testing.T) {
 	if code := run([]string{"unready", draft}, &stdout, &stderr, os.Exit); code != 0 {
 		t.Fatalf("unready: %s", stderr.String())
 	}
+	// The worker's records about a tree are about the ready change's and
+	// the draft's alike: each is written once for each head's tree.
+	var trees []string
+	for _, branch := range []string{"ready-1", "draft-1"} {
+		tree, err := rememberedDigest(git{env: gitEnvironment(os.Environ())}, branch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		trees = append(trees, tree)
+	}
 
-	// records makes the host's answer: one page of the worker's records.
-	records := func(lines ...string) {
+	// records makes the host's answer: one page of the worker's records,
+	// each about each head's tree where it names the tree "0123".
+	records := func(given ...string) {
 		t.Helper()
+		var lines []string
+		for _, l := range given {
+			for _, tree := range trees {
+				lines = append(lines, strings.ReplaceAll(l, `"tree":"0123"`, `"tree":"`+tree+`"`))
+			}
+		}
 		page := `{"kind":"header","host":"valley-host","format":"valley-telemetry/v1"}` + "\n"
 		for i, l := range lines {
 			page += fmt.Sprintf(`{"kind":"record","stream":"worker","seq":%d,%s}`+"\n", i+1, l)
@@ -669,5 +683,147 @@ func TestPendingSaysWhenTheWorkersBuildFailed(t *testing.T) {
 func unheard(fifo string) {
 	if f, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
 		f.Close()
+	}
+}
+
+// bareGit is git run in the bare repository origin, with stdin, giving
+// what it printed.
+func bareGit(t *testing.T, origin string) func(stdin string, args ...string) string {
+	return func(stdin string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"--git-dir", origin}, args...)...)
+		cmd.Stdin = strings.NewReader(stdin)
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("git %s: %v", strings.Join(args, " "), err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+}
+
+// publishSigners publishes the host's signers in origin, a bare
+// repository whose main carries its own instance: a key for each name,
+// and the integrator's name, integrator.
+func publishSigners(t *testing.T, origin string, names ...string) {
+	t.Helper()
+	in := bareGit(t, origin)
+	var keys strings.Builder
+	for _, name := range names {
+		pub, _, err := ed25519.GenerateKey(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys.WriteString(note.NewVerifierKey(name, pub).String() + "\n")
+	}
+	blob := func(text string) string { return in(text, "hash-object", "-w", "--stdin") }
+	in("", "update-ref", signersRef, in(fmt.Sprintf("100644 blob %s\tintegrator-name\n100644 blob %s\tknown-signers\n",
+		blob("integrator\n"), blob(keys.String())), "mktree"))
+}
+
+// Each reader of evidence reads the host's signers as its use says. An
+// assessment, as approve, review's approve step and checks --build make
+// one, reads the publication afresh each time, so a worker key removed or
+// published again between two assessments in one command is honoured by
+// the second. A listing, which displays and authorises nothing, reads it
+// once in the command, with transfer verification and main's walk.
+func TestEvidenceReadsTheSignersAsItsUseSays(t *testing.T) {
+	dir := t.TempDir()
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git to run")
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	starts, bin := filepath.Join(dir, "starts"), filepath.Join(dir, "bin")
+	origin := filepath.Join(dir, "origin", "origin.git")
+	policyProject(t, filepath.Join(dir, "origin"), 1)
+	publish := func(names ...string) { publishSigners(t, origin, names...) }
+	publish("integrator", "worker")
+	// The worker's note about c-1, stored for the digest the attest
+	// stand-in gives every tree (fakeAttest), which verifies a note's
+	// signer when the known-signers file holds its key (fakeVerify).
+	in := bareGit(t, origin)
+	stored := in("predicateType "+predicatePure+"\npredicate.check.name c-1\npredicate.check.runner nix\n"+
+		"predicate.check.attribute c-1\npredicate.result passed\nsigner worker+00000001\n\n— worker signature\n",
+		"hash-object", "-w", "--stdin")
+	check := in(fmt.Sprintf("100644 blob %s\tstatement.note\n", stored), "mktree")
+	in("", "update-ref", attestationRefs+strings.Repeat("ab", 32)+"/00000001",
+		in(fmt.Sprintf("040000 tree %s\tc-1\n", check), "mktree"))
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shim := fmt.Sprintf("#!/bin/sh\necho \"$*\" >> '%s'\nexec '%s' \"$@\"\n", starts, real)
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(self, filepath.Join(bin, "attest")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("VALLEY_TEST_ATTEST_VERIFY", "batch")
+	reads := func() int {
+		log, _ := os.ReadFile(starts)
+		n := 0
+		for _, line := range strings.Split(string(log), "\n") {
+			if f := strings.Fields(line); slices.Contains(f, "ls-remote") && slices.Contains(f, signersRef) {
+				n++
+			}
+		}
+		return n
+	}
+
+	g := git{env: gitEnvironment(os.Environ()), stderr: io.Discard}
+	before := verification
+	verification = &signerSource{g: g, stderr: io.Discard}
+	defer func() { verification = before }()
+	tip, err := g.output(true, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks := []nixCheck{{"c-1", "c-1"}}
+	covered := func(e evidence, err error) bool {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return e.covered["c-1"] != ""
+	}
+
+	approving := &approval{}
+	first := covered(approving.coverage(g, tip, checks, io.Discard))
+	publish("integrator")
+	revoked := covered(approving.coverage(g, tip, checks, io.Discard))
+	publish("integrator", "worker")
+	restored := covered(approving.coverage(g, tip, checks, io.Discard))
+	if !first || revoked || !restored || reads() != 3 {
+		t.Errorf("approve's assessments covered c-1: %v, with the worker's key removed %v, restored %v, in %d reads of the signers, not 3",
+			first, revoked, restored, reads())
+	}
+
+	building := newAsking(g, io.Discard, io.Discard)
+	building.head = tip
+	first = covered(building.cover(checks))
+	publish("integrator")
+	revoked = covered(building.cover(checks))
+	if !first || revoked || reads() != 5 {
+		t.Errorf("checks --build's assessments covered c-1: %v, with the worker's key removed %v, in %d reads of the signers, not 5",
+			first, revoked, reads())
+	}
+
+	publish("integrator", "worker")
+	_, name, _ := verification.resolve() // transfer verification
+	walk := hostKeys{use: listEvidence}  // main's walk
+	defer walk.done()
+	_, walked, why := walk.read(g)
+	publish("integrator")
+	keys, listedP, unsigned := hostSignersFrom(g, listEvidence.signers()) // a listing's evidence
+	if unsigned == "" {
+		defer os.Remove(keys)
+	}
+	if why != "" || unsigned != "" || walked == nil || walked != listedP || name != "integrator" || reads() != 6 {
+		t.Errorf("a listing read the signers %d times, not once more: transfers %q, the walk %p (%s), the evidence %p (%s)",
+			reads()-5, name, walked, why, listedP, unsigned)
 	}
 }

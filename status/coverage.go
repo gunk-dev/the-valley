@@ -73,6 +73,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -107,10 +108,10 @@ type evidence struct {
 type originFailure struct{ error }
 
 // coverageOf reads the evidence origin holds for a head's tree, and which
-// of the checks asked about it covers. The check worker (worker.go) calls
-// it as coverage does.
-func coverageOf(g git, head string, checks []nixCheck, stderr io.Writer) (evidence, error) {
-	var keys hostKeys
+// of the checks asked about it covers, reading the host's signers as use
+// says (evidenceUse).
+func coverageOf(g git, head string, checks []nixCheck, use evidenceUse, stderr io.Writer) (evidence, error) {
+	keys := hostKeys{use: use}
 	defer keys.done()
 	return coverageIn(g, head, nil, checks, &keys, func(repo, commit string) (string, error) {
 		return treeDigest(g, repo, commit)
@@ -261,16 +262,20 @@ func judge(g git, repo, head, keys, local string, here counting, stored []string
 	if err != nil || why != "" {
 		return nil, why, err
 	}
+	texts := make([][]byte, len(notes))
 	for i := range notes {
-		signers, refusal, err := verify(g, repo, head, keys, notes[i].note)
-		if err != nil {
-			return nil, "", err
-		}
-		if refusal != "" {
-			notes[i].refusal = "attest verify refuses it under the host's signers: " + refusal
+		texts[i] = notes[i].note
+	}
+	verdicts, err := verifyEach(g, repo, head, keys, texts)
+	if err != nil {
+		return nil, "", err
+	}
+	for i, v := range verdicts {
+		if v.refusal != "" {
+			notes[i].refusal = "attest verify refuses it under the host's signers: " + v.refusal
 			continue
 		}
-		notes[i].signer, notes[i].refusal = here.signer(signers)
+		notes[i].signer, notes[i].refusal = here.signer(v.signers)
 	}
 	picked := change.SelectNotes(notes,
 		func(n storedNote) string { return n.check },
@@ -400,14 +405,14 @@ func reusable(g git, repo, head, local string, here counting, c nixCheck, n stor
 		return why, nil
 	}
 	if local != "" {
-		signers, refusal, err := verify(g, repo, head, local, n.note)
+		verdicts, err := verifyEach(g, repo, head, local, [][]byte{n.note})
 		if err != nil {
 			return "", err
 		}
-		if refusal != "" {
+		if refusal := verdicts[0].refusal; refusal != "" {
 			return "attest verify refuses it under VALLEY_KNOWN_SIGNERS: " + refusal, nil
 		}
-		if _, why := here.signer(signers); why != "" {
+		if _, why := here.signer(verdicts[0].signers); why != "" {
 			return "under VALLEY_KNOWN_SIGNERS, " + why, nil
 		}
 	}
@@ -432,61 +437,167 @@ func mismatch(n storedNote, c nixCheck) string {
 	return ""
 }
 
-// verify runs attest verify over a note's exact bytes, under a
-// known-signers file. It returns every signer whose signature checked
-// out, in the order attest reported them, or the sentence attest refused
-// the note with.
-func verify(g git, repo, head, keys string, note []byte) (signers []string, refusal string, err error) {
-	file, err := os.CreateTemp("", "valley-coverage-*.note")
-	if err != nil {
-		return nil, "", err
+// noteVerdict is what attest verify made of one note: every signer whose
+// signature checked out, in the order attest reported them, or the
+// sentence it refused the note with.
+type noteVerdict struct {
+	signers []string
+	refusal string
+}
+
+// verifyEach runs attest verify --verdicts over the exact bytes of notes
+// about one tree, under a known-signers file, and returns what it made of
+// each, in order. attest checks each note as a run for that note alone
+// would, reading the keys and the tree once, and prints nothing but its
+// verdicts, once every note is checked (attest/verify.go). Output that is
+// anything else (readVerdicts), or an exit status other than its verdicts
+// call for, is an error for the whole run, never a verdict for any note:
+// an attest without --verdicts refuses the flag, and one killed part way
+// has printed nothing.
+func verifyEach(g git, repo, head, keys string, notes [][]byte) ([]noteVerdict, error) {
+	if len(notes) == 0 {
+		return nil, nil
 	}
-	defer os.Remove(file.Name())
-	_, err = file.Write(note)
-	if cerr := file.Close(); err == nil {
-		err = cerr
-	}
+	dir, err := os.MkdirTemp("", "valley-coverage-*")
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	out, err := attestTool(g, "verify", "--note", file.Name(), "--known-keys", keys, "--repo", repo, "--rev", head)
-	if err != nil {
-		var exit *exec.ExitError
-		if !errors.As(err, &exit) {
-			return nil, "", fmt.Errorf("could not run attest verify: %v", err)
+	defer os.RemoveAll(dir)
+	args := []string{"verify", "--verdicts"}
+	for i, n := range notes {
+		path := filepath.Join(dir, strconv.Itoa(i+1)+".note")
+		if err := os.WriteFile(path, n, 0o600); err != nil {
+			return nil, err
 		}
-		return nil, refusalOf(out), nil
+		args = append(args, "--note", path)
 	}
-	for _, line := range strings.Split(out, "\n") {
-		if f := strings.Fields(line); len(f) == 3 && f[0] == "signature" && f[1] == "ok" {
-			signers = append(signers, f[2])
+	args = append(args, "--known-keys", keys, "--repo", repo, "--rev", head)
+	cmd := exec.Command("attest", args...)
+	cmd.Env, cmd.Dir, cmd.SysProcAttr = g.env, g.dir, dieWithParent()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err = cmd.Run()
+	var exit *exec.ExitError
+	if err != nil && !errors.As(err, &exit) {
+		return nil, fmt.Errorf("could not run attest verify: %v", err)
+	}
+	verdicts, refused, unread := readVerdicts(stdout.String(), len(notes))
+	switch {
+	case unread != nil:
+		return nil, fmt.Errorf("attest verify gave no verdicts to read (%v): %s", unread, refusalOf(stderr.String()))
+	case refused != (err != nil) || err != nil && exit.ExitCode() != 1:
+		return nil, fmt.Errorf("attest verify ended with %v after its verdicts", cmd.ProcessState)
+	}
+	return verdicts, nil
+}
+
+// readVerdicts reads attest verify --verdicts' output for n notes, and
+// says whether any was refused. The output must be exactly one line for
+// each note, in the order the notes were given, then "end <n>":
+//
+//	verdict 1 verified "worker/attestations+74a84b34"
+//	verdict 2 refused "tree digest mismatch: the statement is about a different tree\n…"
+//	end 2
+//
+// with each value a double-quoted Go string literal, so no value can
+// start a line. A missing, duplicate, misplaced, unknown or contradictory
+// verdict, or a line of any other kind, is an error. A refusal is read as
+// a run for that note alone says it: the first line of why. A verified
+// verdict must name a signer.
+func readVerdicts(out string, n int) (verdicts []noteVerdict, refused bool, err error) {
+	lines := strings.Split(out, "\n")
+	if len(lines) != n+2 || lines[n] != "end "+strconv.Itoa(n) || lines[n+1] != "" {
+		return nil, false, fmt.Errorf("not %d verdict lines and an end line", n)
+	}
+	verdicts = make([]noteVerdict, n)
+	for i := range verdicts {
+		rest, ok := strings.CutPrefix(lines[i], "verdict "+strconv.Itoa(i+1)+" ")
+		if !ok || strings.HasSuffix(rest, " ") {
+			return nil, false, fmt.Errorf("line %d is not the verdict on note %d", i+1, i+1)
+		}
+		word, values, _ := strings.Cut(rest, " ")
+		read, err := literals(values)
+		switch {
+		case err != nil:
+			return nil, false, fmt.Errorf("the verdict on note %d does not read: %v", i+1, err)
+		case word == "verified" && len(read) > 0:
+			verdicts[i].signers = read
+		case word == "refused" && len(read) == 1 && strings.TrimSpace(read[0]) != "":
+			first, _, _ := strings.Cut(read[0], "\n")
+			verdicts[i].refusal, refused = strings.TrimSpace(first), true
+		default:
+			return nil, false, fmt.Errorf("the verdict on note %d is neither verified by a signer nor refused with why", i+1)
 		}
 	}
-	if len(signers) == 0 {
-		return nil, "attest verify named no signer", nil
+	return verdicts, refused, nil
+}
+
+// literals reads values, double-quoted Go string literals separated by
+// single spaces, as attest writes them.
+func literals(values string) ([]string, error) {
+	var read []string
+	for values != "" {
+		lit, err := strconv.QuotedPrefix(values)
+		if err != nil || lit[0] != '"' {
+			return nil, fmt.Errorf("%q is not a string literal", values)
+		}
+		v, err := strconv.Unquote(lit)
+		if err != nil {
+			return nil, err
+		}
+		read = append(read, v)
+		values = values[len(lit):]
+		if values == "" {
+			break
+		}
+		rest, ok := strings.CutPrefix(values, " ")
+		if !ok || rest == "" || rest[0] == ' ' {
+			return nil, fmt.Errorf("values are not separated by single spaces")
+		}
+		values = rest
 	}
-	return signers, "", nil
+	return read, nil
+}
+
+// evidenceUse is what a reader of evidence does with it, which decides
+// how it reads the host's signers publication. Each caller says which.
+type evidenceUse int
+
+const (
+	// assessEvidence reads the publication afresh at each assessment, so
+	// a key revoked or published since an earlier assessment in the same
+	// command is honoured: approve and review's approve step, review's
+	// queue and check lines, checks --build, and the check worker's scans.
+	assessEvidence evidenceUse = iota
+	// listEvidence reads each repository's publication once in the
+	// command, through the read transfer verification shares
+	// (signerSource.publication): valley pending and valley changes,
+	// which display evidence and authorise nothing.
+	listEvidence
+)
+
+// signers is how u reads the publication.
+func (u evidenceUse) signers() func(git) (*publishedSigners, error) {
+	if u == listEvidence {
+		return verification.publication
+	}
+	return readSigners
 }
 
 // hostKeys is the host's known-signers file, read by the first tree that
-// needs it and kept for every later one, until done removes it. With run,
-// the publication is the one this run verifies transfer statements with
-// (signerSource.publication), so a run that does both reads it once.
+// needs it and kept for every later one, until done removes it. Its use
+// says how the publication is read.
 type hostKeys struct {
 	keys, why string
 	p         *publishedSigners
 	once      bool
-	run       bool
+	use       evidenceUse
 }
 
-// read is hostSigners, read once.
+// read is the host's known-signers file, read once.
 func (h *hostKeys) read(g git) (keys string, p *publishedSigners, why string) {
 	if !h.once {
-		read := readSigners
-		if h.run {
-			read = verification.publication
-		}
-		h.keys, h.p, h.why = hostSignersFrom(g, read)
+		h.keys, h.p, h.why = hostSignersFrom(g, h.use.signers())
 		h.once = true
 	}
 	return h.keys, h.p, h.why
@@ -499,14 +610,10 @@ func (h *hostKeys) done() {
 	}
 }
 
-// hostSigners writes out the known-signers file the serving host
-// publishes, for attest verify to read, and returns its path and the
-// publication it came from. why says why there is none.
-func hostSigners(g git) (keys string, p *publishedSigners, why string) {
-	return hostSignersFrom(g, readSigners)
-}
-
-// hostSignersFrom is hostSigners with the publication read by read.
+// hostSignersFrom writes out the known-signers file the serving host
+// publishes, as read reads the publication, for attest verify to read,
+// and returns its path and the publication it came from. why says why
+// there is none.
 func hostSignersFrom(g git, read func(git) (*publishedSigners, error)) (keys string, p *publishedSigners, why string) {
 	p, err := read(g)
 	switch {
@@ -574,11 +681,13 @@ func blobs(g git, objects []string) ([][]byte, error) {
 }
 
 // attestTool runs the attest helper in g's repository and environment,
-// and returns what it printed on stdout and stderr together.
+// and returns what it printed on stdout and stderr together. The helper
+// dies with this process (dieWithParent).
 func attestTool(g git, args ...string) (string, error) {
 	cmd := exec.Command("attest", args...)
 	cmd.Env = g.env
 	cmd.Dir = g.dir
+	cmd.SysProcAttr = dieWithParent()
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

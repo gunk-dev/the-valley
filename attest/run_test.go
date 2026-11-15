@@ -26,8 +26,12 @@ import (
 // binary, run again with ATTEST_AS_MAIN set, so what is run is the
 // program's own main with real standard output and error.
 
-// TestMain runs this test binary as attest when ATTEST_AS_MAIN is set.
+// TestMain runs this test binary as attest when ATTEST_AS_MAIN is set,
+// and as a stand-in for cue when it is run by that name (verify_test.go).
 func TestMain(m *testing.M) {
+	if filepath.Base(os.Args[0]) == "cue" {
+		os.Exit(cueStandIn(os.Args[1:]))
+	}
 	if os.Getenv("ATTEST_AS_MAIN") != "" {
 		main()
 		os.Exit(0)

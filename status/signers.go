@@ -97,9 +97,10 @@ type publicationRead struct {
 }
 
 // publication is readSigners for g's repository, read once in a run:
-// resolve reads it through here, and so does main's walk (mainstate.go),
-// so a run that verifies transfer statements and judges main's evidence
-// reads the host's signers once.
+// transfer verification (resolve) reads it through here, and so does a
+// listing's evidence and main's walk (listEvidence), so a listing that
+// verifies transfer statements and judges evidence reads the host's
+// signers once for each repository directory it reads.
 func (s *signerSource) publication(g git) (*publishedSigners, error) {
 	if r, read := s.published[g.dir]; read {
 		return r.p, r.err

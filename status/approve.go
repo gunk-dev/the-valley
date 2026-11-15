@@ -867,7 +867,7 @@ func (a *approval) attempt() error {
 		} else {
 			quiet.stderr = io.Discard
 		}
-		if e, err = coverageOf(quiet, head, asked, said); err != nil {
+		if e, err = a.coverage(quiet, head, asked, said); err != nil {
 			if a.verbose {
 				fmt.Fprintf(a.stderr, "valley: %s\n", err)
 			}
@@ -1282,6 +1282,14 @@ func carriedVerdictOf(name, version string, checks *jsonVersionChecks) verdict {
 		v.required++
 	}
 	return v
+}
+
+// coverage is the evidence origin holds for head and the checks asked,
+// judged under the host's signers as they are now: each assessment reads
+// the publication afresh (assessEvidence), so a key revoked during a long
+// review is not trusted by the approval that ends it.
+func (a *approval) coverage(g git, head string, asked []nixCheck, said io.Writer) (evidence, error) {
+	return coverageOf(g, head, asked, assessEvidence, said)
 }
 
 // derive is what the policy at main's tip requires of the change from

@@ -295,13 +295,14 @@ rec {
 
   # The Phase 2 attestation helper (dcr-0de694f). Go, standard library
   # only, note format included, and hence no module fetch at build time.
-  # Its unit tests need git and ssh-keygen. It reads signed notes, and
-  # writes and reads the statements in them and the valley-tree-v1 digests
-  # they name, with the note module (../note), the one reading of the
-  # envelope and its statement shared by the programs that write, verify
-  # and admit attestations. The conformance
-  # vectors (attest/conformance/) are attest-conformance's, and no Go test
-  # reads them.
+  # Its unit tests need git and ssh-keygen, and cue, which one test runs
+  # to show that a batch's statements are vetted each on its own. It reads
+  # signed notes, and writes and reads the statements in them and the
+  # valley-tree-v1 digests they name, with the note module (../note), the
+  # one reading of the envelope and its statement shared by the programs
+  # that write, verify and admit attestations. The conformance vectors
+  # (attest/conformance/) are attest-conformance's, and no Go test reads
+  # them.
   attest-unwrapped = goModule {
     pname = "valley-attest";
     dir = ../attest;
@@ -311,10 +312,16 @@ rec {
     ];
     excluded = [ ../attest/conformance ];
     preBuild = readsGoMod;
-    tests.nativeCheckInputs = [
-      pkgs.git
-      pkgs.openssh
-    ];
+    tests = {
+      nativeCheckInputs = [
+        pkgs.git
+        pkgs.openssh
+        pkgs.cue
+      ];
+      preCheck = ''
+        export ATTEST_CUE_TESTS=require
+      '';
+    };
     meta.mainProgram = "attest";
   };
 

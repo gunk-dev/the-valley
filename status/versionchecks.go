@@ -31,12 +31,14 @@ package main
 // what the integrator would judge.
 //
 // It is behind --checks because it costs each repository a read of the
-// policy with cue and an attest verify for each note. The reads are
+// policy with cue and one attest verify for each head, over all of its
+// notes (verifyEach), the heads side by side. The reads are
 // batched by repository, over the ready changes and drafts together: the
 // policy is read once, without asking cue which requirements are
 // mandatory, since nothing here shows or decides by a pin; origin's
-// attestation refs for every head are listed in one ls-remote and fetched
-// in one fetch; and the host's signers are read once. A read that fails
+// attestation refs for every head come from the snapshot's own listing of
+// origin and are fetched in one fetch; and the host's signers are read
+// once, as the caller's use says (evidenceUse). A read that fails
 // leaves the changes it was for without check state, and says so on
 // stderr; it never reads as no evidence.
 //
@@ -65,7 +67,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"the-valley/change"
@@ -139,8 +143,9 @@ func unlandedDraft(s *snapshot, n recorded) bool {
 // check state, and, with drafts, that of each draft in view that has not
 // landed, whether view lists it in changes or in drafts. Each also gets
 // its build times from the host's worker telemetry, read through c, or
-// none when c is nil. view is this repository's.
-func (l listed) addChecks(view *jsonRepo, drafts bool, c *costs, stderr io.Writer) {
+// none when c is nil. view is this repository's. The host's signers are
+// read as use says (evidenceUse).
+func (l listed) addChecks(view *jsonRepo, drafts bool, c *costs, use evidenceUse, stderr io.Writer) {
 	if l.err != nil {
 		return
 	}
@@ -221,7 +226,7 @@ func (l listed) addChecks(view *jsonRepo, drafts bool, c *costs, stderr io.Write
 			say("its checks did not derive: %v", err)
 			continue
 		}
-		digest, err := treeDigest(l.g, repo, v.Head)
+		digest, err := rememberedDigest(l.g, v.Head)
 		if err != nil {
 			say("%v", err)
 			continue
@@ -239,15 +244,22 @@ func (l listed) addChecks(view *jsonRepo, drafts bool, c *costs, stderr io.Write
 		return
 	}
 
-	// The evidence origin holds for every head, listed and fetched at once.
-	o, err := listOrigin(l.g, patterns...)
-	if err != nil {
-		warn("could not list the evidence origin holds, so no change lists its checks")
-		return
+	// The evidence origin holds for every head, as the snapshot listed it,
+	// or else listed now, and fetched at once.
+	refs := l.snap.evidence()
+	if refs == nil {
+		o, err := listOrigin(l.g, patterns...)
+		if err != nil {
+			warn("could not list the evidence origin holds, so no change lists its checks")
+			return
+		}
+		refs = o.refs
 	}
 	var oids []string
-	for _, oid := range o.refs {
-		oids = append(oids, oid)
+	for _, h := range read {
+		for _, ref := range storedFor(h.digest, refs) {
+			oids = append(oids, refs[ref])
+		}
 	}
 	if len(oids) > 0 {
 		if err := fetch(l.g, oids...); err != nil {
@@ -255,7 +267,7 @@ func (l listed) addChecks(view *jsonRepo, drafts bool, c *costs, stderr io.Write
 			return
 		}
 	}
-	keys, p, unsigned := hostSigners(l.g)
+	keys, p, unsigned := hostSignersFrom(l.g, use.signers())
 	if unsigned == "" {
 		defer os.Remove(keys)
 	}
@@ -263,20 +275,42 @@ func (l listed) addChecks(view *jsonRepo, drafts bool, c *costs, stderr io.Write
 	if p != nil {
 		here = counting{project: project(l.g), integrator: p.name, projects: p.projects}
 	}
+	// Each head's evidence is judged beside the others', one attest
+	// verify at a time for each CPU, and every judging ends before what
+	// each found is taken, in the heads' order.
+	type judging struct {
+		judged   map[string]judgment
+		unjudged string
+		err      error
+	}
+	judgings := make([]judging, len(read))
+	slots := make(chan struct{}, runtime.NumCPU())
+	var wg sync.WaitGroup
+	for i, h := range read {
+		stored := storedFor(h.digest, refs)
+		judgings[i].unjudged = unsigned
+		if unsigned != "" || len(stored) == 0 || len(h.asked) == 0 {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			j := &judgings[i]
+			j.judged, j.unjudged, j.err = judge(l.g, repo, h.v.Head, keys, "", here, stored, refs, h.asked)
+		}()
+	}
+	wg.Wait()
 	timed := c != nil && c.wait(reading, warn)
 
-	for _, h := range read {
-		stored := storedFor(h.digest, o.refs)
-		var judged map[string]judgment
-		unjudged := unsigned
-		if unjudged == "" && len(stored) > 0 && len(h.asked) > 0 {
-			judged, unjudged, err = judge(l.g, repo, h.v.Head, keys, "", here, stored, o.refs, h.asked)
-			if err != nil {
-				warn("v%d of %s lists no checks: %v", h.v.N, h.v.Head, err)
-				continue
-			}
+	for i, h := range read {
+		j := judgings[i]
+		if j.err != nil {
+			warn("v%d of %s lists no checks: %v", h.v.N, h.v.Head, j.err)
+			continue
 		}
-		h.v.Checks = checkStates(h.digest, h.required, judged, unsigned, unjudged)
+		h.v.Checks = checkStates(h.digest, h.required, j.judged, unsigned, j.unjudged)
 		if timed {
 			addCosts(h.v.Checks, h.required, l.name, h.change, h.v.N, reading.builds)
 			addWorkerReports(h.v.Checks, h.required, l.name, h.change, h.v.N, reading.builds, reading.batches)
@@ -470,6 +504,6 @@ func activeChecks(g git, ids []string, c *costs, stderr io.Writer) ([]jsonChange
 		return wanted[n.id] && (pendingChange(s, n) || unlandedDraft(s, n))
 	}
 	view := r.repoView(handles(repos), named, unlanded)
-	r.addChecks(&view, true, c, stderr)
+	r.addChecks(&view, true, c, assessEvidence, stderr)
 	return view.Changes, nil
 }

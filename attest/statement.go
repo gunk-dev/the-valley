@@ -125,9 +125,36 @@ func vetStatement(schema string, doc []byte) error {
 	// "./statement.json" rather than at a path the reader never sees.
 	cmd := exec.Command("cue", "vet", "-c", schema, "statement.json")
 	cmd.Dir = dir
+	cmd.SysProcAttr = dieWithParent()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("statement does not satisfy %s:\n%s", schema, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// vetStatements vets several statements in one cue run, which checks each
+// file against the schema on its own (cue help vet). It says only whether
+// every one passed: vetStatement says why one does not.
+func vetStatements(schema string, docs [][]byte) error {
+	dir, err := os.MkdirTemp("", "valley-attest-vet")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	args := []string{"vet", "-c", schema}
+	for i, doc := range docs {
+		name := fmt.Sprintf("statement-%d.json", i+1)
+		if err := os.WriteFile(filepath.Join(dir, name), doc, 0o644); err != nil {
+			return err
+		}
+		args = append(args, name)
+	}
+	cmd := exec.Command("cue", args...)
+	cmd.Dir = dir
+	cmd.SysProcAttr = dieWithParent()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("statements do not satisfy %s:\n%s", schema, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

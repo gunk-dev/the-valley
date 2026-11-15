@@ -16,6 +16,7 @@ import (
 	"sort"
 
 	"the-valley/change"
+	"the-valley/knot"
 	"the-valley/rebase"
 )
 
@@ -56,6 +57,30 @@ type snapshot struct {
 	unread []unreadRecord
 
 	policy tipPolicy // the policy at tip, read when first asked for
+
+	// inventory says o is a listing of inventoryPatterns, which covers
+	// every attestation ref and the plan graph's ref, so a reader of either
+	// in the same command lists origin no more.
+	inventory bool
+}
+
+// evidence is every attestation ref origin holds, as the snapshot's own
+// listing gives them, or nil when that listing did not cover them.
+func (s *snapshot) evidence() map[string]string {
+	if !s.inventory {
+		return nil
+	}
+	return s.o.refs
+}
+
+// knotsTip is the commit origin's plan graph ref names, as the snapshot's
+// own listing gives it, "" for none; listed is false when that listing did
+// not cover the ref.
+func (s *snapshot) knotsTip() (tip string, listed bool) {
+	if !s.inventory {
+		return "", false
+	}
+	return s.o.refs[knot.Ref], true
 }
 
 // readSnapshot lists origin once and fetches every object the snapshot
@@ -67,6 +92,7 @@ func readSnapshot(g git, v verifier) (*snapshot, error) {
 		return nil, err
 	}
 	s := wrapSnapshot(g, land)
+	s.inventory = true
 	for _, u := range land.Unread {
 		s.unread = append(s.unread, unreadRecord{ref: u.Ref, commit: u.Commit, why: u.Why})
 	}

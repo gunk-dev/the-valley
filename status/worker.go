@@ -628,7 +628,7 @@ func runWork(g git, args []string, stdout, stderr io.Writer) (err error) {
 		lock: lock, wake: claim, stdout: stdout, stderr: stderr, out: files, errs: errFiles,
 		seen: map[string]int{}, running: map[string]*batch{}, said: map[string]map[string]bool{}}
 	w.read, w.launch = w.project, w.attest
-	w.cover = func(j *job) (evidence, error) { return coverageOf(j.r.g, j.v.Head, j.asked, w.stderr) }
+	w.cover = func(j *job) (evidence, error) { return coverageOf(j.r.g, j.v.Head, j.asked, assessEvidence, w.stderr) }
 	w.recheck = func(j *job) (bool, error) {
 		needed, _, err := w.assess(j, nil)
 		return needed, err
@@ -2084,9 +2084,9 @@ func followsUnder(g git, tip, instance, project string, stderr io.Writer) (mainW
 	if err != nil {
 		return mainWalk{}, err
 	}
-	var keys hostKeys
+	keys := hostKeys{use: assessEvidence}
 	defer keys.done()
-	return mainFollows(g, tip, model, &keys, stderr)
+	return mainFollows(g, tip, model, &keys, nil, stderr)
 }
 
 // failureRecord is the worker's record of what failed, project by

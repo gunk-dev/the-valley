@@ -89,8 +89,9 @@ func (r listed) queue(view jsonRepo, h handleMap, l listing, measured bool) (wai
 // --checks, the drafts' checks are read with them, in the same batch.
 // With p, each ready change is marked with its conflicts with the others
 // (conflicts.go). each, when it is not nil, is given every repository's
-// view as it is read.
-func operatorQueue(repos []listed, h handleMap, l listing, c *costs, p *pairing, stderr io.Writer, each func(listed, jsonRepo)) (waiting, moving []*entry) {
+// view as it is read. The checks read the host's signers as use says
+// (evidenceUse).
+func operatorQueue(repos []listed, h handleMap, l listing, c *costs, p *pairing, use evidenceUse, stderr io.Writer, each func(listed, jsonRepo)) (waiting, moving []*entry) {
 	for _, r := range repos {
 		if r.err != nil {
 			continue
@@ -100,7 +101,7 @@ func operatorQueue(repos []listed, h handleMap, l listing, c *costs, p *pairing,
 		r.addCarried(&view, stderr)
 		end()
 		end = phase("checks")
-		r.addChecks(&view, l.drafts && l.checks, c, stderr)
+		r.addChecks(&view, l.drafts && l.checks, c, use, stderr)
 		end()
 		r.addConflicts(&view, p, stderr)
 		wa, mo := r.queue(view, h, l, l.verbose)

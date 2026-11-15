@@ -465,7 +465,7 @@ func newAsking(g git, stdout, stderr io.Writer) *asking {
 		}
 		quiet := a.g
 		quiet.stderr = io.Discard
-		return coverageOf(quiet, a.head, checks, io.Discard)
+		return coverageOf(quiet, a.head, checks, assessEvidence, io.Discard)
 	}
 	return a
 }

@@ -27,7 +27,9 @@
 # reusing everything, are observable too, and so is the integrator's
 # decision. The operator, who observes the worker, asks it for two
 # commits' checks with valley checks --build: one passes, and one whose
-# check fails is not established, with the worker's output for its tree.
+# check fails is not established, with the worker's records for its tree,
+# the failed check's build error and the nix log command for its
+# derivation.
 # Every command alice runs records its verb, its flag names, its exit
 # status, its time and, for pending, its phases, and never an argument's
 # value; with telemetry off it records nothing and writes no spool, and
@@ -214,6 +216,7 @@ in
 
     testScript = ''
       import json
+      import re
       import shlex
       import time
 
@@ -593,8 +596,9 @@ in
       with subtest("checks --build passes once origin holds every check's evidence, and otherwise says why not"):
           # Two commits ask at once, from two worktrees, and one worker pass
           # builds both. The first passes. The second's slow check fails, so
-          # its outcome is not established, with the worker's records and
-          # build output for its tree.
+          # its outcome is not established, with the worker's records for its
+          # tree, the slow check's build error, the nix log command for the
+          # slow check's derivation, and where to look when nix has no log.
           requests = f"{git} -C /srv/git/project.git for-each-ref refs/the-valley/check-requests/"
           host.succeed("git clone --quiet git@localhost:project.git /root/project && git -C /root/project config valley.principal operator")
           for branch, cp in [("asked", ""), ("asked-broken", "cp ${broken} slow.sh && ")]:
@@ -608,7 +612,10 @@ in
           passed, failed = host.succeed("cat /tmp/asked.out"), host.succeed("cat /tmp/asked-broken.out")
           assert host.succeed("cat /tmp/asked.status").strip() == "0" and "2 checks passed" in passed, passed
           assert host.succeed("cat /tmp/asked-broken.status").strip() == "1", failed
-          assert "not established" in failed and "slow  failed" in failed and "| broken check says why" in failed, failed
+          assert "not established" in failed and "    slow  failed" in failed, failed
+          assert re.search(r"^  slow · failed · the worker's build error, untrusted: .+$", failed, re.M), failed
+          assert re.search(r"^  run: nix log /nix/store/[0-9a-z]{32}-telemetry-slow\.drv$", failed, re.M), failed
+          assert "  see: valley telemetry read --source worker --logs" in failed, failed
           assert not host.succeed(requests), "a request was left on origin"
 
       with subtest("approval and pushes go on when telemetry cannot be reached, and each run's records go only where its run began"):

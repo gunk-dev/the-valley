@@ -767,10 +767,14 @@ valley checks [--schema <file>] [--instance <dir>] [--project <dir>] [--names [-
       stopped (the time limit, a worker pass that ended, the worker's batch or publish for the tree,
       telemetry it could not read or that lost records) and prints the `check.result` records the
       worker wrote for `HEAD`'s tree while it waited. These may belong to any batch for the tree,
-      not this request. For each failed check it prints the escaped, untrusted tail of the worker's
-      build output when `valley telemetry read --source worker --logs` holds it, or the `nix build`
-      command that reproduces it otherwise. Evidence that does not count for a check is treated as
-      no evidence, never a failure.
+      not this request. For each failed check it prints the escaped, untrusted `error` and
+      `build_error` its result records, if any, and `nix log <drv>` when its `drv` is a `.drv` path
+      in `/nix/store` ([telemetry records](#telemetry-answers-valley-telemetryv1)); otherwise, with
+      no `error`, it prints the `nix build` command that reproduces it. With any failed check it
+      prints `see: valley telemetry read --source worker --logs · when nix log has none`: Nix holds
+      no log for a check whose dependency failed to build, and the worker's output names that
+      dependency. Evidence that does not count for a check is treated as no evidence, never a
+      failure.
   - `--wait <duration>`: With `--build`, the maximum time the whole command takes, as a Go duration
     such as `30m` (default `2h`). When the limit expires, every program in its process group is
     killed, the request is deleted within a further 30 seconds, and the outcome is not established.
@@ -3179,6 +3183,21 @@ A check's records come as its work happens, not in the order the checks were giv
 for a build slot, `build_ms` how long its `nix build` ran, `eval_ms` the shared evaluation plus the
 check's own, and `check_ms` all three with the store probe. `cached` is `true` when the build
 neither built nor fetched anything, because the check's outputs were already in the store.
+
+`check.build-end` and a built check's `check.result` carry `drv` (`implemented`,
+`attest/progress.go`), the store path of the derivation whose build decided the check; checks that
+share a derivation name the same one. A check whose dependency failed to build still names its own
+derivation, which Nix never built and has no log for; Nix's error in the check's log (`--logs`)
+names the dependency that failed. A `check.result` decided by evaluation carries `error` and no
+`drv`, and an effectful check's result names no `drv`. `build_error` says how a check's `nix build`
+ended when it failed; a build that ended before its builder started leaves Nix no log, and
+`build_error` is then the diagnosis. With the builder's Nix setting `keep-build-log` on, as it is by
+default, Nix keeps the full build log of every derivation it builds, failed builds included, on the
+builder until the log is deleted. That setting, and whether a client can read the builder's store or
+a binary cache of it that serves build logs, are deployment choices: `nix log <drv>` reads the log
+on the builder or on such a client. The valley does not manage that log's retention; telemetry keeps
+its own bounded copy of the build output in the check's log (`--logs`).
+
 `capacity` is what the worker built on, as it gave it to attest (`--capacity`):
 `slots=2 batches=2 max_jobs=2 cores=2 cpus=6`, which is the worker's `--slots` (or one per CPU), its
 `--batches`, nix's `max-jobs` and `cores`, and the CPU count. A run given `--eval-reservations`

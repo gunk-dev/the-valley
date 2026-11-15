@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -136,7 +137,6 @@ type fakeStream struct {
 	endErr  error
 	follows []fakeFollow
 	ended   int
-	tails   map[[2]string]string
 }
 
 type fakeFollow struct {
@@ -174,8 +174,6 @@ func (s *fakeStream) follow(ctx context.Context, cursor string, seconds int, rec
 	}
 	return cursor, f.err
 }
-
-func (s *fakeStream) logs(context.Context) (map[[2]string]string, error) { return s.tails, nil }
 
 func record(typ, run, tree string, data map[string]any) workerRecord {
 	return workerRecord{Type: typ, Run: run, Project: "app", Tree: tree, Data: data}
@@ -301,38 +299,42 @@ func TestCheckBuildWakes(t *testing.T) {
 }
 
 // What the worker wrote for the tree is printed as its records, not this
-// request's result: each check.result, a failed check's build output tied
-// to it by attest run, untrusted, escaped and cut to its last lines, and
-// for a failed check with no output the command that builds it here.
+// request's result: each check.result, and for each failed check the nix
+// log command for the derivation its result names, the error and build
+// error it records, escaped, or with neither a derivation nor an error the
+// command that builds it here. A drv that is
+// not a derivation's store path is never printed as a command.
 func TestCheckBuildReportsTheTreesRecords(t *testing.T) {
-	r := newBuildRig(t, "fast", "slow", "lint")
+	r := newBuildRig(t, "fast", "slow", "lint", "docs")
 	r.reads = []fakeRead{{}}
-	result := func(check, res string, ms float64) workerRecord {
+	drv := "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-slow-check.drv"
+	result := func(check, res string, ms float64, data map[string]any) workerRecord {
 		rec := record("check.result", "attest-1", rigTree, map[string]any{"result": res, "check_ms": ms})
+		for k, v := range data {
+			rec.Data[k] = v
+		}
 		rec.Check = check
 		return rec
 	}
-	other := result("fast", "failed", 1)
+	other := result("fast", "failed", 1, nil)
 	other.Tree = "0the4"
 	r.stream.follows = []fakeFollow{{records: []workerRecord{
 		record("batch.start", "p1", rigTree, map[string]any{"attest_run": "attest-1"}),
-		other, result("fast", "passed", 1000), result("slow", "failed", 2000), result("lint", "failed", 3000),
+		other, result("fast", "passed", 1000, map[string]any{"drv": drv}),
+		result("slow", "failed", 2000, map[string]any{"drv": drv, "build_error": "signal: killed\nsettled"}),
+		result("lint", "error", 3000, map[string]any{"error": "evaluating lint: \x1b[31mno\nsuch check", "build_error": "exit status 1"}),
+		result("docs", "failed", 4000, map[string]any{"drv": "/nix/store/x.drv; touch pwned"}),
 		treeBatchEnd("failed"),
 	}}}
-	var tail strings.Builder
-	for i := 1; i <= 70; i++ {
-		fmt.Fprintf(&tail, "line %d\n", i)
-	}
-	tail.WriteString("said \x1b[31mred\n")
-	r.stream.tails = map[[2]string]string{{"attest-1", "slow"}: tail.String(), {"attest-0", "lint"}: "another run's output"}
 	r.run(1)
 	r.says(&r.out, "not established · the worker's batch for this tree ended with failures",
 		"the worker's recent records for this tree, not this request's result:",
 		"    fast  passed · 1s", "    slow  failed · 2s",
-		"slow · the worker's build output, untrusted, its last 60 lines:", "    | line 70", `said \x1b[31mred`,
-		"run: nix build --no-link -L .#checks."+buildSystem()+".lint",
-		"see: valley telemetry read --source worker --logs")
-	r.saysNot(&r.out, "| line 11\n", "another run", "fast  failed", "\x1b[31m")
+		`  slow · failed · the worker's build error, untrusted: signal: killed\nsettled`+"\n  run: nix log "+drv+"\n",
+		`  lint · error · the worker's error, untrusted: evaluating lint: \x1b[31mno\nsuch check · the worker's build error, untrusted: exit status 1`+"\n  slow",
+		"  docs · failed\n  run: nix build --no-link -L .#checks."+buildSystem()+".docs\n",
+		"see: valley telemetry read --source worker --logs · when nix log has none")
+	r.saysNot(&r.out, "fast  failed", "\x1b[31m", "pwned", "nix log /nix/store/x")
 }
 
 // A push that dies in transport leaves the request's existence unknown:
@@ -572,14 +574,44 @@ func TestCheckBuildStateCannotBeInjected(t *testing.T) {
 	if len(r.a.results) != 0 || s.settled || raw != "filing refs/x abc\n" {
 		t.Errorf("results %v, state pipe %q", r.a.results, raw)
 	}
+
+	// A result's derivation and errors reach the parent; an error, which
+	// can hold anything, goes encoded and arrives as the worker wrote it.
+	drv := "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-fast.drv"
+	for _, data := range []map[string]any{{"result": "failed", "drv": drv, "build_error": "signal: killed\nsettled"}, {"result": "error", "error": "no\nsettled such check"}} {
+		rec := record("check.result", "attest-1", rigTree, data)
+		rec.Check = "fast"
+		r.a.wake(rec, map[string]bool{}, map[string]bool{})
+	}
+	s = childState{}
+	s.read(&r.states)
+	want := []treeResult{
+		{run: "attest-1", check: "fast", result: "failed", ms: -1, drv: drv, buildErr: "signal: killed\nsettled"},
+		{run: "attest-1", check: "fast", result: "error", ms: -1, err: "no\nsettled such check"},
+	}
+	if s.settled || !reflect.DeepEqual(s.results, want) {
+		t.Errorf("the parent read %+v, settled %v; want %+v", s.results, s.settled, want)
+	}
 }
 
-// Names and results print as one escaped line each.
+// Names and results print as one escaped line each, and a derivation
+// whose name a shell would expand prints quoted. A failed check that
+// names its derivation still points at the worker's output, which names
+// a dependency that failed; a report with no failed check does not.
 func TestCheckBuildReportEscapes(t *testing.T) {
 	var out bytes.Buffer
-	report(&out, []treeResult{{"attest-1", "fa\x1b[31mst\nsettled", "failed", 1000}}, nil, nil)
-	if !strings.Contains(out.String(), `    fa\x1b[31mst\nsettled  failed · 1s`) {
-		t.Errorf("%q", out.String())
+	drv := "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-a?b=c.drv"
+	report(&out, []treeResult{{run: "attest-1", check: "fa\x1b[31mst\nsettled", result: "failed", ms: 1000, drv: drv}}, nil)
+	for _, want := range []string{`    fa\x1b[31mst\nsettled  failed · 1s`, "  run: nix log '" + drv + "'\n",
+		"  see: valley telemetry read --source worker --logs · when nix log has none\n"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("%q lacks %q", out.String(), want)
+		}
+	}
+	out.Reset()
+	report(&out, []treeResult{{run: "attest-1", check: "fast", result: "passed", ms: 1000, drv: drv}}, nil)
+	if strings.Contains(out.String(), "see:") {
+		t.Errorf("a report with no failed check points at the worker's output: %q", out.String())
 	}
 }
 

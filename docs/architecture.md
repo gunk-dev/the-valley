@@ -1468,8 +1468,9 @@ against `main` as `origin` currently holds it. It passes (exit 0) only when its 
 `origin`'s evidence completes and covers every check; no earlier read counts. Anything else is not
 established (exit 1). Because worker telemetry records do not name the request a batch served, the
 command never takes them as this request's outcome. Instead, it prints the worker's `check.result`
-records for the tree, labelled as the worker's, along with a failed check's build output when a
-`--logs` read holds a log for that attest run and check.
+records for the tree, labelled as the worker's, and for each failed check any errors its result
+records and `nix log` for the derivation it names. Nix keeps that full build log on the worker; the
+valley does not manage its retention, and telemetry keeps its own bounded copy of the build output.
 
 When the first read falls short, the command takes the worktree's lock in its git directory and
 reads or creates the worktree's token. Under that lock, it deletes any earlier requests from this

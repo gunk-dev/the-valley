@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"the-valley/note/statement"
+	"the-valley/telemetry"
 )
 
 // These tests run attest against the machine's real nix: they evaluate and
@@ -365,9 +366,28 @@ func TestAnEvaluationErrorStopsNoOtherCheck(t *testing.T) {
 				"broken": broken,
 				"also":   `check "also" "echo also > $out"`,
 			})
-			stdout, stderr, err := f.attest(t, "--check", "fine", "--check", "broken", "--check", "also")
+			stream := &telemetry.Stream{Dir: t.TempDir()}
+			stdout, stderr, err := f.attest(t, "--telemetry", stream.Dir, "--check", "fine", "--check", "broken", "--check", "also")
 			if err == nil {
 				t.Fatalf("a run with a check that does not evaluate succeeded:\n%s%s", stdout, stderr)
+			}
+			// The broken check's result carries its error and names no
+			// derivation; a check that built names the one it built.
+			records, _, err := stream.Read(0, 100, 1<<20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			results := map[string]map[string]any{}
+			for _, r := range records {
+				if r.Type == "check.result" {
+					results[r.Check] = r.Data
+				}
+			}
+			if drv, named := results["broken"]["drv"]; named || results["broken"]["error"] == nil {
+				t.Errorf("the broken check's result names derivation %v, error %v", drv, results["broken"]["error"])
+			}
+			if drv, _ := results["fine"]["drv"].(string); !strings.HasPrefix(drv, "/nix/store/") || !strings.HasSuffix(drv, ".drv") {
+				t.Errorf("the fine check's result names derivation %q", drv)
 			}
 			for _, want := range []string{
 				checkLine("fine", "passed"),

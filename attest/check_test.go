@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"the-valley/note/statement"
+	"the-valley/telemetry"
 )
 
 // buildChecks builds checks side by side and decides each one from its own
@@ -162,5 +163,51 @@ func TestEachBuildDecidesOnlyItsOwnChecks(t *testing.T) {
 		if !check.passed && r.out.output != "" {
 			t.Errorf("%s did not pass and still has an output digest", names[i])
 		}
+	}
+}
+
+// Each build's build-end and result records name the derivation that
+// decided the check, so its log can be read with nix log: a passing and a
+// failing build, and two checks sharing one derivation. A check that
+// never evaluated has neither record. One slot builds one derivation at a
+// time, so no record is dropped behind another (telemetry.Emitter).
+func TestBuildRecordsNameTheirDerivation(t *testing.T) {
+	built := t.TempDir()
+	if err := os.WriteFile(filepath.Join(built, "result"), []byte("built\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	names := []string{"fine", "broken", "twin", "unevaluated"}
+	drvs := []string{"/nix/store/a.drv", "/nix/store/b.drv", "/nix/store/a.drv", ""}
+	runs := make([]ranCheck, len(names))
+	for i, name := range names {
+		runs[i] = ranCheck{out: checkOutcome{spec: checkSpec{name: name, attribute: name}}}
+	}
+	runs[3].err = errors.New("evaluating unevaluated: no such check")
+	build := func(drv string) (string, string, error) {
+		if drv == "/nix/store/b.drv" {
+			return "", "the builder failed", errors.New("exit status 1")
+		}
+		return built + "\n", "", nil
+	}
+	tel := telemetry.NewEmitter(t.TempDir(), telemetry.Self("attest", ""), "")
+	tel.SetDeadline(time.Minute)
+	buildChecks(runs, drvs, 1, build, nil, newObserver(tel))
+
+	records, _, err := tel.Stream().Read(0, 100, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	named := map[string]any{}
+	for _, r := range records {
+		if r.Type == "check.build-end" || r.Type == "check.result" {
+			named[r.Type+" "+r.Check] = r.Data["drv"]
+		}
+	}
+	want := map[string]any{}
+	for i, name := range names[:3] {
+		want["check.build-end "+name], want["check.result "+name] = drvs[i], drvs[i]
+	}
+	if !reflect.DeepEqual(named, want) {
+		t.Errorf("the build records name\n  %v\nwant\n  %v", named, want)
 	}
 }

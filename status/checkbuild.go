@@ -29,8 +29,10 @@ package main
 // It has two outcomes. Passed (exit 0) only when one read, the last,
 // completes and covers every check. Anything else is not established
 // (exit 1): it says why it stopped, and prints the check.result records
-// the worker wrote for HEAD's tree, labelled as such, with each failed
-// check's build output where a --logs read holds it, or else the command
+// the worker wrote for HEAD's tree, labelled as such, with the nix log
+// command that reads each failed check's build log from the derivation
+// its result names, the error and build error its result records, or
+// else the command
 // that builds that check here.
 //
 // The command runs as a child of itself in a process group of its own.
@@ -47,7 +49,9 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -93,8 +97,10 @@ const (
 	cleanupBound  = 30 * time.Second
 )
 
-// tailLines is how much of a failed check's build output is printed.
-const tailLines = 60
+// errorRunes is how much of a result's error is kept: attest clips the
+// errors it records shorter, so this bounds only what another writer put
+// in the worker's stream.
+const errorRunes = 400
 
 // runCheckBuild is valley checks --build: the parent, which watches the
 // child that does the work.
@@ -216,7 +222,7 @@ func watch(g git, self string, wait time.Duration, stdout, stderr io.Writer, sig
 		subject = "HEAD"
 	}
 	fmt.Fprintln(stdout, t.tint(colourWaiting, "◇")+" "+t.strong(subject)+"  not established · "+why)
-	report(stdout, s.results, s.attrs, nil)
+	report(stdout, s.results, s.attrs)
 	if why == "interrupted" {
 		return interruptedStatus
 	}
@@ -234,10 +240,15 @@ type childState struct {
 	err                      error
 }
 
-// treeResult is a check.result the worker wrote for HEAD's tree.
+// treeResult is a check.result the worker wrote for HEAD's tree: drv is
+// the derivation whose build decided it, a validated store path or "";
+// err the error it records and buildErr how its nix build ended, both
+// untrusted. A build that ended before its builder started leaves nix no
+// log, and buildErr is then the whole diagnosis.
 type treeResult struct {
 	run, check, result string
 	ms                 int64
+	drv, err, buildErr string
 }
 
 func (s *childState) read(r io.Reader) {
@@ -251,9 +262,13 @@ func (s *childState) read(r io.Reader) {
 			s.short = f[1]
 		case len(f) == 3 && f[0] == "check":
 			s.attrs[f[1]] = f[2]
-		case len(f) == 5 && f[0] == "result":
+		case len(f) == 8 && f[0] == "result":
 			ms, _ := strconv.ParseInt(f[4], 10, 64)
-			s.results = append(s.results, treeResult{f[1], f[2], f[3], ms})
+			r := treeResult{run: f[1], check: f[2], result: f[3], ms: ms, err: decoded(f[6]), buildErr: decoded(f[7])}
+			if storeDrv.MatchString(f[5]) {
+				r.drv = f[5]
+			}
+			s.results = append(s.results, r)
 		case len(f) == 3 && f[0] == "filing":
 			s.ref, s.head, s.pushed, s.settled = f[1], f[2], "unknown", false
 		case len(f) == 2 && f[0] == "pushed":
@@ -500,8 +515,11 @@ func (a *asking) state(fields ...string) {
 }
 
 var (
-	stateValue = regexp.MustCompile(`^[A-Za-z0-9._/:@+-]+$`)
+	stateValue = regexp.MustCompile(`^[A-Za-z0-9._/:@+?=-]+$`)
 	runName    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`) // telemetry's run names
+	// storeDrv is a derivation's path in the nix store, the only form of
+	// a check.result's drv printed as a command to run.
+	storeDrv = regexp.MustCompile(`^/nix/store/[0-9a-df-np-sv-z]{32}-[A-Za-z0-9+_?=-][A-Za-z0-9+._?=-]{0,210}\.drv$`)
 )
 
 // read reads origin's evidence for HEAD's tree, and returns the checks it
@@ -673,8 +691,15 @@ func (a *asking) wake(r workerRecord, started, running map[string]bool) string {
 				break
 			}
 		}
-		a.results = append(a.results, treeResult{r.Run, r.Check, result, ms})
-		a.state("result", r.Run, r.Check, result, strconv.FormatInt(ms, 10))
+		t := treeResult{run: r.Run, check: r.Check, result: result, ms: ms}
+		if drv, _ := r.Data["drv"].(string); storeDrv.MatchString(drv) {
+			t.drv = drv
+		}
+		t.err, t.buildErr = errorText(r.Data["error"]), errorText(r.Data["build_error"])
+		a.results = append(a.results, t)
+		// "-" is no derivation, and the errors, untrusted, go encoded.
+		a.state("result", r.Run, r.Check, result, strconv.FormatInt(ms, 10),
+			cmp.Or(t.drv, "-"), encoded(t.err), encoded(t.buildErr))
 	case "batch.end":
 		// A batch that passed publishes next, and its publish.end says so.
 		delete(running, run)
@@ -717,16 +742,7 @@ func (a *asking) verdict(covered map[string]bool, readErr error, why string) int
 	}
 	a.say("◇", colourWaiting, a.short, "not established", why,
 		fmt.Sprintf("%d of %d with evidence", len(covered), len(a.nix)), took)
-	var tails map[[2]string]string
-	for _, r := range a.results {
-		if r.result != checkPassed && a.stream != nil {
-			if tails, readErr = a.stream.logs(context.Background()); readErr != nil {
-				fmt.Fprintf(a.stderr, "valley: could not read the worker's build output: %s\n", oneLine(readErr.Error()))
-			}
-			break
-		}
-	}
-	report(a.stdout, a.results, a.attrs(), tails)
+	report(a.stdout, a.results, a.attrs())
 	return 1
 }
 
@@ -740,11 +756,14 @@ func (a *asking) attrs() map[string]string {
 }
 
 // report prints the check.results the worker wrote for HEAD's tree while
-// the command waited, which any batch for the tree may have written, and
-// for each failed check the tail of its build output where tails, keyed
-// by attest run and check, holds it, or else the command that builds it
-// here.
-func report(w io.Writer, results []treeResult, attrs map[string]string, tails map[[2]string]string) {
+// the command waited, which any batch for the tree may have written. For
+// each failed check it prints the error its result records, and the nix
+// log command that reads the build log of the derivation it names from
+// the worker's nix store, or, with neither, the command that builds the
+// check here. With any failed check it points at the worker's output:
+// nix holds no log for a check whose dependency failed to build, and the
+// worker's output names that dependency.
+func report(w io.Writer, results []treeResult, attrs map[string]string) {
 	if len(results) > 0 {
 		fmt.Fprintln(w, "  the worker's recent records for this tree, not this request's result:")
 	}
@@ -765,17 +784,53 @@ func report(w io.Writer, results []treeResult, attrs map[string]string, tails ma
 	}
 	sort.Strings(order)
 	for _, name := range order {
-		if tail, ok := tails[[2]string{failed[name].run, name}]; ok {
-			lines := strings.Split(strings.TrimRight(telemetry.Sanitize(tail), "\n"), "\n")
-			fmt.Fprintf(w, "  %s · the worker's build output, untrusted, its last %d lines:\n", name, min(len(lines), tailLines))
-			for _, line := range lines[max(len(lines)-tailLines, 0):] {
-				fmt.Fprintln(w, "    | "+line)
+		r := failed[name]
+		line := "  " + oneLine(name) + " · " + oneLine(r.result)
+		if r.err != "" {
+			line += " · the worker's error, untrusted: " + oneLine(r.err)
+		}
+		if r.buildErr != "" {
+			line += " · the worker's build error, untrusted: " + oneLine(r.buildErr)
+		}
+		fmt.Fprintln(w, line)
+		switch attr := attrs[name]; {
+		case r.drv != "":
+			// A store name may hold ? and =, which a shell expands;
+			// storeDrv admits no quote, so single quotes keep it whole.
+			drv := r.drv
+			if strings.ContainsAny(drv, "?=") {
+				drv = "'" + drv + "'"
 			}
-		} else if attr := attrs[name]; attr != "" {
+			fmt.Fprintf(w, "  run: nix log %s\n", drv)
+		case r.err == "" && attr != "":
 			fmt.Fprintf(w, "  run: nix build --no-link -L .#checks.%s.%s\n", buildSystem(), attr)
 		}
 	}
-	fmt.Fprintln(w, "  see: valley telemetry read --source worker --logs")
+	if len(order) > 0 {
+		fmt.Fprintln(w, "  see: valley telemetry read --source worker --logs · when nix log has none")
+	}
+}
+
+// errorText is a record's error, bounded by errorRunes, or "".
+func errorText(v any) string {
+	e, _ := v.(string)
+	if runes := []rune(e); len(runes) > errorRunes {
+		e = string(runes[:errorRunes]) + "…"
+	}
+	return e
+}
+
+// encoded is untrusted text as one state value, "-" when empty; decoded
+// reads it back.
+func encoded(s string) string {
+	return cmp.Or(base64.RawURLEncoding.EncodeToString([]byte(s)), "-")
+}
+
+func decoded(v string) string {
+	if b, err := base64.RawURLEncoding.DecodeString(v); v != "-" && err == nil {
+		return string(b)
+	}
+	return ""
 }
 
 // oneLine is untrusted text made safe to show on one line.
@@ -884,9 +939,6 @@ type workerStream interface {
 	// follow hands records each record stored after cursor, for up to
 	// seconds, and returns the cursor it ended at.
 	follow(ctx context.Context, cursor string, seconds int, records chan<- workerRecord) (string, error)
-	// logs is the tail of each of the stream's newest build logs, by
-	// attest run and check.
-	logs(ctx context.Context) (map[[2]string]string, error)
 }
 
 // brokenStream is a stream that cannot be reached, and why.
@@ -896,14 +948,13 @@ func (b brokenStream) end(context.Context) (string, error) { return "", b.err }
 func (b brokenStream) follow(context.Context, string, int, chan<- workerRecord) (string, error) {
 	return "", b.err
 }
-func (b brokenStream) logs(context.Context) (map[[2]string]string, error) { return nil, b.err }
 
 // sshStream reads the worker source of a host over ssh, as valley
 // telemetry does.
 type sshStream struct{ dest sshDest }
 
 func (s sshStream) end(ctx context.Context) (string, error) {
-	cursor, err := s.answer(ctx, telemetry.Request{V: 1, Op: telemetry.OpRead, Source: workerSource, Limit: 1}, time.Minute, nil, nil)
+	cursor, err := s.answer(ctx, telemetry.Request{V: 1, Op: telemetry.OpRead, Source: workerSource, Limit: 1}, time.Minute, nil)
 	if c, perr := telemetry.ParseCursor(cursor); err == nil && (perr != nil || c[workerSource] == (telemetry.Position{})) {
 		err = fmt.Errorf("%s holds no stream for its %s source", s.dest.host, workerSource)
 	}
@@ -917,22 +968,15 @@ func (s sshStream) follow(ctx context.Context, cursor string, seconds int, recor
 		case records <- r:
 		case <-ctx.Done():
 		}
-	}, nil)
+	})
 }
 
-func (s sshStream) logs(ctx context.Context) (map[[2]string]string, error) {
-	tails := map[[2]string]string{}
-	_, err := s.answer(ctx, telemetry.Request{V: 1, Op: telemetry.OpRead, Source: workerSource, Limit: 1, Logs: true}, time.Minute, nil,
-		func(run, check, text string) { tails[[2]string{run, check}] = text })
-	return tails, err
-}
-
-// answer runs one telemetry request on the host, hands each record and
-// build log of the worker's stream it answers with to onRecord and onLog,
-// and returns the cursor it ended at. A refusal, a line that is not JSON,
+// answer runs one telemetry request on the host, hands each record of
+// the worker's stream it answers with to onRecord, and returns the cursor
+// it ended at. A refusal, a line that is not JSON,
 // a gap, a source that could not be read, or an answer that never ends is
 // an error.
-func (s sshStream) answer(ctx context.Context, req telemetry.Request, timeout time.Duration, onRecord func(workerRecord), onLog func(run, check, text string)) (string, error) {
+func (s sshStream) answer(ctx context.Context, req telemetry.Request, timeout time.Duration, onRecord func(workerRecord)) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := sshCommand(ctx, s.dest, req.Command())
@@ -951,7 +995,7 @@ func (s sshStream) answer(ctx context.Context, req telemetry.Request, timeout ti
 	sc.Buffer(make([]byte, 64<<10), telemetry.MaxResponseBytes)
 	for why == "" && sc.Scan() {
 		var m struct {
-			Kind, Error, What, Reason, Cursor, Stream, Text string
+			Kind, Error, What, Reason, Cursor, Stream string
 			workerRecord
 		}
 		if json.Unmarshal(sc.Bytes(), &m) != nil {
@@ -967,8 +1011,6 @@ func (s sshStream) answer(ctx context.Context, req telemetry.Request, timeout ti
 			why = fmt.Sprintf("the worker's stream lost records since the cursor (%s)", telemetry.Sanitize(m.Reason))
 		case m.Kind == "record" && m.Stream == workerSource && onRecord != nil:
 			onRecord(m.workerRecord)
-		case m.Kind == "log" && m.Stream == workerSource && onLog != nil:
-			onLog(m.Run, m.Check, m.Text)
 		case m.Kind == "end":
 			cursor, ended = m.Cursor, true
 		}

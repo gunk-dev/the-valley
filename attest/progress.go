@@ -183,9 +183,15 @@ func (l *nixLog) line(line string) {
 }
 
 // buildData is what a check's build-end and result records say about
-// its build.
+// its build. drv is the derivation built, whose full log nix keeps on the
+// builder (nix log); checks that share a derivation name the same one.
+// When a dependency's build failed, the failed derivation is not
+// recorded: nix's structured log marks no build as failed, and only its
+// error text, worded differently between nix releases and quoting the
+// builder's last lines, names it.
 func buildData(b *drvBuild, wait time.Duration, began, ended time.Time, lg logged) map[string]any {
 	d := map[string]any{
+		"drv":          b.drv,
 		"build_ms":     b.took.Milliseconds(),
 		"slot_wait_ms": wait.Milliseconds(),
 		"build_began":  telemetry.Stamp(began),

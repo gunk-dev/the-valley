@@ -149,6 +149,15 @@ characters of a SHA-256 of the init script. So pushes resume only when every rep
 `pre-receive` hook is this configuration's. A hand-written `post-receive` hook is left in place and
 is not a conflict. Checked by `init-e2e` and `ssh-e2e`.
 
+`valley-init` runs at boot and on activation when its unit changed. It stays active after it
+succeeds, so its unit state shows whether its latest start succeeded (`implemented`, checked by
+`module-eval`, `ssh-e2e` and `telemetry-e2e`). The registry compiler and the signers publication
+start only while it is active and never start it. Activation stops `valley-init` before running it
+again, which stops the units that require it, including the integrator's controllers. Its success
+starts the compiler, the publication and the controllers. Nothing retries a failed `valley-init`:
+once the fault is fixed, starting it again by activation or `systemctl restart valley-init` restores
+all three.
+
 A host with an instance repository also publishes its project list there. `valley-init` writes a
 blob at `refs/the-valley/projects` that names every enabled git project, one per line, sorted, and
 nothing else. Clients read it to find the host's projects (`valley changes --all`). It discloses
@@ -194,12 +203,14 @@ the controllers, and, with `identity.enable` on, the compiler's two approval sig
 write the instance repository and nothing else.
 
 The service runs at boot and on activation, after `valley-init` and after the registry compiler when
-there is one. The signer projects file is rendered into the Nix store, so a changed list is a
-changed command for the service, which activation runs again. A path unit, `valley-signers.path`,
-starts it when a file it publishes from changes: the signers file, either approval signers file, or
-the instance repository's `refs/heads/main`, loose or in `packed-refs`. A run that would publish
-what is already there writes nothing. A run that changes the publication moves the ref with a
-compare-and-swap.
+there is one. Like the compiler, it starts only while `valley-init` is active after succeeding and
+never starts `valley-init`, so a landing on the instance repository's `main` pauses no push
+(`implemented`, checked by `module-eval`, `worker-e2e` and `telemetry-e2e`). The signer projects
+file is rendered into the Nix store, so a changed list is a changed command for the service, which
+activation runs again. A path unit, `valley-signers.path`, starts it when a file it publishes from
+changes: the signers file, either approval signers file, or the instance repository's
+`refs/heads/main`, loose or in `packed-refs`. A run that would publish what is already there writes
+nothing. A run that changes the publication moves the ref with a compare-and-swap.
 
 After each publication, a run reads every input again and publishes again until a reading matches
 what it published (`implemented`, checked by `integrator-unit`). It makes at most one publication
@@ -2297,9 +2308,8 @@ boundaries.
   files, expired entries included. Keys the host declares statically are outside the registry and do
   not expire.
 
-`valley-identity` compiles the registry every 5 minutes, as git (`nix/valley-host.nix`,
-`identity/compile.go`, `identity/render.go`). It writes three files under
-`/var/lib/valley-identity/`:
+`valley-identity` compiles the registry as git (`nix/valley-host.nix`, `identity/compile.go`,
+`identity/render.go`). It writes three files under `/var/lib/valley-identity/`:
 
 - `authorized_keys.git`: one line per key of a principal with a `git-push` grant, tagged
   `environment="VALLEY_PRINCIPAL=<principal>"`. sshd reads it after the host's declared keys.
@@ -2314,6 +2324,54 @@ When asked, the compiler also writes the approval keys and the touch-always hard
 of human principals holding an `approve` grant (see
 [Approval signers files](reference.md#approval-signers-files)). The host module has it write both,
 and the signers publication publishes them; no gate reads them.
+
+The compiler starts at boot, whenever `valley-init` succeeds, when a controller starts, when the
+registry's ref moves, and at 00:00 UTC (`implemented`, checked by `module-eval` and `ssh-e2e`). A
+path unit, `valley-identity.path`, watches only the ref's loose file in the instance repository.
+Under git's files ref storage, that covers creating the ref, updating it (replacing the file), and
+packing it with `pack-refs` or `gc` (deleting the file). It does not cover deleting an
+already-packed ref, rewriting `packed-refs` alone, moving a symbolic ref's target, or reftable
+storage. `packed-refs` is not watched beside it, because a second watch on an absent `packed-refs`
+reports the `HEAD.lock` git takes at every update of `main` and makes systemd lose the event on
+`main`. A timer, `valley-identity-midnight.timer`, schedules a run at 00:00 UTC, when `expires`
+dates take effect, with no randomized delay and one-second accuracy. It starts nothing for a
+midnight that passed while the host was off, because every boot compiles.
+
+The compiler starts only while `valley-init` is active, which holds from its success until its next
+start (`implemented`, checked by `ssh-e2e` and `telemetry-e2e`). A start requested while
+`valley-init` runs waits for it. A start after `valley-init` failed fails without starting
+`valley-init`, so once the fault is fixed, `valley-init` must be started again by activation or by
+hand. A `valley-init` run pauses every push while it converges (see
+[valley-init and the push hold](#valley-init-and-the-push-hold)), so a compiler that started it
+would pause every push at every registry landing. Neither the path unit nor the compiler has a
+trigger or start limit, so a burst of starts cannot leave the ref unwatched. No loop can form: the
+path unit triggers only on a move of the ref and only after the run it started ends, the compiler
+writes nothing the path unit watches, and its runs cause none of the other starts (a timer, a boot,
+a successful `valley-init`, a controller starting, or a start by hand).
+
+While the compiler runs, systemd does not watch the ref, merges any new start request into the
+active run, and misses replacements made mid-run. After each compilation, the compiler reads the ref
+and the day again, and compiles again until a reading matches what it compiled (`implemented`,
+checked by `identity-unit`). A failed compilation ends the run only when the next reading matches
+what it compiled; if the ref or the day changed, the run compiles again. The retry budget is three
+compilations—room for the ref to move once and the day to turn once—and a run still reading a change
+after that exits nonzero. The budget applies per run: a ref that keeps moving keeps starting runs.
+Output files keep whatever the run's compilations wrote: each file is replaced whole, so if writing
+the set of files fails part way, files written before the failure hold the newer registry and the
+rest hold the older one.
+
+A registry change, including a revoked key, usually takes effect once the run started by its
+landing, or already under way, writes the files. The files lag behind the ref if a landing happens
+between a run's last reading and the path unit watching again, if a compilation fails or spends its
+retry budget, if `valley-init` has failed, or if the path unit cannot watch the ref. The next move
+of the ref compiles the change, as does a successful `valley-init`, or the recovery timer, which
+fires about `identity.interval` (default 5 minutes) after the compiler last started, within
+systemd's default one-minute accuracy.
+
+The configured ref must be a direct ref in a repository using git's files ref storage. A symbolic
+ref is read through to its target, but moving the target starts nothing. In a repository using
+reftable storage, `refs/heads/` is a placeholder file, so the path unit fails to start. The module
+cannot see the repository's storage when it evaluates, and does not check it.
 
 The compiler refuses a registry where no principal holds a registry grant, where a key's hardware
 attestation does not verify, where one key pushes for two principals, where a pushing key matches a
@@ -2333,7 +2391,7 @@ would take the name for (see
 
 The compiler computes everything before it writes anything, so a refused registry leaves the last
 good files in place. Checked by `identity-e2e`, `identity-schema` and `exactjson-unit`, and by the
-Go tests in `identity/identity_test.go`. Identity is a governed registry so that a grant changes
+Go tests in `identity/` (`identity-unit`). Identity is a governed registry so that a grant changes
 only through the integration path, like any other change to the instance. Machine keys expire so
 that a machine's access ends on its date by itself, rather than lasting until someone removes the
 key.

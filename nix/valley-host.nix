@@ -272,6 +272,18 @@ let
     "--declared-keys ${declaredKeysFile}"
   ];
 
+  # What the compiler's path unit watches for a move of the registry's ref:
+  # its loose file, and nothing else. Under git's files ref storage that
+  # covers the ref's creation, its updates, which replace the file, and
+  # pack-refs or gc packing it, which deletes the file. It does not cover
+  # deleting a ref already packed, a rewrite of packed-refs alone, a
+  # symbolic ref's target, or reftable storage. packed-refs is not watched
+  # beside it, because a second watch in the unit, on an absent
+  # packed-refs, reports the HEAD.lock git takes at every update of main,
+  # and systemd then sets the unit's watches up again and loses the event
+  # on main.
+  identityInputs = [ "${toString instanceRepo}/${cfg.identity.ref}" ];
+
   # Whose evidence a controller accepts: the compiled artifact once the
   # registry machinery is on, and the file the consumer supplied otherwise.
   knownSigners =
@@ -2184,12 +2196,22 @@ in
           The ref of the instance repository whose tip carries the
           registry: a full ref name, opening with `refs/`, in letters,
           digits, dots, dashes, underscores and slashes. A short name such
-          as `main` is refused. A registry edit takes effect at the first
-          compilation after it lands on this ref, and never before: an edit
-          in a branch, in a worktree, or in an integration request that has
-          not been integrated governs nothing. The web publisher
-          (`services.valley.webPublisher`) reads its read grants from the
-          registry at this ref too.
+          as `main` is refused. A registry edit takes effect once a
+          compilation after its landing on this ref has written the files,
+          and never before: an edit in a branch, in a worktree, or in an
+          integration request that has not been integrated governs
+          nothing. The web publisher (`services.valley.webPublisher`) reads
+          its read grants from the registry at this ref too.
+
+          A move of this ref starts a compilation through a path unit
+          watching the ref's loose file. Under git's files ref storage that
+          covers creating, updating and packing the ref, but not deleting a
+          ref already packed, a rewrite of `packed-refs` alone, a symbolic
+          ref's target, or reftable storage, where the path unit fails to
+          start. Name a direct ref, in a repository using files storage.
+          What the path unit cannot see waits for the turn of the day, the
+          recovery timer ({option}`services.valley.identity.interval`), a
+          boot, a successful initialization or a controller start.
         '';
       };
 
@@ -2208,11 +2230,17 @@ in
         default = "5m";
         example = "1m";
         description = ''
-          How long between compilations. The compiler is level-triggered
-          and idempotent — it renders the current tip and replaces an
-          artifact only when its bytes changed — so a timer is the whole
-          of the trigger, and a landed registry change takes effect within
-          one interval.
+          How long after the last start of a compilation the recovery
+          timer starts the next, within systemd's default timer accuracy of
+          a minute. A move of {option}`services.valley.identity.ref` starts
+          a compilation, and so does 00:00 UTC, when entries expire; this
+          timer catches what those miss: a move made while the path unit
+          was not watching, a compilation that failed or ran out of
+          retries, or a ref the path unit cannot watch. A compilation with
+          nothing new reads the registry with git, vets and exports it with
+          cue, and renders it, then writes nothing, since it replaces an
+          artifact only when its bytes changed. A shorter interval bounds
+          those cases more tightly for that cost per interval.
         '';
       };
     };
@@ -2702,13 +2730,31 @@ in
 
     # Create missing bare repos and (re)wire the managed hooks on every
     # activation where the declaration changed.
+    # It stays active after it succeeds, so its state says whether its
+    # latest start succeeded: the registry compiler and the signers
+    # publisher start only while it is active (Requisite=), and never start
+    # it. Activation runs it again only when its unit changed, stopping it
+    # first, which stops the units that require it, the controllers among
+    # them. Its success starts the compiler, the publisher and the
+    # controllers, whether activation or a restart by hand started it, so
+    # starting it again once a failure's fault is fixed restores all three.
+    # Nothing else retries it. The controllers are named one by one rather
+    # than through valley-integrators.target: systemd drops the start of a
+    # target already active, and the starts it would pull in with it.
     systemd.services.valley-init = {
       description = "Initialize the valley host's bare git repositories";
       wantedBy = [ "multi-user.target" ];
       after = [ "systemd-tmpfiles-setup.service" ];
+      wants =
+        lib.optional cfg.identity.enable "valley-identity.service"
+        ++ lib.optional publishesSigners "valley-signers.service"
+        ++ lib.optionals cfg.integrator.enable (
+          map (name: "valley-integrator@${name}.service") (lib.attrNames integratedProjects)
+        );
       unitConfig.RequiresMountsFor = cfg.dataDir;
       serviceConfig = {
         Type = "oneshot";
+        RemainAfterExit = true;
         User = cfg.user;
         Group = cfg.group;
       };
@@ -2730,9 +2776,9 @@ in
       '';
     };
 
-    # The registry compiler, on a timer. It renders the instance
-    # repository's integrated tip into the two artifacts the gates read;
-    # nothing else on the host writes them.
+    # The registry compiler. It renders the instance repository's
+    # integrated tip into the artifacts the gates read; nothing else on the
+    # host writes them.
     #
     # It runs as the git user rather than under an identity of its own,
     # which is the one place this module steps back from the service split
@@ -2740,14 +2786,44 @@ in
     # anyone but root or the account it authorizes, so the choice is the git
     # user or root, and the git user is the smaller grant.
     #
+    # What starts it: every boot, every successful valley-init, a
+    # controller starting, the path unit below whenever the registry's ref
+    # moves, and the timer at 00:00 UTC, when entries expire, since expiry
+    # is judged by UTC day. It starts only while valley-init is active
+    # (Requisite=): a start while valley-init runs waits for it, one after
+    # valley-init failed fails, and none starts valley-init, whose run
+    # would pause every push. After a failure, valley-init must be started
+    # again, by activation or by hand, once its fault is fixed. Neither the path unit nor the compiler has a
+    # trigger or start limit: each start needs a move of the ref or a
+    # timer, the path unit starts the compiler again only once the run it
+    # started has ended, and the compiler writes nothing the path unit
+    # watches, so no loop exists for a limit to stop, and a limit reached
+    # would leave the ref unwatched until someone restarted the path unit.
+    #
+    # systemd holds no watch on the ref while the compiler runs, does not
+    # see afterwards that the ref was replaced, and merges a start
+    # requested meanwhile into the run under way. So after each compilation
+    # the compiler reads the ref and the day again, and compiles again
+    # until a reading matches what it compiled, within a retry budget of
+    # three compilations. The budget bounds one run, not the work: a ref
+    # that keeps moving keeps starting runs. The files can still lag the
+    # ref: after a move
+    # made between the last reading and the path unit watching again, a
+    # compilation that failed or spent its budget, a start refused while
+    # valley-init has failed, or a ref the path unit cannot watch (see
+    # identity.ref). The next move of the ref, a successful valley-init, or
+    # the interval timer, which is recovery and not the mechanism,
+    # compiles it then.
+    #
     # Level-triggered, like the rest: a compilation reads the current tip
-    # and replaces an artifact only when its bytes changed, so re-running is
-    # free and the timer needs no coordination with anything.
+    # and replaces an artifact only when its bytes changed, so the starts
+    # need no coordination.
     systemd.services.valley-identity = lib.mkIf cfg.identity.enable {
       description = "Compile the valley identity registry into what the gates check";
       wantedBy = [ "multi-user.target" ];
       after = [ "valley-init.service" ];
-      requires = [ "valley-init.service" ];
+      requisite = [ "valley-init.service" ];
+      startLimitIntervalSec = 0;
       unitConfig.RequiresMountsFor = cfg.dataDir;
       serviceConfig = {
         Type = "oneshot";
@@ -2785,6 +2861,33 @@ in
       };
     };
 
+    systemd.paths.valley-identity = lib.mkIf cfg.identity.enable {
+      description = "Watch the ref the valley identity registry is read at";
+      wantedBy = [ "multi-user.target" ];
+      pathConfig = {
+        PathChanged = identityInputs;
+        TriggerLimitIntervalSec = 0;
+      };
+    };
+
+    # The turn of the UTC day, when a declared expiry takes effect. It asks
+    # for promptness: no randomized delay, and a scheduling accuracy of a
+    # second rather than systemd's default minute. It is not persistent: a midnight passed
+    # while the host was off needs no catch-up start, because every boot
+    # compiles, judging expiry by the day it boots on.
+    systemd.timers.valley-identity-midnight = lib.mkIf cfg.identity.enable {
+      description = "Compile the valley identity registry at the turn of the UTC day";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        Unit = "valley-identity.service";
+        OnCalendar = "*-*-* 00:00:00 UTC";
+        AccuracySec = "1s";
+        RandomizedDelaySec = "0";
+        Persistent = false;
+      };
+    };
+
+    # Recovery, for a start the path unit missed.
     systemd.timers.valley-identity = lib.mkIf cfg.identity.enable {
       description = "Re-compile the valley identity registry";
       wantedBy = [ "timers.target" ];
@@ -2811,6 +2914,10 @@ in
     # instance repository's main. That covers each compilation that changed
     # a file, a hand-provisioned file being replaced, an approval key
     # revoked while the signing keys stay, and a landing on the instance.
+    # Like the registry compiler, it starts only while valley-init is
+    # active (Requisite=) and never starts valley-init, so a landing on the
+    # instance's main reruns no valley-init and pauses no push, and a
+    # successful valley-init starts it.
     # A run reads every input and writes the ref only when the tree it
     # makes differs, so a run with nothing new is free. Every value is in
     # one tree under one ref, so a client never reads one value without the
@@ -2838,7 +2945,7 @@ in
       description = "Publish what clients verify the valley integrator's transfer statements with";
       wantedBy = [ "multi-user.target" ];
       after = [ "valley-init.service" ] ++ lib.optional cfg.identity.enable "valley-identity.service";
-      requires = [ "valley-init.service" ];
+      requisite = [ "valley-init.service" ];
       unitConfig.RequiresMountsFor = cfg.dataDir;
       serviceConfig = {
         Type = "oneshot";

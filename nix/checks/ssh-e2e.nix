@@ -8,7 +8,12 @@
 # It also walks the request grant's handoff, the one sequence a host goes
 # through once: a grant held by hand, the same grant compiled from the
 # registry beside it, and the hand grant removed only once the compiled one
-# works.
+# works. The registry's landing on the instance's main is what compiles
+# it: with the compiler's timers stopped and no compilation under way, its
+# path unit starts one, and valley-init does not run again, so no push is
+# paused. While valley-init has failed before touching its converged
+# record, the start a move of main causes fails and compiles nothing, and
+# the repair of valley-init alone compiles what landed meanwhile.
 {
   pkgs,
   lib,
@@ -67,6 +72,13 @@ let
         govern: boundary:  "registry"
       }
     }
+  '';
+
+  # What the registry's next version adds, appended to it: the operator
+  # holds restack too.
+  restackGrant = pkgs.writeText "restack.cue" ''
+    boundaries: "restack": kind: "restack"
+    principals: "operator": grants: restack: boundary: "restack"
   '';
 in
 {
@@ -242,7 +254,24 @@ in
           host.succeed(push("requester", f"+HEAD:{request}"))
           host.fail("grep -q '^request ' /var/lib/valley-identity/grants")
 
-      with subtest("the compiled grant is added to the hand grant"):
+      # Nothing but a move of the registry's ref can start the compiler:
+      # neither timer runs, and no compilation is under way or queued.
+      def quiesce_compiler():
+          host.succeed("systemctl stop valley-identity.timer valley-identity-midnight.timer")
+          host.wait_until_succeeds(
+              "test \"$(systemctl show -P ActiveState valley-identity)\" != activating"
+              " && ! systemctl list-jobs --no-legend | grep -q valley-identity",
+              timeout=60,
+          )
+
+      # Which run of valley-init the host is on. Each run removes the
+      # converged record first, pausing every push, and writes it last.
+      def init_run():
+          return host.succeed("systemctl show -P InvocationID valley-init").strip()
+
+      with subtest("a landing on main compiles the registry, reruns no valley-init, and adds the compiled grant to the hand grant"):
+          quiesce_compiler()
+          before = init_run()
           host.succeed(
               "rm -rf /root/instance && git init --quiet --initial-branch=main /root/instance",
               "mkdir -p /root/instance/identity && cp ${registry} /root/instance/identity/registry.cue",
@@ -256,10 +285,49 @@ in
               f"cd /root/instance && GIT_SSH_COMMAND={shlex.quote(command)}"
               " git push --quiet --force git@localhost:instance.git HEAD:refs/heads/main"
           )
-          host.succeed("systemctl start valley-identity.service")
-          host.succeed("grep -qx 'request operator' /var/lib/valley-identity/grants")
+          host.wait_until_succeeds("grep -qx 'request operator' /var/lib/valley-identity/grants", timeout=60)
+          assert init_run() == before, "the compilation ran valley-init again, pausing every push"
           host.succeed(push("operator", f"+HEAD:{request}"))
           host.succeed(push("requester", f"+HEAD:{request}"))
+
+      with subtest("a valley-init that fails before touching its record holds the compiler back, and its repair compiles"):
+          host.succeed(
+              "cat ${registry} ${restackGrant} > /root/instance/identity/registry.cue",
+              "git -C /root/instance commit --quiet -am restack",
+          )
+          host.succeed(
+              f"cd /root/instance && GIT_SSH_COMMAND={shlex.quote(command)}"
+              " git push --quiet --force git@localhost:instance.git HEAD:refs/heads/restack"
+          )
+          quiesce_compiler()
+          # valley-init fails before its script runs, so the record of its
+          # last success stays where the compiler could still read it.
+          host.succeed(
+              "mkdir -p /run/systemd/system/valley-init.service.d",
+              "printf '[Service]\\nExecStartPre=/run/current-system/sw/bin/false\\n'"
+              " > /run/systemd/system/valley-init.service.d/fail.conf",
+              "systemctl daemon-reload",
+          )
+          host.fail("systemctl restart valley-init.service")
+          host.succeed("test -e /srv/git/.valley-converged")
+          compiled = host.succeed("systemctl show -P InvocationID valley-identity").strip()
+          cursor = host.succeed("journalctl -n 0 --show-cursor").split("cursor: ")[-1].strip()
+          # The move starts the compiler through its path unit, and that
+          # start fails for valley-init's failure.
+          host.succeed("sudo -u git git -C /srv/git/instance.git update-ref refs/heads/main refs/heads/restack")
+          host.wait_until_succeeds(
+              f"journalctl -q --after-cursor={shlex.quote(cursor)}"
+              " UNIT=valley-identity.service JOB_TYPE=start JOB_RESULT=dependency | grep -q .",
+              timeout=60,
+          )
+          assert host.succeed("systemctl show -P InvocationID valley-identity").strip() == compiled, "the compiler ran after valley-init failed"
+          host.fail("grep -qx 'restack operator' /var/lib/valley-identity/grants")
+          host.succeed(
+              "rm /run/systemd/system/valley-init.service.d/fail.conf",
+              "systemctl daemon-reload",
+              "systemctl restart valley-init.service",
+          )
+          host.wait_until_succeeds("grep -qx 'restack operator' /var/lib/valley-identity/grants", timeout=60)
 
       with subtest("what sshd lets through, the git user's shell does not"):
           host.succeed(

@@ -97,63 +97,12 @@ GIT_CONFIG_PARAMETERS="'core.usereplacerefs'='true'" compile --now 2026-08-09 ||
 diff -u "$compiled/grants" "$TMPDIR/grants" || exit 1
 git -C instance.git update-ref -d "refs/replace/$landed"
 
-# A push landing while the compiler reads cannot mix two registries. The
-# compiler resolves the ref to a commit once and reads every document from
-# that commit. Here a git standing in front of the real one moves main to a
-# commit holding the forged registry the moment the compiler has resolved
-# it. A compiler reading through the ref would compile the forged registry
-# and name the first commit in its journal line. The approval signers files
-# come from the resolved commit too, and their stamps name it: the forged
-# registry's intruder is a human holding request, so it would add an
-# approval key. The compiler runs unwrapped, because its wrapper puts its
-# own git first on PATH.
-resolved="$(git -C instance.git rev-parse main)"
+# The forged registry, landed on a branch of its own, for the exact-name
+# reading below.
 cp forged.cue work/identity/registry.cue
 git -C work commit --quiet -am forged
 moved="$(git -C work rev-parse HEAD)"
 git -C work push --quiet "$TMPDIR/instance.git" "$moved:refs/heads/forged"
-realgit="$(command -v git)"
-mkdir -p racing
-cat > racing/git <<RACING
-#!/bin/sh
-"$realgit" "\$@" || exit
-case " \$* " in
-*" show-ref --verify "*) "$realgit" -C "$TMPDIR/instance.git" update-ref refs/heads/main "$moved" ;;
-esac
-RACING
-chmod +x racing/git
-PATH="$TMPDIR/racing:$PATH" "$identityUnwrapped" compile --repo "$TMPDIR/instance.git" \
-  --schema "$identitySchema" --known-signers "$TMPDIR/signers" \
-  --authorized-keys "$TMPDIR/keys" --grants "$TMPDIR/grants" \
-  --approval-signers "$TMPDIR/approval-signers" \
-  --approval-signers-hardware "$TMPDIR/approval-signers-hardware" --now 2026-08-09 2> raced.log || {
-  cat raced.log >&2
-  exit 1
-}
-if [ "$(git -C instance.git rev-parse main)" != "$moved" ]; then
-  echo "identity-e2e: main did not move mid-read, so the check below proves nothing" >&2
-  exit 1
-fi
-grep -qF "at $resolved:" raced.log || {
-  echo "identity-e2e: the compilation did not name the commit it resolved" >&2
-  cat raced.log >&2
-  exit 1
-}
-diff -u "$compiled/known-signers" "$TMPDIR/signers" || exit 1
-diff -u "$compiled/authorized_keys" "$TMPDIR/keys" || exit 1
-diff -u "$compiled/grants" "$TMPDIR/grants" || exit 1
-diff -u <(stamped "$compiled/approval-signers" "$resolved" 2026-08-09) "$TMPDIR/approval-signers" || exit 1
-diff -u <(stamped "$compiled/approval-signers-hardware" "$resolved" 2026-08-09) "$TMPDIR/approval-signers-hardware" || exit 1
-# The next compilation resolves main where it now is, and compiles the
-# forged registry: the commit the race moved main to compiles differently.
-compile --now 2026-08-09 || exit 1
-if ! grep -q intruder "$TMPDIR/keys" || cmp -s <(stamped "$compiled/approval-signers" "$moved" 2026-08-09) "$TMPDIR/approval-signers"; then
-  echo "identity-e2e: the commit main moved to compiles the same, so the race check proves nothing" >&2
-  exit 1
-fi
-git -C instance.git update-ref refs/heads/main "$resolved"
-compile --now 2026-08-09 || exit 1
-diff -u "$compiled/authorized_keys" "$TMPDIR/keys" || exit 1
 
 # The registry is read at its ref by that exact name. For a missing
 # refs/heads/registry, git rev-parse would go on to read

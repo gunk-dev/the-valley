@@ -82,8 +82,8 @@ const (
 	boundaryRestack = "restack"
 )
 
-// readRegistry takes the registry out of a repository's tip, vets it, and
-// exports it.
+// readRegistry takes the registry out of the object oid, which the caller
+// read ref as holding, vets it, and exports it.
 //
 // The tip is taken apart with ls-tree and show rather than checked out, the
 // same way the integrator reads the floor: a worktree would write into a
@@ -93,19 +93,12 @@ const (
 //
 // Nothing is written outside the scratch directory, so every failure here
 // leaves the artifacts as they were.
-func readRegistry(repo, ref, dir, schema string) (registry, string, error) {
+func readRegistry(repo, ref, oid, dir, schema string) (registry, string, error) {
 	var r registry
 
-	// The ref is resolved once, by its exact name, and everything after
-	// reads the commit it resolved to. Reading through the ref again would
-	// let a push landing mid-read mix two registries, compiled under the
-	// first one's commit.
-	oid, ok, err := resolveRef(repo, ref)
-	if err != nil {
-		return r, "", fmt.Errorf("could not read %s in %s: %w", ref, repo, err)
-	} else if !ok {
-		return r, "", fmt.Errorf("%s has no %s", repo, ref)
-	}
+	// Everything reads the commit the ref was resolved to. Reading through
+	// the ref again would let a push landing mid-read mix two registries,
+	// compiled under the first one's commit.
 	commit, err := git(repo, "rev-parse", "--verify", "--end-of-options", oid+"^{commit}")
 	if err != nil {
 		return r, "", fmt.Errorf("%s in %s is not a commit: %w", ref, repo, err)

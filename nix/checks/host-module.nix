@@ -587,6 +587,8 @@ let
   identityRenderedWithoutEnable =
     integratorHost.config.systemd.services ? valley-identity
     || integratorHost.config.systemd.timers ? valley-identity
+    || integratorHost.config.systemd.timers ? valley-identity-midnight
+    || integratorHost.config.systemd.paths ? valley-identity
     || integratorHost.config.services.openssh.settings ? PermitUserEnvironment
     || lib.any (lib.hasInfix "valley-identity") integratorHost.config.services.openssh.authorizedKeysFiles
     || lib.hasInfix "valley-identity" integratorHost.config.services.openssh.extraConfig
@@ -631,6 +633,61 @@ let
     || !(lib.hasInfix "-valley-declared-keys" identityService.ExecStart)
     || !(lib.hasInfix "AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u ${identityStateDir}/authorized_keys.git\n" identityHost.config.services.openssh.extraConfig)
     || !(lib.hasInfix "AuthorizedKeysCommand none" identityHost.config.services.openssh.extraConfig);
+
+  # A unit that must not run unless valley-init's latest start succeeded,
+  # and must not run valley-init either: ordered after it and requisite on
+  # it, which valley-init stays active after success for, never requiring
+  # it, which would start it again; and started by valley-init's success.
+  gatedOnInit =
+    host: name:
+    let
+      unit = host.config.systemd.services.${name};
+      init = host.config.systemd.services.valley-init;
+    in
+    builtins.elem "valley-init.service" unit.after
+    && builtins.elem "valley-init.service" unit.requisite
+    && !(builtins.elem "valley-init.service" unit.requires)
+    && !(unit.serviceConfig ? ExecCondition)
+    && init.serviceConfig.RemainAfterExit or false
+    && builtins.elem "${name}.service" init.wants;
+
+  # What starts the compiler: a move of the registry's ref in the instance
+  # repository, seen at its loose file, the one path the unit watches;
+  # 00:00 UTC, when entries expire, at once and with no catch-up start,
+  # since every boot compiles; and the interval timer, kept as recovery.
+  # None of them reruns valley-init, and no burst of starts can fail the
+  # path unit or the compiler.
+  identityStarts =
+    let
+      timers = identityHost.config.systemd.timers;
+      path = identityHost.config.systemd.paths.valley-identity or { };
+    in
+    !(gatedOnInit identityHost "valley-identity")
+    # A successful valley-init starts the controllers too, which require
+    # it, so its repair restores them.
+    || identityHost.config.systemd.targets.valley-integrators.wants == [ ]
+    || !(lib.all (
+      controller: builtins.elem controller identityHost.config.systemd.services.valley-init.wants
+    ) identityHost.config.systemd.targets.valley-integrators.wants)
+    || !(builtins.elem "valley-init.service" identityHost.config.systemd.services."valley-integrator@".requires)
+    || path.pathConfig or null != {
+      PathChanged = [ "/srv/git/sealed.git/refs/heads/main" ];
+      TriggerLimitIntervalSec = 0;
+    }
+    || identityHost.config.systemd.services.valley-identity.startLimitIntervalSec or null != 0
+    || !(builtins.elem "multi-user.target" path.wantedBy or [ ])
+    || timers.valley-identity-midnight.timerConfig or null != {
+      Unit = "valley-identity.service";
+      OnCalendar = "*-*-* 00:00:00 UTC";
+      AccuracySec = "1s";
+      RandomizedDelaySec = "0";
+      Persistent = false;
+    }
+    || !(builtins.elem "timers.target" timers.valley-identity-midnight.wantedBy or [ ])
+    || timers.valley-identity.timerConfig or null != {
+      OnBootSec = "1m";
+      OnUnitActiveSec = "5m";
+    };
 
   # A controller under a compiled registry reads the compiled signers file
   # and signs under the name the registry publishes its key under. The key
@@ -695,7 +752,7 @@ let
     || flagValue "signer-projects" publish != flagValue "signer-projects" controller
     || unit.serviceConfig.User or null != "git"
     || unit.serviceConfig.ReadWritePaths or [ ] != [ repo ]
-    || !(builtins.elem "valley-init.service" unit.after)
+    || !(gatedOnInit host "valley-signers")
     || !(builtins.elem "multi-user.target" unit.wantedBy)
     || approvalFiles != compiled
     || (compile != "" && lib.elem null approvalFiles)
@@ -1273,12 +1330,14 @@ in
       throw "valley module-eval: registry-compilation machinery rendered for a host that never enabled it — nothing may change until a consumer opts in"
     else if identityCompiler then
       throw "valley module-eval: the compiler must run as the git user, write only its own 0755 state directory, read the registry from the instance repository, write the grants the pre-receive hook reads, and have its authorized_keys added to what sshd reads under the %u token — sshd refuses a keys file owned by anyone but root or the account it authorizes, and a fixed path in that global list would authorize every registry key for every account on the host"
+    else if identityStarts then
+      throw "valley module-eval: the compiler must start when the registry's ref moves in the instance repository, watching its loose file alone with no trigger or start limit, and at 00:00 UTC within a second, with no randomized delay and no catch-up start, beside the recovery timer five minutes after each compilation, and it must start only while valley-init is active after success, which starts it and the controllers, without ever starting valley-init"
     else if identityIntegrator then
       throw "valley module-eval: a controller under a compiled registry must read the compiled signers file, start after the compilation, and sign under the name the registry publishes its key under"
     else if signersRenderedWithoutIntegrator then
       throw "valley module-eval: a signers publication rendered for a host whose integrator is off — there is no transfer statement to verify"
     else if signersUnpublished then
-      throw "valley module-eval: the signers publisher must publish the controllers' own signers file and signing name into the instance repository, as the git user, writing nothing else, after valley-init and the compilation, at boot and whenever a file it publishes from changes"
+      throw "valley module-eval: the signers publisher must publish the controllers' own signers file and signing name into the instance repository, as the git user, writing nothing else, after valley-init and the compilation, at boot and whenever a file it publishes from changes, starting only while valley-init is active after success, which starts it, without ever starting valley-init"
     else if controllerApprovalInputsMisrendered then
       throw "valley module-eval: each controller must be handed the approval signers files the compiler writes, or none on a host that compiles no registry, and its project's push policy through its environment file"
     else if retentionMisrendered then

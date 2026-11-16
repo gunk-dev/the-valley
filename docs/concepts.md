@@ -261,9 +261,9 @@ edge with a read link, and `valley-web` serves that reader's requests as the lin
 
 _How Nix and CUE realize this:_ To manage principals and grants as reviewed changes in the instance
 repository rather than only through NixOS rebuilds, a host can enable
-`services.valley.identity.enable` to compile `identity/*.cue` from the instance repository on a
-timer into `/var/lib/valley-identity/`, or declare keys, grants, and trusted signers statically in
-NixOS (`services.valley.authorizedKeys`, `services.valley.grants`,
+`services.valley.identity.enable` to compile `identity/*.cue` from the instance repository into
+`/var/lib/valley-identity/` whenever a registry change lands, or declare keys, grants, and trusted
+signers statically in NixOS (`services.valley.authorizedKeys`, `services.valley.grants`,
 `services.valley.integrator.knownSignersFile`; compiled `authorized_keys` and `grants` supplement
 any static `authorizedKeys` and `grants`, while compiled `known-signers` replaces
 `services.valley.integrator.knownSignersFile`, which must be unset when both `identity.enable` and

@@ -119,6 +119,14 @@ All of them are computed in full before any is written, and each is
 replaced by rename. A schema violation, an unreachable repository or a bug
 here costs the compilation and never the git user's access.
 
+After writing, the compiler reads the ref and the day again, and compiles
+again until a reading matches what it compiled, so a push landing on the
+ref while it compiles is compiled before it exits. A compilation that
+fails ends the run only when the reading after it matches what it
+compiled. The retry budget is three compilations, two with --now: room
+for the ref to move once and the day to turn once. A run that still reads
+a change after spending it fails.
+
 flags:
   --repo DIR             the bare instance repository carrying the registry
   --ref REF              the ref whose tip is read, a full ref name read by

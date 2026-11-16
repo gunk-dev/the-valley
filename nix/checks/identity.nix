@@ -12,9 +12,7 @@
 # record, and a principal holding neither, including one named approve,
 # does none of that. A grant named approve at a boundary of another kind
 # compiles to nothing. The registry is read past a replacement ref planted
-# to forge it, and from the commit its ref resolved to while a push moves
-# that ref mid-read, and the approval signers files' authority stamps name
-# that commit and the day given. It is read at its ref by that exact name: with
+# to forge it. It is read at its ref by that exact name: with
 # refs/heads/registry missing, a branch named refs/heads/refs/heads/registry
 # is no registry, and the compilation fails. A registry enrolling a real YubiKey key from the test
 # vectors, with the attestation the device wrote, compiles it into both
@@ -33,8 +31,12 @@
 }:
 {
   # The compiler's Go tests: the key hash pinned against the reference vector attest is held to, expiry,
-  # the renders it must refuse, and the approval files, over a real
-  # YubiKey's attestation and signature.
+  # the renders it must refuse, the approval files, over a real YubiKey's
+  # attestation and signature, and a run compiling again until the ref and
+  # the day hold still. In a real repository, a push moving the ref
+  # mid-read mixes no two registries, and the same run then compiles the
+  # commit the push moved the ref to; each round stamps the approval
+  # signers files with the commit and the day it compiled.
   identity-unit = packages.identity-unwrapped.unit;
 
   identity-e2e = pkgs.runCommand "valley-identity-e2e" {
@@ -45,11 +47,12 @@
       # attest, so the compiled verifier line is checked against the
       # implementation that reads it and not only against a fixed vector.
       packages.attest
-      # cue, for the unwrapped compiler the mid-read push races.
+      # cue, which a stand-in placed first on PATH wraps for the unwrapped
+      # compiler.
       pkgs.cue
     ];
-    # The compiler without its wrapper, so a git placed first on PATH is
-    # the one it runs, and the schema the wrapper would name.
+    # The compiler without its wrapper, so a stand-in placed first on PATH
+    # is the one it runs, and the schema the wrapper would name.
     identityUnwrapped = "${packages.identity-unwrapped}/bin/identity";
     identitySchema = ../../schema/identity.cue;
     registry = ../../examples/identity/registry;

@@ -390,6 +390,12 @@ in
           assert attestations() == []
 
       with subtest("enrolled in the registry, the worker builds the ready change's checks side by side and publishes them"):
+          # The runs of the compiler and the signers publisher that follow
+          # the landing on the instance's main, and the compiler's start by
+          # hand in land_instance, run no valley-init, whose run would
+          # pause every push.
+          init_run = "systemctl show -P InvocationID valley-init"
+          before = host.succeed(init_run)
           land_instance(" ".join(public.split()[:2]))
           host.succeed(f"grep -q '^worker/attestations+{keyhash}+' /var/lib/valley-identity/known-signers")
           host.wait_until_succeeds(
@@ -397,6 +403,7 @@ in
               f" | grep -q '^worker/attestations+{keyhash}+'",
               timeout=60,
           )
+          assert host.succeed(init_run) == before, "a landing on the instance ran valley-init again"
           host.succeed("systemd-run --unit=valley-worker-e2e-sampler ${sampler}")
           host.succeed("systemctl start valley-worker.service")
           host.succeed("systemctl stop valley-worker-e2e-sampler")
@@ -493,10 +500,8 @@ in
           # valley-init deletes the converged record while it runs, and the
           # host refuses every push until the record is back. The change is
           # pushed and readied first, and the pass starts with pushes
-          # paused. The identity timer would start valley-init, which
-          # writes the record, so it stays stopped: the scenarios below
-          # start the compiler themselves when they land a registry.
-          host.succeed("systemctl stop valley-identity.timer valley-worker.path")
+          # paused.
+          host.succeed("systemctl stop valley-worker.path")
           host.wait_until_succeeds("test \"$(systemctl show -p ActiveState --value valley-init)\" != activating", timeout=60)
           ready("paused", "${spin}")
           host.succeed("mv /srv/git/.valley-converged /tmp/valley-converged", "systemctl start valley-worker.path")

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -50,32 +51,126 @@ func compile(args []string) error {
 
 	// The day expiry is judged against. A flag rather than the clock alone,
 	// so a compilation can be reproduced and a check can pin one.
-	day := time.Now().UTC().Truncate(24 * time.Hour)
+	c := compilation{
+		repo: *repo, ref: *ref, dir: *dir, schema: *schema,
+		knownSigners: *knownSigners, authorizedKeys: *authorizedKeys, grants: *grantsFile,
+		approvalSigners: *approvalSignersFile, approvalHardware: *approvalHardwareFile,
+		today: func() time.Time { return time.Now().UTC().Truncate(24 * time.Hour) },
+	}
+	// A retry budget, not a count the inputs imply: room for the ref to
+	// move once, and the day to turn once unless --now pins it, while a
+	// run compiles, with a last compilation for the reading after them.
+	rounds := 3
 	if *now != "" {
 		parsed, err := time.Parse(dateLayout, *now)
 		if err != nil {
 			return fmt.Errorf("--now %q is not a calendar day", *now)
 		}
-		day = parsed
+		c.today = func() time.Time { return parsed }
+		rounds = 2
 	}
 
-	var declared map[string]string
 	if *declaredKeys != "" {
 		var err error
-		if declared, err = readDeclaredKeys(*declaredKeys); err != nil {
+		if c.declared, err = readDeclaredKeys(*declaredKeys); err != nil {
 			return err
 		}
 	}
-	r, commit, err := readRegistry(*repo, *ref, *dir, *schema)
+	return converge(c.ref, rounds, c.read, c.compileAt)
+}
+
+// reading is what a compilation depends on that can change while it runs:
+// the object the ref holds, and the day expiry is judged against.
+type reading struct {
+	oid string
+	day time.Time
+}
+
+func (r reading) equal(o reading) bool {
+	return r.oid == o.oid && r.day.Equal(o.day)
+}
+
+// converge compiles what read returns, reads again, and compiles again
+// until a reading matches the one compiled, so a ref moved or a day turned
+// while a run compiles is compiled by that run. What starts a run cannot
+// be relied on to start another for such a change: systemd holds no watch
+// on the ref while the compiler runs, and does not see afterwards that the
+// ref was replaced, and a start requested while the compiler runs is
+// merged into that run. A change made after the last reading waits for
+// whatever starts the next run.
+//
+// A compilation that fails ends the run only when the reading after it
+// matches what it compiled. If the ref or the day changed meanwhile, the
+// failure is said and the run compiles again, so a landing that repairs a
+// registry while the broken one compiles is compiled by that run.
+//
+// rounds is the retry budget. A run whose inputs still change after that
+// many compilations fails, so the unit shows it. Its artifacts keep what
+// its compilations wrote: each is replaced whole, but a write that fails
+// part way leaves the ones before it from the newer registry.
+func converge(ref string, rounds int, read func() (reading, error), compileAt func(reading) error) error {
+	at, err := read()
 	if err != nil {
 		return err
 	}
-	a, err := render(r, day, declared)
+	for round := 1; ; round++ {
+		failed := compileAt(at)
+		again, err := read()
+		if err != nil {
+			return errors.Join(failed, err)
+		}
+		if again.equal(at) {
+			return failed
+		}
+		if round == rounds {
+			return errors.Join(failed, fmt.Errorf("%s kept moving while the registry was compiled: after %d compilations it holds %s", ref, rounds, again.oid))
+		}
+		if failed != nil {
+			fmt.Fprintf(os.Stderr, "identity: %v\n", failed)
+		}
+		if again.oid != at.oid {
+			fmt.Fprintf(os.Stderr, "identity: %s moved to %s while %s was compiled, so the registry is compiled again\n", ref, again.oid, at.oid)
+		} else {
+			fmt.Fprintf(os.Stderr, "identity: the day turned to %s while the registry was compiled, so it is compiled again\n", again.day.Format(dateLayout))
+		}
+		at = again
+	}
+}
+
+// compilation is where one run reads the registry and writes its
+// artifacts.
+type compilation struct {
+	repo, ref, dir, schema               string
+	knownSigners, authorizedKeys, grants string
+	approvalSigners, approvalHardware    string
+	declared                             map[string]string
+	today                                func() time.Time
+}
+
+// read resolves the ref by its exact name, and reads the day.
+func (c compilation) read() (reading, error) {
+	oid, ok, err := resolveRef(c.repo, c.ref)
+	if err != nil {
+		return reading{}, fmt.Errorf("could not read %s in %s: %w", c.ref, c.repo, err)
+	} else if !ok {
+		return reading{}, fmt.Errorf("%s has no %s", c.repo, c.ref)
+	}
+	return reading{oid: oid, day: c.today()}, nil
+}
+
+// compileAt renders the registry the reading's object holds, as of the
+// reading's day, and writes every artifact whose bytes changed.
+func (c compilation) compileAt(at reading) error {
+	r, commit, err := readRegistry(c.repo, c.ref, at.oid, c.dir, c.schema)
+	if err != nil {
+		return err
+	}
+	a, err := render(r, at.day, c.declared)
 	if err != nil {
 		return fmt.Errorf("the registry at %s does not compile: %w", commit, err)
 	}
 
-	approvers, hardware, err := stampApproval(a, approval.Authority{Ref: *ref, Commit: commit, Day: day})
+	approvers, hardware, err := stampApproval(a, approval.Authority{Ref: c.ref, Commit: commit, Day: at.day})
 	if err != nil {
 		return err
 	}
@@ -86,15 +181,15 @@ func compile(args []string) error {
 		fmt.Fprintf(os.Stderr, "identity: %s\n", note)
 	}
 
-	signersWritten, err := writeArtifact(*knownSigners, a.knownSigners)
+	signersWritten, err := writeArtifact(c.knownSigners, a.knownSigners)
 	if err != nil {
 		return err
 	}
-	keysWritten, err := writeArtifact(*authorizedKeys, a.authorizedKeys)
+	keysWritten, err := writeArtifact(c.authorizedKeys, a.authorizedKeys)
 	if err != nil {
 		return err
 	}
-	grantsWritten, err := writeArtifact(*grantsFile, a.grants)
+	grantsWritten, err := writeArtifact(c.grants, a.grants)
 	if err != nil {
 		return err
 	}
@@ -109,8 +204,8 @@ func compile(args []string) error {
 		count   int
 		what    string
 	}{
-		{*approvalSignersFile, approvers, a.approvers, "approval signer(s)"},
-		{*approvalHardwareFile, hardware, a.hardware, "hardware approval signer(s)"},
+		{c.approvalSigners, approvers, a.approvers, "approval signer(s)"},
+		{c.approvalHardware, hardware, a.hardware, "hardware approval signer(s)"},
 	} {
 		if f.path == "" {
 			continue
@@ -123,7 +218,7 @@ func compile(args []string) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "identity: %s at %s: %d verifier key(s)%s, %d authorized key(s)%s, %d grant(s)%s%s\n",
-		*ref, commit, a.signers, changed(signersWritten), a.authorized, changed(keysWritten),
+		c.ref, commit, a.signers, changed(signersWritten), a.authorized, changed(keysWritten),
 		a.granted, changed(grantsWritten), approval)
 	return nil
 }

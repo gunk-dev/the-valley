@@ -359,7 +359,9 @@ rec {
   # against the reference vector attest is held to, and verify a real
   # YubiKey attestation against the Yubico roots it carries. The test
   # vectors (identity/testdata/) are read by the tests and by identity-e2e,
-  # never by the build.
+  # never by the build. One test compiles a registry in a real repository
+  # while a push moves its ref, so the tests run git and cue and read the
+  # schema.
   identity-unwrapped = goModule {
     pname = "valley-identity";
     dir = ../identity;
@@ -372,7 +374,14 @@ rec {
     # Of the approval module, only its library is read.
     excluded = approvalExtras;
     preBuild = readsGoMod;
-    tests.reads = [ ../identity/testdata ];
+    tests.reads = [
+      ../identity/testdata
+      ../schema/identity.cue
+    ];
+    tests.nativeCheckInputs = [
+      pkgs.git
+      pkgs.cue
+    ];
     meta.mainProgram = "identity";
   };
 

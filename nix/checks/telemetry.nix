@@ -4,7 +4,15 @@
 # the controllers, the registry compiler and the collector. Every read and
 # report goes over its real sshd, through the git user's shell.
 #
-# First the boundary: an enrolled observer reads, and nobody else does. A
+# Right after seeding, valley-init's lifecycle: an activation that leaves
+# its unit alone stops no controller, and one that changes it reruns it
+# with the controllers running after. A valley-init that fails before it
+# touches its converged record holds back the registry compiler and the
+# signers publisher while a registry change lands, and starting it again
+# once repaired compiles, publishes the change and restores the
+# controllers, which every later scenario relies on.
+#
+# Then the boundary: an enrolled observer reads, and nobody else does. A
 # contributor without the grant, an untagged key, a key claiming another
 # principal through its environment, a reporter, and every malformed or
 # hostile command are refused, and none reaches a shell. A forced
@@ -58,13 +66,18 @@ let
   pub = who: lib.fileContents "${keys}/${who}.pub";
   pubBlob = who: lib.concatStringsSep " " (lib.take 2 (lib.splitString " " (pub who)));
 
+  # The projects the host declares, each with its protection block. Each
+  # is protected, so each has a controller.
+  projects = {
+    instance = ''protection: refs: ["refs/heads/main"]'';
+    project = "protection: {}";
+  };
+
   declaration = pkgs.writeText "valley-telemetry-e2e.cue" ''
     package valley
 
     projects: {
-      "instance": protection: refs: ["refs/heads/main"]
-      "project": protection: {}
-    }
+    ${lib.concatStrings (lib.mapAttrsToList (name: block: "  \"${name}\": ${block}\n") projects)}}
   '';
 
   # Every change requires a slow and a fast nix check; one that touches
@@ -212,6 +225,8 @@ in
         ];
         nix.settings.substituters = lib.mkForce [ ];
         networking.useDHCP = false;
+        # The same host with valley-init's unit changed and nothing else.
+        specialisation.init-changed.configuration.systemd.services.valley-init.environment.VALLEY_INIT_CHANGED = "1";
       };
 
     testScript = ''
@@ -251,7 +266,7 @@ in
           full = f"sudo -u alice -H env VALLEY_ATTEST_KEY=/home/alice/keys/alice VALLEY_ATTEST_NAME=alice/attestations bash -c {shlex.quote('cd /home/alice/project && ' + cmd)}"
           return host.succeed(full) if check else host.execute(full)
 
-      def registry(worker):
+      def registry(worker, operator=False):
           def human(who, signs):
               s = f', signs: "{who}/attestations"' if signs else ""
               return [
@@ -262,6 +277,8 @@ in
                   "}",
               ]
           principals = human("contributor", False) + human("alice", True)
+          if operator:
+              principals += human("operator", True)
           if worker:
               principals += [
                   '"worker": {',
@@ -274,23 +291,22 @@ in
           return "\n".join(['package identity', 'boundaries: {"push": kind: "git-push", "registry": kind: "registry"}',
                             'genesis: "contributor"', "principals: {"] + principals + ["}"])
 
-      blob = {"contributor": "${pubBlob "contributor"}", "alice": "${pubBlob "alice"}"}
+      blob = {"contributor": "${pubBlob "contributor"}", "alice": "${pubBlob "alice"}", "operator": "${pubBlob "operator"}"}
 
-      def land_instance(worker):
+      def land_instance(worker, operator=False, compile=True):
           host.succeed(
               "rm -rf /tmp/instance && mkdir -p /tmp/instance/policy/instance /tmp/instance/identity",
               "cp ${floor} /tmp/instance/policy/instance/floor.cue",
-              f"cat > /tmp/instance/identity/registry.cue <<'EOF'\n{registry(worker)}\nEOF",
+              f"cat > /tmp/instance/identity/registry.cue <<'EOF'\n{registry(worker, operator)}\nEOF",
               f"cd /tmp/instance && git init --quiet --initial-branch=main && git add -A && {commit} -m instance",
               "chown -R git:git /tmp/instance",
               f"{git} -C /srv/git/instance.git fetch --quiet --force /tmp/instance main:refs/heads/main",
-              "systemctl start valley-identity.service",
           )
+          if compile:
+              host.succeed("systemctl start valley-identity.service")
 
       def settle():
-          """Waits out a valley-init run: a unit that requires it starts it
-          again, such as the identity timer's compile, and pushes pause
-          while it runs."""
+          """Waits out a valley-init run, during which pushes pause."""
           host.wait_until_succeeds("test \"$(systemctl show -p ActiveState --value valley-init)\" != activating", timeout=60)
 
       def pushing(cmd):
@@ -375,6 +391,60 @@ in
               f"{git} -C /srv/git/instance.git cat-file blob refs/the-valley/signers:known-signers | grep -q '^alice/attestations+'",
               timeout=60,
           )
+
+      with subtest("valley-init keeps the controllers across activations, holds back the compiler and the publisher once failed, and its repair restores all three"):
+          def show(unit, prop):
+              return host.succeed(f"systemctl show -P {prop} {unit}").strip()
+          # One controller for each project the host declares.
+          controllers = [${lib.concatMapStringsSep ", " (name: ''"valley-integrator@${name}.service"'') (lib.attrNames projects)}]
+          running = " && ".join(f"systemctl is-active -q {c}" for c in controllers)
+          watched = controllers + ["valley-init"]
+          host.succeed(running)
+          # An activation that leaves valley-init's unit alone stops nothing.
+          before = {u: show(u, "InvocationID") for u in watched}
+          host.succeed("/run/booted-system/bin/switch-to-configuration test")
+          assert {u: show(u, "InvocationID") for u in watched} == before, "an activation that left valley-init alone stopped something"
+          host.succeed(running)
+          # One that changes it runs it again, and the controllers run after,
+          # there and back.
+          host.succeed("/run/booted-system/specialisation/init-changed/bin/switch-to-configuration test")
+          assert show("valley-init", "InvocationID") != before["valley-init"]
+          host.wait_until_succeeds(running, timeout=60)
+          host.succeed("/run/booted-system/bin/switch-to-configuration test")
+          host.wait_until_succeeds(running, timeout=60)
+          # Activation starts the worker's path and timer, which this test
+          # keeps stopped.
+          host.succeed("systemctl stop valley-worker.timer valley-worker.path")
+          # valley-init fails before its script runs, so its record stays,
+          # and a registry enrolling the operator as a signer lands. With the
+          # compiler's timers stopped, only valley-init's repair can compile
+          # and publish it.
+          host.succeed("systemctl stop valley-identity.timer valley-identity-midnight.timer")
+          host.succeed(
+              "mkdir -p /run/systemd/system/valley-init.service.d",
+              "printf '[Service]\\nExecStartPre=/run/current-system/sw/bin/false\\n'"
+              " > /run/systemd/system/valley-init.service.d/fail.conf",
+              "systemctl daemon-reload",
+          )
+          host.fail("systemctl restart valley-init.service")
+          host.succeed("test -e /srv/git/.valley-converged")
+          assert not any(show(c, "ActiveState") == "active" for c in controllers), "a controller runs after valley-init failed"
+          consumers = ["valley-identity", "valley-signers"]
+          ran = {u: show(u, "InvocationID") for u in consumers}
+          signers = f"{git} -C /srv/git/instance.git cat-file blob refs/the-valley/signers:known-signers"
+          land_instance(" ".join(host.succeed("cat /var/lib/valley-worker/key.pub").split()[:2]), operator=True, compile=False)
+          for u in consumers:
+              host.fail(f"systemctl start {u}.service")
+          assert {u: show(u, "InvocationID") for u in consumers} == ran, "a consumer ran after valley-init failed"
+          host.fail(f"{signers} | grep -q '^operator/attestations+'")
+          host.succeed(
+              "rm /run/systemd/system/valley-init.service.d/fail.conf",
+              "systemctl daemon-reload",
+              "systemctl restart valley-init.service",
+          )
+          host.wait_until_succeeds(f"{signers} | grep -q '^operator/attestations+'", timeout=60)
+          host.wait_until_succeeds(running, timeout=60)
+          host.succeed("systemctl start valley-identity.timer valley-identity-midnight.timer")
 
       with subtest("an enrolled observer reads the catalog, and nobody else does"):
           srcs = {s["name"]: s for s in of(observe("sources"), "source")}

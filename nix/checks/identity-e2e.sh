@@ -30,6 +30,14 @@ compile() {
     --approval-signers-hardware "$TMPDIR/approval-signers-hardware" "$@"
 }
 
+# stamped <file> <commit> <day>: a checked-in approval signers file as the
+# compiler writes it, opened by the authority stamp naming main, the
+# commit main resolved to, and the day expiry was judged on.
+stamped() {
+  printf '# valley-approval-authority-v1 ref=refs/heads/main commit=%s day=%s\n' "$2" "$3"
+  cat "$1"
+}
+
 # The worked registry compiles to exactly the artifacts checked in beside
 # it. This is the whole claim of the compiler, and the artifacts it replaces
 # were written by hand — so the comparison is byte for byte.
@@ -40,9 +48,11 @@ diff -u "$compiled/authorized_keys" "$TMPDIR/keys" || exit 1
 diff -u "$compiled/grants" "$TMPDIR/grants" || exit 1
 # The approval files too: every key of the one human holding the approve
 # grant, and no hardware key, because no key in this registry carries an
-# attestation.
-diff -u "$compiled/approval-signers" "$TMPDIR/approval-signers" || exit 1
-diff -u "$compiled/approval-signers-hardware" "$TMPDIR/approval-signers-hardware" || exit 1
+# attestation. Each opens with the stamp of the commit compiled and the
+# day given as --now.
+served="$(git -C instance.git rev-parse main)"
+diff -u <(stamped "$compiled/approval-signers" "$served" 2026-08-09) "$TMPDIR/approval-signers" || exit 1
+diff -u <(stamped "$compiled/approval-signers-hardware" "$served" 2026-08-09) "$TMPDIR/approval-signers-hardware" || exit 1
 
 # A replacement ref planted in the instance repository changes nothing the
 # compiler reads. refs/replace/<blob> makes git read another object wherever
@@ -93,9 +103,10 @@ git -C instance.git update-ref -d "refs/replace/$landed"
 # commit holding the forged registry the moment the compiler has resolved
 # it. A compiler reading through the ref would compile the forged registry
 # and name the first commit in its journal line. The approval signers files
-# come from the resolved commit too: the forged registry's intruder is a
-# human holding request, so it would add an approval key. The compiler runs
-# unwrapped, because its wrapper puts its own git first on PATH.
+# come from the resolved commit too, and their stamps name it: the forged
+# registry's intruder is a human holding request, so it would add an
+# approval key. The compiler runs unwrapped, because its wrapper puts its
+# own git first on PATH.
 resolved="$(git -C instance.git rev-parse main)"
 cp forged.cue work/identity/registry.cue
 git -C work commit --quiet -am forged
@@ -131,12 +142,12 @@ grep -qF "at $resolved:" raced.log || {
 diff -u "$compiled/known-signers" "$TMPDIR/signers" || exit 1
 diff -u "$compiled/authorized_keys" "$TMPDIR/keys" || exit 1
 diff -u "$compiled/grants" "$TMPDIR/grants" || exit 1
-diff -u "$compiled/approval-signers" "$TMPDIR/approval-signers" || exit 1
-diff -u "$compiled/approval-signers-hardware" "$TMPDIR/approval-signers-hardware" || exit 1
+diff -u <(stamped "$compiled/approval-signers" "$resolved" 2026-08-09) "$TMPDIR/approval-signers" || exit 1
+diff -u <(stamped "$compiled/approval-signers-hardware" "$resolved" 2026-08-09) "$TMPDIR/approval-signers-hardware" || exit 1
 # The next compilation resolves main where it now is, and compiles the
 # forged registry: the commit the race moved main to compiles differently.
 compile --now 2026-08-09 || exit 1
-if ! grep -q intruder "$TMPDIR/keys" || cmp -s "$compiled/approval-signers" "$TMPDIR/approval-signers"; then
+if ! grep -q intruder "$TMPDIR/keys" || cmp -s <(stamped "$compiled/approval-signers" "$moved" 2026-08-09) "$TMPDIR/approval-signers"; then
   echo "identity-e2e: the commit main moved to compiles the same, so the race check proves nothing" >&2
   exit 1
 fi
@@ -690,8 +701,9 @@ attested_registry() {
 attested_registry device-registry "$yubikey" "$testdata/valley-approve.attest.pem" "$testdata/yubico-f9.pem"
 serve instance device-registry
 compile --now 2026-10-22 2> attested.log || exit 1
-diff -u "$testdata/compiled/approval-signers" "$TMPDIR/approval-signers" || exit 1
-diff -u "$testdata/compiled/approval-signers-hardware" "$TMPDIR/approval-signers-hardware" || exit 1
+served="$(git -C instance.git rev-parse main)"
+diff -u <(stamped "$testdata/compiled/approval-signers" "$served" 2026-10-22) "$TMPDIR/approval-signers" || exit 1
+diff -u <(stamped "$testdata/compiled/approval-signers-hardware" "$served" 2026-10-22) "$TMPDIR/approval-signers-hardware" || exit 1
 grep -qxF "identity: test-vector: key 0 is on $(cat "$testdata/valley-approve.report"); it approves as a hardware key" attested.log || {
   echo "identity-e2e: the compiler did not report the attestation it verified" >&2
   cat attested.log >&2

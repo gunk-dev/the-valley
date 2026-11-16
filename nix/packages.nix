@@ -352,7 +352,10 @@ rec {
   # The identity registry compiler (dcr-b87f6e8). Go, standard library
   # only, note format included, same trade as attest and the integrator, so
   # no module is fetched. It reads the registry's export with exactjson
-  # (../exactjson). Its unit tests pin the note format's key hash
+  # (../exactjson), and opens each approval signers file with the
+  # approval format's authority stamp (../approval), which names refs by
+  # the change record's branch rule (../change). Its unit tests pin the
+  # note format's key hash
   # against the reference vector attest is held to, and verify a real
   # YubiKey attestation against the Yubico roots it carries. The test
   # vectors (identity/testdata/) are read by the tests and by identity-e2e,
@@ -361,9 +364,13 @@ rec {
     pname = "valley-identity";
     dir = ../identity;
     modules = [
+      ../approval
+      ../change
       ../note
       ../exactjson
     ];
+    # Of the approval module, only its library is read.
+    excluded = approvalExtras;
     preBuild = readsGoMod;
     tests.reads = [ ../identity/testdata ];
     meta.mainProgram = "identity";
@@ -431,7 +438,8 @@ rec {
   # project a valley host serves. It validates a push to the plan graph
   # with the one reading of a graph the CLI shares (../knot), reads a
   # pushed approval with the approval format (../approval), and reads the
-  # project's push policy with exactjson (../exactjson). The same
+  # project's push policy with the push policy reader (../pushpolicy),
+  # which reads with exactjson (../exactjson). The same
   # binary is the git user's login shell, which derives the pushing
   # principal and pauses pushes until the host has converged. Go, standard
   # library only, so no module is fetched.
@@ -447,6 +455,7 @@ rec {
       ../note
       ../change
       ../knot
+      ../pushpolicy
       ../exactjson
       ../telemetry
     ];
@@ -542,6 +551,17 @@ rec {
   exactjson = goModule {
     pname = "valley-exactjson";
     dir = ../exactjson;
+  };
+
+  # A project's push policy (pushpolicy/), read exactly as the pre-receive
+  # hook reads it: the file the host module writes per project, held to
+  # exactjson's spelling, and the hook's pattern matching. Its tests hold
+  # it to both.
+  pushpolicy = goModule {
+    pname = "valley-pushpolicy";
+    dir = ../pushpolicy;
+    modules = [ ../exactjson ];
+    preBuild = readsGoMod;
   };
 
   # The web UI (web/). Package export is the contract between the

@@ -327,10 +327,10 @@ func TestTheLandingRecordsTheModelsDigest(t *testing.T) {
 }
 
 // The policy digest is of the whole composed policy, so a class's carry
-// mode, the restacker's cap and the hardware approval requirement are in it
+// mode, the restacker's cap and the approval requirements are in it
 // as much as a check is. The layers are composed by the real cue under the
 // real schema, with the floor fixed and the project layer varied.
-func TestThePolicyDigestCoversCarryTheCapAndHardware(t *testing.T) {
+func TestThePolicyDigestCoversCarryTheCapAndApproval(t *testing.T) {
 	cue, err := exec.LookPath("cue")
 	if err != nil {
 		t.Skip("no cue to compose a policy with; the nix check provides one")
@@ -378,6 +378,10 @@ floor: {
 		// not read the cap, so it composes and digests one no Go int holds.
 		{"a cap no int holds", "project: restack: maxAutomaticVersions: 9223372036854775808\n"},
 		{"a hardware approval requirement", "project: approval: hardware: true\n"},
+		// Only a field left out is absent from the export. Written out,
+		// false is in it as much as true.
+		{"an approval requirement", "project: approval: required: true\n"},
+		{"an approval requirement written false", "project: approval: required: false\n"},
 	} {
 		sum := digest(c.project)
 		if other, ok := seen[sum]; ok {

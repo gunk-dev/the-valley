@@ -132,6 +132,16 @@ let
     # The controller's own wake directory, which it watches and consumes.
     # --wake above is output, to the worker; this is the controller's input.
     ++ [ "--woken-by ${integratorWakeRoot}/%i" ]
+    # The approval inputs, which the controller takes as paths and reads
+    # nothing from: the compiler's approval signers files on a host that
+    # compiles a registry, and the project's push policy, the store file
+    # its pre-receive hook reads, which the unit's environment file names
+    # (integratorEnv below).
+    ++ lib.optionals cfg.identity.enable [
+      "--approval-signers ${identityApprovalSigners}"
+      "--approval-signers-hardware ${identityApprovalHardware}"
+    ]
+    ++ [ "--push-policy=\${VALLEY_PUSH_POLICY}" ]
     # The floor's readers, for the instance project's controller alone: its
     # environment file names one --wake-floor-reader per other controller,
     # and $VALLEY_FLOOR_READERS, unbraced, is split into those words. Every
@@ -240,8 +250,8 @@ let
   identityGrants = "${identityStateDir}/grants";
 
   # The approval signers files: the keys of every approval key, and of the
-  # hardware ones. Nothing on the host enforces approvals with them yet;
-  # the signers publication publishes both.
+  # hardware ones. The signers publication publishes both, and each
+  # controller is handed their paths.
   identityApprovalSigners = "${identityStateDir}/approval-signers";
   identityApprovalHardware = "${identityStateDir}/approval-signers-hardware";
 
@@ -357,7 +367,9 @@ let
   # the worker's wake directory to --wake for each project in wakeProjects,
   # and is empty, which marks nothing, for every other.
   # VALLEY_FLOOR_READERS names the floor's readers to the instance project's
-  # controller, and nothing to any other.
+  # controller, and nothing to any other. VALLEY_PUSH_POLICY names each
+  # controller's project's push policy to --push-policy: the same store
+  # file the project's pre-receive hook reads.
   integratorEnv = pkgs.runCommand "valley-integrator-env" { } (
     "mkdir $out\n"
     + lib.concatMapStrings (
@@ -368,7 +380,8 @@ let
           ++ lib.optional (name == cfg.integrator.instanceProject && floorReaders != [ ]) (
             "VALLEY_FLOOR_READERS="
             + lib.concatMapStringsSep " " (r: "--wake-floor-reader=${integratorWakeDir r}") floorReaders
-          );
+          )
+          ++ [ "VALLEY_PUSH_POLICY=${pushPolicy name integratedProjects.${name}}" ];
       in
       "printf '%s\\n' ${lib.escapeShellArgs lines} > $out/${lib.escapeShellArg name}\n"
     ) (lib.attrNames integratedProjects)

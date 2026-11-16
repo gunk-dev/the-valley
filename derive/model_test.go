@@ -1,6 +1,7 @@
 package derive
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -134,6 +135,107 @@ func TestTheHardwareRequirementIsRead(t *testing.T) {
 	}
 	if m, err := r.read(l); err == nil || !strings.Contains(err.Error(), "policy.approval.hardware") {
 		t.Errorf("a project dropping the floor's hardware requirement was read as %+v, %v", m, err)
+	}
+}
+
+// TestTheApprovalRequirementIsRead holds Compose and Read to
+// approval.required as cue composes it, over the fixtures under
+// examples/policy/approval/. A floor's `true` requires an approval. A
+// project's `false` and a policy that never mentions approval do not, and
+// the two digest differently: a field written out is in the export, and a
+// field left out is not. A project's `false` against the floor's `true` is
+// refused, rather than read as either.
+func TestTheApprovalRequirementIsRead(t *testing.T) {
+	r := newRig(t)
+	fixture := func(name string) layers {
+		return newLayers(t, []string{r.path("examples/policy/approval/" + name + ".cue")}, nil, nil)
+	}
+	digests := map[string]string{}
+	for _, c := range []struct {
+		fixture  string
+		required bool
+	}{
+		{"floor-requires-approval", true},
+		{"project-writes-not-required", false},
+		{"no-requirement", false},
+		{"floor-requires-hardware", false},
+	} {
+		l := fixture(c.fixture)
+		pol, err := composed.Compose(t.Context(), r.cue, r.schema, l.instance, l.project)
+		if err != nil {
+			t.Fatalf("%s: %v", c.fixture, err)
+		}
+		m, err := r.read(l)
+		if err != nil {
+			t.Fatalf("%s: %v", c.fixture, err)
+		}
+		if pol.RequiredApproval != c.required || m.RequiredApproval != c.required {
+			t.Errorf("%s: Compose reads RequiredApproval %v and Read %v, not %v", c.fixture, pol.RequiredApproval, m.RequiredApproval, c.required)
+		}
+		digests[c.fixture] = pol.Digest
+	}
+	if digests["project-writes-not-required"] == digests["no-requirement"] {
+		t.Error("a policy writing required: false digests as one leaving the field out")
+	}
+
+	l := fixture("rejected/project-drops-floor-required")
+	if pol, err := composed.Compose(t.Context(), r.cue, r.schema, l.instance, l.project); err == nil || !strings.Contains(err.Error(), "policy.approval.required") {
+		t.Errorf("a project dropping the floor's approval requirement composed to %+v, %v", pol, err)
+	}
+	if m, err := r.read(l); err == nil || !strings.Contains(err.Error(), "policy.approval.required") {
+		t.Errorf("a project dropping the floor's approval requirement was read as %+v, %v", m, err)
+	}
+}
+
+// TestApprovalRequiredChangesNoPolicyThatLeavesItOut composes every policy
+// this repository carries, and every approval case that does not write
+// approval.required, under the schema and under the same schema with the
+// field's declaration taken out, and holds the two digests equal. The
+// digest is SHA-256 of the export, so equal digests are equal export
+// bytes: declaring the optional field changes no policy that leaves it
+// out. The schema without the field is made from the schema itself, so
+// the comparison stays exactly this field's however the rest of the
+// schema changes.
+func TestApprovalRequiredChangesNoPolicyThatLeavesItOut(t *testing.T) {
+	r := newRig(t)
+	schema, err := os.ReadFile(r.schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const declaration = "\t\trequired?: bool\n"
+	if n := bytes.Count(schema, []byte(declaration)); n != 1 {
+		t.Fatalf("the schema declares approval.required %d times, not once as %q", n, declaration)
+	}
+	without := filepath.Join(t.TempDir(), "verification.cue")
+	if err := os.WriteFile(without, bytes.Replace(schema, []byte(declaration), nil, 1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases := fixtures(t, r)
+	for _, f := range r.glob(t, "examples/policy/approval/*.cue") {
+		body, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Contains(body, []byte("required:")) {
+			cases = append(cases, fixture{name: "approval-" + strings.TrimSuffix(filepath.Base(f), ".cue"), instance: []string{f}})
+		}
+	}
+	for _, f := range cases {
+		l := newLayers(t, f.instance, f.project, nil)
+		with, err := composed.Compose(t.Context(), r.cue, r.schema, l.instance, l.project)
+		if err != nil {
+			t.Fatalf("%s: %v", f.name, err)
+		}
+		was, err := composed.Compose(t.Context(), r.cue, without, l.instance, l.project)
+		if err != nil {
+			t.Fatalf("%s, without approval.required: %v", f.name, err)
+		}
+		if with.Digest != was.Digest {
+			t.Errorf("%s digests %s with approval.required declared and %s without", f.name, with.Digest, was.Digest)
+		}
+	}
+	if len(cases) < 12 {
+		t.Errorf("only %d policies were compared", len(cases))
 	}
 }
 

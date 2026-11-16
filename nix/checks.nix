@@ -34,8 +34,8 @@
 #   signers.nix      signers-e2e — the signers the host publishes, read by
 #                    a fresh client to verify the real integrator's landing
 #   hooks.nix        valleyhook-unit, note-unit, change-unit,
-#                    exactjson-unit, mirror-e2e, bus-e2e, protect-e2e,
-#                    knots-e2e, init-e2e — the hooks the module renders,
+#                    exactjson-unit, pushpolicy-unit, mirror-e2e, bus-e2e,
+#                    protect-e2e, knots-e2e, init-e2e — the hooks the module renders,
 #                    run against real git, the formats they read, and the
 #                    init script that wires them
 #   approval.nix     approval-unit — approval statements, their signing

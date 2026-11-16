@@ -8,35 +8,6 @@ import (
 	"the-valley/knot"
 )
 
-// The patterns are documented as matching the full refname with `*`
-// crossing path separators, and the hook they replace matched them as
-// shell case patterns. A matcher is wrong exactly at the stars, so the
-// stars are what is pinned.
-func TestAPatternMatchesTheWholeRefnameAndItsStarsCrossSeparators(t *testing.T) {
-	for _, c := range []struct {
-		pattern, ref string
-		want         bool
-	}{
-		{"refs/heads/main", "refs/heads/main", true},
-		{"refs/heads/main", "refs/heads/main2", false},
-		{"refs/heads/main", "refs/heads/mai", false},
-		{"refs/heads/release/*", "refs/heads/release/1.0", true},
-		{"refs/heads/release/*", "refs/heads/release/1/hotfix", true},
-		{"refs/heads/release/*", "refs/heads/release/", true},
-		{"refs/heads/release/*", "refs/heads/releases/1", false},
-		{"refs/tags/release/*/v*", "refs/tags/release/app/v1", true},
-		{"refs/tags/release/*/v*", "refs/tags/release/app/nightly", false},
-		{"refs/*/main", "refs/heads/x/main", true},
-		{"refs/*/main", "refs/heads/x/main/y", false},
-		{"refs/heads/*a*b", "refs/heads/aab", true},
-		{"refs/heads/*a*b", "refs/heads/aaba", false},
-	} {
-		if got := match(c.pattern, c.ref); got != c.want {
-			t.Errorf("match(%q, %q) = %v, want %v", c.pattern, c.ref, got, c.want)
-		}
-	}
-}
-
 // fakeRepository holds no objects.
 type fakeRepository struct{}
 

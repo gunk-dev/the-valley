@@ -85,7 +85,85 @@ func Decode(data []byte, v any) error {
 	}
 	dec = json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
-	return dec.Decode(v)
+	err := dec.Decode(v)
+	var mismatch *json.UnmarshalTypeError
+	if errors.As(err, &mismatch) {
+		return &kindError{
+			said: fmt.Sprintf("%s is %s, where %s belongs", locate(data, t, mismatch.Offset), written(mismatch.Value), want(mismatch.Type)),
+			err:  mismatch,
+		}
+	}
+	return err
+}
+
+// kindError is a value of the wrong kind, said in words. encoding/json's
+// error stays beneath it, for errors.As.
+type kindError struct {
+	said string
+	err  *json.UnmarshalTypeError
+}
+
+func (e *kindError) Error() string { return e.said }
+func (e *kindError) Unwrap() error { return e.err }
+
+// locate is where the value that ends offset bytes into data is, written
+// as the check writes a path. encoding/json names the value of a type
+// mismatch by a path of its own, which differs between Go releases, so
+// the check walks the document again and names the value it finds there.
+func locate(data []byte, t reflect.Type, offset int64) string {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	found := "a value"
+	c := &checker{tokens: dec}
+	c.scalar = func() {
+		if dec.InputOffset() == offset {
+			found = c.where()
+		}
+	}
+	_ = c.check(t)
+	return found
+}
+
+// want is the kind of JSON value a value of type t is read from, in
+// words. A refusal says it rather than naming t, so what a reader of a
+// document is told does not change when a Go type is renamed or moved.
+func want(t reflect.Type) string {
+	if t == reflect.TypeFor[json.Number]() {
+		return "a number"
+	}
+	switch t.Kind() {
+	case reflect.Pointer:
+		return want(t.Elem())
+	case reflect.Struct, reflect.Map:
+		return "an object"
+	case reflect.Slice, reflect.Array:
+		return "an array"
+	case reflect.String:
+		return "a string"
+	case reflect.Bool:
+		return "a boolean"
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return "a whole number"
+	case reflect.Float32, reflect.Float64:
+		return "a number"
+	}
+	return "another kind of value"
+}
+
+// written is the JSON value encoding/json names in a type mismatch, in
+// words: "string", "bool", "array", "object", or "number" with the number
+// itself when it is one the type cannot hold.
+func written(value string) string {
+	switch {
+	case value == "bool":
+		return "a boolean"
+	case value == "array" || value == "object":
+		return "an " + value
+	case strings.HasPrefix(value, "number "):
+		return "the number " + strings.TrimPrefix(value, "number ")
+	}
+	return "a " + value
 }
 
 // Tokens is a stream of JSON tokens, as a *json.Decoder reads them.
@@ -121,6 +199,10 @@ var (
 type checker struct {
 	tokens Tokens
 	path   []step
+
+	// scalar, when set, is called after each value that is not an array
+	// or an object is read.
+	scalar func()
 }
 
 // step is where a value is in the array or object that holds it: at index
@@ -160,7 +242,7 @@ func (c *checker) check(t reflect.Type) error {
 		case reflect.Interface:
 			elem = t
 		default:
-			return fmt.Errorf("%s is an array, and %s holds no array", c.where(), t)
+			return fmt.Errorf("%s is an array, where %s belongs", c.where(), want(t))
 		}
 		for i := 0; c.tokens.More(); i++ {
 			c.path = append(c.path, step{index: i})
@@ -181,7 +263,7 @@ func (c *checker) check(t reflect.Type) error {
 			}
 		case reflect.Map, reflect.Interface:
 		default:
-			return fmt.Errorf("%s is an object, and %s holds no object", c.where(), t)
+			return fmt.Errorf("%s is an object, where %s belongs", c.where(), want(t))
 		}
 		seen := map[string]bool{}
 		for c.tokens.More() {
@@ -211,6 +293,9 @@ func (c *checker) check(t reflect.Type) error {
 			c.path = c.path[:len(c.path)-1]
 		}
 	default:
+		if c.scalar != nil {
+			c.scalar()
+		}
 		return nil
 	}
 	// The closing delimiter.

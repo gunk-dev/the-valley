@@ -8,6 +8,7 @@ package main
 // could write one where no hook guards the repository.
 
 import (
+	"maps"
 	"os"
 	"strings"
 	"testing"
@@ -217,6 +218,40 @@ func TestARecordThatDoesNotReadIsReportedWhereItMayMatter(t *testing.T) {
 		if outcome, _, _ := in.recordRefusal(r, idx, c.tip); outcome != "" {
 			t.Errorf("%s: a record that does not read refused it", c.name)
 		}
+	}
+}
+
+// The index keeps the commit each record ref held when it read it, the
+// ref of a record that does not read included, and indexes, refuses and
+// reports exactly as it would without them.
+func TestTheIndexKeepsTheCommitEachRecordRefHeld(t *testing.T) {
+	s := newScratchRepo(t)
+	base := s.git("rev-parse", "HEAD")
+	head := s.commit("ready head", base)
+	named := s.commit("named", base)
+	s.record(readyID, "ready", head)
+	s.recordText(change.Ref("main", draftID), "{}\n", named)
+	in := &integrator{repo: s.repo}
+	idx, err := in.readRecords()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{}
+	for _, id := range []string{readyID, draftID} {
+		ref := change.Ref("main", id)
+		want[ref] = s.git("rev-parse", ref)
+	}
+	if !maps.Equal(idx.observed, want) {
+		t.Errorf("the index observed %v, want %v", idx.observed, want)
+	}
+	if len(idx.byRef) != 1 || idx.byRef[change.Ref("main", readyID)] == nil {
+		t.Errorf("the index reads %v", idx.byRef)
+	}
+	if len(idx.unreadable) != 1 || idx.unreadable[0].commit != want[change.Ref("main", draftID)] {
+		t.Errorf("the index reports %+v as unreadable", idx.unreadable)
+	}
+	if got := idx.byHead[head]; len(got) != 1 || got[0].ref != change.Ref("main", readyID) {
+		t.Errorf("the ready head is indexed as %+v", got)
 	}
 }
 

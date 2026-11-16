@@ -2,6 +2,8 @@ package composed
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"maps"
 	"os"
@@ -232,5 +234,45 @@ func TestOpenTellsAnUnreadableFloorFromAnAbsentOne(t *testing.T) {
 				t.Errorf("the refusal %q does not say %q", err, c.mentioned)
 			}
 		})
+	}
+}
+
+// The approval requirements are read from the export as cue wrote it. A
+// field left out reads false, and the digest is of the export's bytes, so
+// a policy writing neither digests as its export alone. A field written
+// out reads as written, false included. A value of another kind, a key
+// spelled another way and a key written twice are refused.
+func TestTheApprovalRequirementsAreReadAsExported(t *testing.T) {
+	const opening = `{"checks":{},"classes":{},"unclassified":{}`
+	for _, c := range []struct {
+		export             string
+		required, hardware bool
+	}{
+		{opening + `}`, false, false},
+		{opening + `,"approval":{"hardware":true}}`, false, true},
+		{opening + `,"approval":{"required":true}}`, true, false},
+		{opening + `,"approval":{"required":false}}`, false, false},
+		{opening + `,"approval":{"hardware":false,"required":true}}`, true, false},
+	} {
+		pol, err := readExport([]byte(c.export))
+		if err != nil {
+			t.Errorf("%s: %v", c.export, err)
+			continue
+		}
+		if pol.RequiredApproval != c.required || pol.HardwareApproval != c.hardware {
+			t.Errorf("%s reads RequiredApproval %v and HardwareApproval %v", c.export, pol.RequiredApproval, pol.HardwareApproval)
+		}
+		if sum := sha256.Sum256([]byte(c.export)); pol.Digest != hex.EncodeToString(sum[:]) {
+			t.Errorf("%s digests as %s, not as its bytes", c.export, pol.Digest)
+		}
+	}
+	for _, c := range []struct{ export, says string }{
+		{opening + `,"approval":{"required":"yes"}}`, "policy.approval.required is not a bool"},
+		{opening + `,"approval":{"Required":true}}`, `policy.approval has a field "Required" the schema does not give it`},
+		{opening + `,"approval":{"required":true,"required":false}}`, `policy.approval holds the key "required" twice`},
+	} {
+		if pol, err := readExport([]byte(c.export)); err == nil || !strings.Contains(err.Error(), c.says) {
+			t.Errorf("%s read as %+v, %v, not %q", c.export, pol, err, c.says)
+		}
 	}
 }

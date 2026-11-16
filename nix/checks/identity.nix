@@ -13,7 +13,8 @@
 # does none of that. A grant named approve at a boundary of another kind
 # compiles to nothing. The registry is read past a replacement ref planted
 # to forge it, and from the commit its ref resolved to while a push moves
-# that ref mid-read. It is read at its ref by that exact name: with
+# that ref mid-read, and the approval signers files' authority stamps name
+# that commit and the day given. It is read at its ref by that exact name: with
 # refs/heads/registry missing, a branch named refs/heads/refs/heads/registry
 # is no registry, and the compilation fails. A registry enrolling a real YubiKey key from the test
 # vectors, with the attestation the device wrote, compiles it into both

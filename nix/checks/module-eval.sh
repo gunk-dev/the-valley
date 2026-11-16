@@ -221,6 +221,11 @@ grep -qF -- 'Environment="GIT_CONFIG_VALUE_0=/srv/git/%i.git"' "$integratorUnitP
 grep -qF -- 'Environment="GIT_CONFIG_KEY_1=safe.directory"' "$integratorUnitPath"
 grep -qF -- 'Environment="GIT_CONFIG_VALUE_1=/srv/git/sealed.git"' "$integratorUnitPath"
 
+# Each controller is handed its project's push policy through its
+# environment file: the store file the project's pre-receive hook reads.
+integratorGuardedHook="$(grep -o '/nix/store/[^ ]*-valley-protect-guarded' "$integratorInitPath" | head -n1)"
+grep -qxF -- "VALLEY_PUSH_POLICY=$(policy "$integratorGuardedHook")" "$integratorGuardedEnv"
+
 # It writes refs as itself, so the repositories it serves are
 # group-shared — and only those. The sharing block names each
 # repo it touches; the repo-creation loop above it names none.

@@ -56,6 +56,10 @@
   # registry (exactjson/).
   exactjson-unit = packages.exactjson.unit;
 
+  # The push policy reader the hook shares (pushpolicy/): the hook's
+  # pattern matching, and its strict reading of the file the host writes.
+  pushpolicy-unit = packages.pushpolicy.unit;
+
   # The change record the hook guards and the CLI writes (change/): its
   # strict reading, and the fuzz target's seed corpus.
   change-unit = packages.change.unit;

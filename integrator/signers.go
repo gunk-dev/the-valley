@@ -21,8 +21,9 @@ import (
 // tell which signers' evidence counts in which projects.
 //
 // The tree also says who may approve, and in which instance: the two
-// approval signers files the identity compiler writes, as
-// signersApprovers and signersHardware, and the instance's identity, as
+// approval signers files the identity compiler writes, less their
+// authority stamp, as signersApprovers and signersHardware, and the
+// instance's identity, as
 // signersInstance, 64 lowercase hex digits and a newline, once the
 // instance repository has a main to derive it from. The publication
 // informs clients. Whatever enforces approvals reads the host's own files,
@@ -65,7 +66,8 @@ so a client can tell which signers' evidence counts in which projects.
 
 The tree also holds who may approve, in which instance: approval-signers
 and approval-signers-hardware, the approval signers files the identity
-compiler writes, and instance-id, the instance's identity. The identity
+compiler writes, less the authority stamp that opens each, and
+instance-id, the instance's identity. The identity
 is derived from the root commits of the instance repository's
 refs/heads/main, as the approval statement defines it. A repository with
 no refs/heads/main publishes no instance-id; a shallow one, or one
@@ -104,7 +106,7 @@ older file cannot publish it over a newer one.
 The file must read as verifier keys, the name must be one a verifier key
 can carry, and a signer projects file must read as watch reads one, so
 it may not name NAME. An approval signers file that is named must read
-as verifier keys too; one with no key is published as it is, so the
+as verifier keys too; one with no key is published all the same, so the
 publication drops revoked approval keys. One file never stands in for
 another. A file that holds no key under the name, or no key
 at all, is published all the same, because it is what the controller
@@ -288,6 +290,13 @@ func (p publication) equal(q publication) bool {
 // to approve, and publishing nothing is what removes the keys a run
 // published before. A file that is named and cannot be read fails the
 // run, which leaves the last publication in place.
+//
+// The file's authority stamp, the line naming the registry commit and the
+// day it was compiled from (approval.Authority), is left out, and every
+// other byte is published. The stamp moves with every registry commit and
+// every day, and a client refuses an approval when the publication it
+// checked the approval against changes before it pushes. Left out, a
+// compilation that changes only the stamp changes nothing published.
 func readApprovalSigners(path string) ([]byte, error) {
 	if path == "" {
 		return nil, nil
@@ -299,40 +308,18 @@ func readApprovalSigners(path string) ([]byte, error) {
 	if _, err := note.ParseVerifierKeys(data); err != nil {
 		return nil, fmt.Errorf("the approval signers file %s does not read: %w", path, err)
 	}
-	return data, nil
+	return approval.StripAuthority(data), nil
 }
 
 // instanceID derives the instance's identity (approval.InstanceID) from
-// the instance repository's integrated tip, read once by its exact name:
-// its root commits and the repository's object format. It is "" when the
-// repository has no tip yet. A shallow repository is refused, since the
-// roots it holds need not be its history's, and so is one missing a commit
-// of that history, which rev-list cannot walk.
+// the instance repository's integrated tip, read once by its exact name
+// (snapshot.instanceID). It is "" when the repository has no tip yet.
 func instanceID(repo string) (string, error) {
 	tip, ok, err := resolveRef(repo, instanceTip)
 	if err != nil || !ok {
 		return "", err
 	}
-	shallow, err := gitLine(repo, "rev-parse", "--is-shallow-repository")
-	if err != nil {
-		return "", err
-	}
-	if shallow != "false" {
-		return "", fmt.Errorf("the instance repository %s is shallow, so the root commits of its %s are not known", repo, instanceTip)
-	}
-	format, err := gitLine(repo, "rev-parse", "--show-object-format")
-	if err != nil {
-		return "", err
-	}
-	roots, err := gitLine(repo, "rev-list", "--max-parents=0", tip)
-	if err != nil {
-		return "", fmt.Errorf("the history of %s in the instance repository does not read: %w", instanceTip, err)
-	}
-	id, err := approval.InstanceID(format, strings.Fields(roots))
-	if err != nil {
-		return "", fmt.Errorf("the instance identity: %w", err)
-	}
-	return id, nil
+	return snapshot{repo: repo, ref: instanceTip, commit: tip}.instanceID()
 }
 
 // signersTree writes the publication's objects into repo and returns its

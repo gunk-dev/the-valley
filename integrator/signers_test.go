@@ -55,8 +55,9 @@ func TestThePublicationSaysWhoMayApproveInWhichInstance(t *testing.T) {
 	}
 	holds := func(file, want string) {
 		t.Helper()
-		if got := s.git("cat-file", "blob", published()+":"+file); got != strings.TrimSuffix(want, "\n") {
-			t.Errorf("the publication's %s holds %q, want %q", file, got, want)
+		got, err := git(s.repo, "cat-file", "blob", published()+":"+file)
+		if err != nil || got != want {
+			t.Errorf("the publication's %s holds %q (%v), want %q", file, got, err, want)
 		}
 	}
 	identity := func(roots ...string) string {
@@ -78,7 +79,7 @@ func TestThePublicationSaysWhoMayApproveInWhichInstance(t *testing.T) {
 	}
 	holds(signersApprovers, "# compiled\n"+key("operator", 2)+key("alice", 3))
 	holds(signersHardware, "# compiled\n"+key("operator", 2))
-	holds(signersInstance, identity(base))
+	holds(signersInstance, identity(base)+"\n")
 
 	first := published()
 	if err := publish(both...); err != nil || published() != first {
@@ -136,7 +137,7 @@ func TestThePublicationSaysWhoMayApproveInWhichInstance(t *testing.T) {
 	if err := publish(); err != nil {
 		t.Fatal(err)
 	}
-	holds(signersInstance, identity(base, other))
+	holds(signersInstance, identity(base, other)+"\n")
 	shallow := filepath.Join(t.TempDir(), "shallow.git")
 	s.git("clone", "--quiet", "--bare", "--depth", "1", "file://"+s.repo, shallow)
 	if _, err := instanceID(shallow); err == nil || !strings.Contains(err.Error(), "is shallow") {
@@ -152,6 +153,83 @@ func TestThePublicationSaysWhoMayApproveInWhichInstance(t *testing.T) {
 	}
 	if got := s.git("ls-tree", "--name-only", published()); got != "approval-signers\napproval-signers-hardware\nintegrator-name\nknown-signers" {
 		t.Errorf("the publication of a repository with no main holds %q", got)
+	}
+}
+
+// The publication carries the approval signers files without the
+// authority stamp the compiler opens them with. A compilation that moves
+// only the stamp, to another registry commit or another day, leaves the
+// publication's tree as it was, and the ref does not move. A compilation
+// that changes a key moves it.
+func TestTheStampAloneMovesNoPublication(t *testing.T) {
+	s := newScratchRepo(t)
+	// Every write of the ref is logged, so a run that wrote the same tree
+	// again would show.
+	s.git("config", "core.logAllRefUpdates", "always")
+	dir := t.TempDir()
+	write := func(file, content string) string {
+		path := filepath.Join(dir, file)
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	stamp := func(commit, day string) string {
+		return "# valley-approval-authority-v1 ref=refs/heads/main commit=" + strings.Repeat(commit, 40) + " day=" + day + "\n"
+	}
+	const name = "valley-host/attestations"
+	const header = "# Compiled from the identity registry — do not edit.\n"
+	keys := header + verifierLine("operator", 2)
+	args := []string{"--instance-repo", s.repo, "--name", name,
+		"--known-signers", write("known-signers", verifierLine(name, 1)),
+		"--approval-signers", write("approval-signers", stamp("1", "2026-11-16")+keys),
+		"--approval-signers-hardware", write("approval-signers-hardware", stamp("1", "2026-11-16")+header),
+	}
+	publish := func() string {
+		t.Helper()
+		stdout, stderr := os.Stdout, os.Stderr
+		os.Stdout, os.Stderr = devNull(t), devNull(t)
+		err := publishSigners(args)
+		os.Stdout, os.Stderr = stdout, stderr
+		if err != nil {
+			t.Fatal(err)
+		}
+		oid, _, err := resolveRef(s.repo, signersRef)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return oid
+	}
+	first := publish()
+	for file, want := range map[string]string{signersApprovers: keys, signersHardware: header} {
+		if got, err := git(s.repo, "cat-file", "blob", first+":"+file); err != nil || got != want {
+			t.Errorf("the publication's %s holds %q (%v), want %q", file, got, err, want)
+		}
+	}
+	writes := func() int {
+		t.Helper()
+		log, err := os.ReadFile(filepath.Join(s.repo, ".git", "logs", signersRef))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Count(string(log), "\n")
+	}
+	if n := writes(); n != 1 {
+		t.Fatalf("the publication's log holds %d writes, not one", n)
+	}
+
+	write("approval-signers", stamp("2", "2026-11-17")+keys)
+	write("approval-signers-hardware", stamp("2", "2026-11-17")+header)
+	if again := publish(); again != first {
+		t.Errorf("a new stamp moved the publication from %s to %s", first, again)
+	}
+	if n := writes(); n != 1 {
+		t.Errorf("a new stamp wrote the publication again: %d writes", n)
+	}
+
+	write("approval-signers", stamp("2", "2026-11-17")+keys+verifierLine("alice", 3))
+	if moved := publish(); moved == first || writes() != 2 {
+		t.Error("a new key left the publication where it was")
 	}
 }
 

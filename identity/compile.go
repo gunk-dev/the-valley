@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"the-valley/approval"
 )
 
 func compile(args []string) error {
@@ -73,6 +75,11 @@ func compile(args []string) error {
 		return fmt.Errorf("the registry at %s does not compile: %w", commit, err)
 	}
 
+	approvers, hardware, err := stampApproval(a, approval.Authority{Ref: *ref, Commit: commit, Day: day})
+	if err != nil {
+		return err
+	}
+
 	// The omissions, before the artifacts are written: an entry that has
 	// aged out is the compiler doing its job, and it is not a silent one.
 	for _, note := range a.notes {
@@ -102,8 +109,8 @@ func compile(args []string) error {
 		count   int
 		what    string
 	}{
-		{*approvalSignersFile, a.approvalSigners, a.approvers, "approval signer(s)"},
-		{*approvalHardwareFile, a.approvalHardware, a.hardware, "hardware approval signer(s)"},
+		{*approvalSignersFile, approvers, a.approvers, "approval signer(s)"},
+		{*approvalHardwareFile, hardware, a.hardware, "hardware approval signer(s)"},
 	} {
 		if f.path == "" {
 			continue
@@ -119,6 +126,21 @@ func compile(args []string) error {
 		*ref, commit, a.signers, changed(signersWritten), a.authorized, changed(keysWritten),
 		a.granted, changed(grantsWritten), approval)
 	return nil
+}
+
+// stampApproval is the two approval signers files as they are written:
+// each opens with the authority stamp (approval.Authority), naming the ref
+// the registry was read at, the commit that ref resolved to, and the day
+// expiry was judged on, and then holds the rendered file byte for byte.
+// The commit is the one every document was read from, so the stamp names
+// exactly what the keys below it render, even when the ref has moved
+// since.
+func stampApproval(a artifacts, source approval.Authority) (approvers, hardware []byte, err error) {
+	stamp, err := source.Stamp()
+	if err != nil {
+		return nil, nil, fmt.Errorf("the approval signers files cannot be stamped: %w", err)
+	}
+	return append([]byte(stamp), a.approvalSigners...), append([]byte(stamp), a.approvalHardware...), nil
 }
 
 // readDeclaredKeys reads the authorized_keys lines the host declares by

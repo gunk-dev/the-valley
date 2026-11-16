@@ -8,37 +8,18 @@ import (
 	"the-valley/change"
 	"the-valley/knot"
 	"the-valley/note"
+	"the-valley/pushpolicy"
 )
 
 // pushPolicy is what a project declares about pushes to it, as the host
-// declaration exports it (schema/valley.cue): the protected refs and their
-// writers from its protection block, and its named ref grants. A project
-// that declares no protection block protects nothing, and every other rule
-// applies to it unchanged.
-type pushPolicy struct {
-	// Refs are the protected ref patterns. A ref one of them matches takes
-	// a push only from one of Writers, on top of whatever else its
-	// namespace requires.
-	Refs    []string `json:"refs"`
-	Writers []string `json:"writers"`
-
-	// Grants open refs the namespace rules close, each to the principals
-	// it names. Tags open only this way.
-	Grants map[string]refGrant `json:"grants"`
-
-	// RetainChangeRecords keeps every change record the project holds: no
-	// push deletes one, whatever grant the pusher holds. A record's ref
-	// then holds the change's whole history, so a reader can tell a
-	// change that stayed ready from one withdrawn or unreadied and readied
-	// again.
-	RetainChangeRecords bool `json:"retainChangeRecords"`
-}
+// declaration exports it (pushpolicy.Policy): the protected refs and their
+// writers from its protection block, its named ref grants, and whether it
+// retains its change records. A project that declares no protection block
+// protects nothing, and every other rule applies to it unchanged.
+type pushPolicy = pushpolicy.Policy
 
 // refGrant is one named grant: ref patterns, and who may write them.
-type refGrant struct {
-	Refs    []string `json:"refs"`
-	Writers []string `json:"writers"`
-}
+type refGrant = pushpolicy.Grant
 
 // The namespaces whose rule is fixed rather than declared.
 const (
@@ -249,7 +230,7 @@ func (p policy) decide(principal string, u update) string {
 		}
 
 	default:
-		names, opened := p.push.openedTo(u.ref)
+		names, opened := openedTo(p.push, u.ref)
 		if principal == "" || !contains(opened, principal) {
 			closed := namespace(u.ref)
 			if len(opened) > 0 {
@@ -259,26 +240,16 @@ func (p policy) decide(principal string, u update) string {
 		}
 	}
 
-	if p.push.protects(u.ref) && (principal == "" || !contains(p.push.Writers, principal)) {
-		return refuse("write", fmt.Sprintf("a protected ref of %s (%s)", p.project, p.push.whoMay()))
+	if p.push.Protects(u.ref) && (principal == "" || !contains(p.push.Writers, principal)) {
+		return refuse("write", fmt.Sprintf("a protected ref of %s (%s)", p.project, whoMay(p.push)))
 	}
 	return ""
-}
-
-// protects reports whether ref is one of the project's protected refs.
-func (p pushPolicy) protects(ref string) bool {
-	for _, pattern := range p.Refs {
-		if match(pattern, ref) {
-			return true
-		}
-	}
-	return false
 }
 
 // whoMay is what a refusal says about who may write a protected ref
 // instead. With no writer declared there is no one, so it says how a
 // change lands.
-func (p pushPolicy) whoMay() string {
+func whoMay(p pushPolicy) string {
 	if len(p.Writers) == 0 {
 		return "no writer is declared — changes land by integration request"
 	}
@@ -287,11 +258,11 @@ func (p pushPolicy) whoMay() string {
 
 // openedTo lists the grants that open ref and the principals they open it
 // to, both in name order so a refusal reads the same on every push.
-func (p pushPolicy) openedTo(ref string) (names, who []string) {
+func openedTo(p pushPolicy, ref string) (names, who []string) {
 	for _, name := range sortedKeys(p.Grants) {
 		g := p.Grants[name]
 		for _, pattern := range g.Refs {
-			if match(pattern, ref) {
+			if pushpolicy.Match(pattern, ref) {
 				names = append(names, name)
 				for _, w := range g.Writers {
 					if !contains(who, w) {
@@ -310,37 +281,6 @@ func grantList(names []string) string {
 		return "the grant " + names[0]
 	}
 	return "the grants " + strings.Join(names, ", ")
-}
-
-// match reports whether ref matches a declared pattern. `*` matches any
-// run of characters, path separators included, which is how the patterns
-// are documented (schema/valley.cue). Every other character matches
-// itself: the schema refuses the characters a shell glob would read
-// specially, because git refuses them in a refname too.
-func match(pattern, ref string) bool {
-	p, r := 0, 0
-	star, resume := -1, 0
-	for r < len(ref) {
-		switch {
-		case p < len(pattern) && pattern[p] == '*':
-			star, resume = p, r
-			p++
-		case p < len(pattern) && pattern[p] == ref[r]:
-			p++
-			r++
-		case star >= 0:
-			// Let the last star take one more character, and try the
-			// rest of the pattern again from there.
-			resume++
-			p, r = star+1, resume
-		default:
-			return false
-		}
-	}
-	for p < len(pattern) && pattern[p] == '*' {
-		p++
-	}
-	return p == len(pattern)
 }
 
 // namespace is the part of a refname a refusal names: refs/<kind>/, or

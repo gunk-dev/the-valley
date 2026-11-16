@@ -19,7 +19,7 @@ import (
 	"strings"
 
 	"the-valley/change"
-	"the-valley/exactjson"
+	"the-valley/pushpolicy"
 )
 
 const usage = `usage: valleyhook pre-receive [flags] < ref updates
@@ -207,9 +207,11 @@ func preReceive(args []string, stdin io.Reader, stderr io.Writer, repo repositor
 	// so a policy that cannot be read refuses the push as a whole rather
 	// than part of the way through it.
 	p := policy{project: *project, grants: grants{}, repo: repo}
-	if err := readPolicy(*policyFile, &p.push); err != nil {
+	push, err := pushpolicy.Read(*policyFile)
+	if err != nil {
 		return failClosed(stderr, err)
 	}
+	p.push = push
 	for _, path := range grantFiles {
 		if err := p.grants.read(path); err != nil {
 			return failClosed(stderr, err)
@@ -344,26 +346,4 @@ func runThen(path string, input []byte, stderr io.Writer) int {
 func failClosed(stderr io.Writer, err error) int {
 	fmt.Fprintf(stderr, "valley: the push is refused because its policy could not be applied: %v\n", err)
 	return 1
-}
-
-// readPolicy reads the project's push policy. A field this program does
-// not know refuses the read: the policy is exported from the schema this
-// program ships beside, so an unknown field means the two have drifted
-// apart, and the field could be a restriction the hook would otherwise
-// skip.
-//
-// Every key must spell its field exactly, and no key may appear twice in
-// one object. encoding/json alone matches a key to a field without regard
-// to case. A host declaration that reopens a schema definition could then
-// name a writer under a field spelled another way, beside the writers a
-// reviewer reads.
-func readPolicy(path string, p *pushPolicy) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	if err := exactjson.Decode(data, p); err != nil {
-		return fmt.Errorf("%s: %w", path, err)
-	}
-	return nil
 }

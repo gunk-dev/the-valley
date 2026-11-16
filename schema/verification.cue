@@ -97,9 +97,25 @@ import "list"
 	// A floor's concrete `false` would stop a project from writing `true`,
 	// so a floor writes `true` or leaves the field out.
 	//
-	// Both levels are optional, so a policy that leaves the requirement out
-	// exports no `approval` field, and the field adds nothing to its digest.
-	approval?: {hardware?: bool}
+	// approval.required records whether policy requires a change to carry
+	// a signed approval to land: `true` records the requirement, and left
+	// out, the policy records none. The composed policy reader reads it, and
+	// no landing decision does.
+	//
+	// Its layers compose the way approval.hardware's do: the floor's
+	// concrete `true` cannot be dropped, a template's `bool | *true` is a
+	// default a project may turn off, and a project may always write
+	// `true`.
+	//
+	// Every field of `approval` is optional, so a policy that writes none
+	// exports no `approval` field, and the fields add nothing to its digest.
+	// A field written out is in the export, `false` included: a policy
+	// writing `required: false` digests differently from one leaving it
+	// out, though neither records a requirement.
+	approval?: {
+		hardware?: bool
+		required?: bool
+	}
 }
 
 // #Class is one path class and what touching it requires.

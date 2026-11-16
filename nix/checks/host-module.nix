@@ -702,6 +702,27 @@ let
     || host.config.systemd.paths.valley-signers.pathConfig.PathChanged or null != inputs
     || !(builtins.elem "multi-user.target" host.config.systemd.paths.valley-signers.wantedBy);
 
+  # Each controller takes the approval inputs as paths: the approval
+  # signers files the compiler writes, or none on a host that compiles no
+  # registry, and its project's push policy, which its environment file
+  # names. module-eval.sh follows that file to the one the hook reads.
+  controllerApprovalInputsMisrendered = lib.any (
+    host:
+    let
+      controller = host.config.systemd.services."valley-integrator@".serviceConfig.ExecStart;
+      compile = host.config.systemd.services.valley-identity.serviceConfig.ExecStart or "";
+      flags = [
+        "approval-signers"
+        "approval-signers-hardware"
+      ];
+    in
+    map (f: flagValue f controller) flags != map (f: flagValue f compile) flags
+    || !(lib.hasInfix "--push-policy=\${VALLEY_PUSH_POLICY}" controller)
+  ) [
+    integratorHost
+    identityHost
+  ];
+
   # A project that retains its change records hands the hook that setting,
   # and one that does not leaves it out, which the hook reads as false.
   retentionMisrendered =
@@ -1258,6 +1279,8 @@ in
       throw "valley module-eval: a signers publication rendered for a host whose integrator is off — there is no transfer statement to verify"
     else if signersUnpublished then
       throw "valley module-eval: the signers publisher must publish the controllers' own signers file and signing name into the instance repository, as the git user, writing nothing else, after valley-init and the compilation, at boot and whenever a file it publishes from changes"
+    else if controllerApprovalInputsMisrendered then
+      throw "valley module-eval: each controller must be handed the approval signers files the compiler writes, or none on a host that compiles no registry, and its project's push policy through its environment file"
     else if retentionMisrendered then
       throw "valley module-eval: a project that retains its change records must hand the hook retainChangeRecords = true, and one that does not must leave the key out"
     else if signerProjectsMisrendered then
@@ -1301,6 +1324,10 @@ in
         protectedShell = protectedHost.config.users.users.git.shell;
         integratorUnit = integratorHost.config.systemd.units."valley-integrator@.service".text;
         integratorInit = integratorHost.config.systemd.services.valley-init.script;
+        integratorGuardedEnv = lib.removePrefix "-" (
+          lib.replaceStrings [ "%i" ] [ "guarded" ]
+            integratorHost.config.systemd.services."valley-integrator@".serviceConfig.EnvironmentFile
+        );
         publishUnit = host.config.systemd.units."valley-publish@.service".text;
         identityInit = identityHost.config.systemd.services.valley-init.script;
         defaultWorkerController =

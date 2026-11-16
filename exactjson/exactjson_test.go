@@ -3,6 +3,7 @@ package exactjson
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -219,22 +220,22 @@ func TestAContainerOfTheWrongKindIsRefused(t *testing.T) {
 	for _, c := range []struct{ name, data, says string }{
 		{"an array for the document",
 			`[{"genesis": "alice"}]`,
-			`the document is an array, and exactjson.doc holds no array`},
+			`the document is an array, where an object belongs`},
 		{"an array for a map",
 			`{"principals": [{"keys": []}]}`,
-			`principals is an array, and map[string]exactjson.principal holds no array`},
+			`principals is an array, where an object belongs`},
 		{"an object for a string",
 			`{"genesis": {"Genesis": "alice"}}`,
-			`genesis is an object, and string holds no object`},
+			`genesis is an object, where a string belongs`},
 		{"an object for a slice",
 			`{"principals": {"alice": {"keys": {"public": "k1"}}}}`,
-			`principals["alice"].keys is an object, and []exactjson.key holds no object`},
+			`principals["alice"].keys is an object, where an array belongs`},
 		{"an array for a number",
 			`{"count": [1]}`,
-			`count is an array, and int64 holds no array`},
+			`count is an array, where a whole number belongs`},
 		{"an array behind a pointer",
 			`{"principals": {"alice": {"keys": [{"public": "k1", "proof": []}]}}}`,
-			`principals["alice"].keys[0].proof is an array, and exactjson.proof holds no array`},
+			`principals["alice"].keys[0].proof is an array, where an object belongs`},
 	} {
 		var d doc
 		if err := Decode([]byte(c.data), &d); err == nil || err.Error() != c.says {
@@ -242,6 +243,31 @@ func TestAContainerOfTheWrongKindIsRefused(t *testing.T) {
 		}
 		if err := json.Unmarshal([]byte(c.data), &doc{}); err == nil {
 			t.Errorf("%s: encoding/json reads the document", c.name)
+		}
+	}
+}
+
+// A value of the wrong kind where a string, a number, a boolean or the
+// document belongs is refused saying what was written and what belongs
+// there, in words. No Go type is named, so the text stays the same when a
+// type is renamed or moved.
+func TestAValueOfTheWrongKindIsRefusedInWords(t *testing.T) {
+	for _, c := range []struct{ name, data, says string }{
+		{"a number for a string", `{"genesis": 1}`, `genesis is a number, where a string belongs`},
+		{"a boolean for a string", `{"principals": {"alice": {"keys": [{"public": true}]}}}`,
+			`principals["alice"].keys[0].public is a boolean, where a string belongs`},
+		{"a string for a number", `{"count": "1"}`, `count is a string, where a whole number belongs`},
+		{"a fraction for a whole number", `{"count": 1.5}`, `count is the number 1.5, where a whole number belongs`},
+		{"a string for the document", `"alice"`, `the document is a string, where an object belongs`},
+	} {
+		var d doc
+		err := Decode([]byte(c.data), &d)
+		if err == nil || err.Error() != c.says {
+			t.Errorf("%s: Decode read %+v, %v, not %q", c.name, d, err, c.says)
+		}
+		var mismatch *json.UnmarshalTypeError
+		if !errors.As(err, &mismatch) {
+			t.Errorf("%s: encoding/json's error is not beneath %v", c.name, err)
 		}
 	}
 }
@@ -295,9 +321,9 @@ func TestDeepBracketsAreRefusedEarly(t *testing.T) {
 		v                any
 	}{
 		{"a struct", brackets,
-			`the document is an array, and exactjson.doc holds no array`, &doc{}},
+			`the document is an array, where an object belongs`, &doc{}},
 		{"a slice of structs", brackets,
-			`[0] is an array, and exactjson.doc holds no array`, &[]doc{}},
+			`[0] is an array, where an object belongs`, &[]doc{}},
 		{"an interface", brackets, deep, new(any)},
 		{"a raw value", brackets, deep, &json.RawMessage{}},
 		{"a raw value in a struct", `{"derived": ` + brackets + `}`, deep, &doc{}},

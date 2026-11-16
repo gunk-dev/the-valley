@@ -56,6 +56,16 @@ The two approval signers files hold the keys whose signed approvals
 count. They are written as the note format's verifier keys, and each line
 is named by the principal who approves with its key. No gate reads them.
 
+Each approval signers file opens with one line naming what it renders:
+
+  # valley-approval-authority-v1 ref=REF commit=OID day=YYYY-MM-DD
+
+REF is --ref, OID is the commit REF resolved to, which every document was
+read from, and the day is the one expiry was judged on: --now, or today
+in UTC. Every reader of verifier keys reads the line as a comment. The
+signers publication leaves it out, so a compilation that changes only the
+stamp changes nothing published.
+
 approval-signers lists every key of every unexpired human holding the
 approve grant. approval-signers-hardware lists the keys from it whose
 entry carries a YubiKey attestation that verifies and whose touch policy

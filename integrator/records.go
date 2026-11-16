@@ -89,6 +89,10 @@ type recordIndex struct {
 	byHead map[string][]indexed
 	byRef  map[string]*change.Record
 
+	// observed is the commit each ref under the namespace held when the
+	// index read it, a record that does not read included.
+	observed map[string]string
+
 	// unreadable is each ref under the namespace that holds no record the
 	// shared parser accepts. A record that does not read names no head the
 	// integrator can see, so it refuses nothing, and a head it names can
@@ -124,8 +128,9 @@ func (in *integrator) readRecords() (*recordIndex, error) {
 	if err != nil {
 		return nil, err
 	}
-	idx := &recordIndex{byHead: map[string][]indexed{}, byRef: map[string]*change.Record{}}
+	idx := &recordIndex{byHead: map[string][]indexed{}, byRef: map[string]*change.Record{}, observed: map[string]string{}}
 	for i, ref := range refs {
+		idx.observed[ref] = commits[i]
 		if errs[i] != nil {
 			idx.unreadable = append(idx.unreadable, unreadable{ref: ref, commit: commits[i], why: errs[i].Error()})
 			continue

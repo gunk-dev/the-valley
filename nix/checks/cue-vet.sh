@@ -174,9 +174,10 @@ template-default-declined false
 no-requirement absent
 EOF
 
-# The hardware requirements the schema must reject, and the field each
-# rejection must name: a project dropping the floor's requirement, a field
-# `approval` does not have, and a requirement that is not a boolean.
+# The approval requirements the schema must reject, and the field each
+# rejection must name: a project dropping the floor's hardware or approval
+# requirement, a field `approval` does not have, and a requirement that is
+# not a boolean.
 while read -r fixture names; do
   if cue vet -c "$verificationSchema" "$approval/rejected/$fixture.cue" \
     > "$fixture.err" 2>&1; then
@@ -192,6 +193,8 @@ done <<'EOF'
 project-drops-floor-hardware policy.approval.hardware: conflicting values false and true
 not-a-requirement policy.approval.touch: field not allowed
 not-a-bool policy.approval.hardware: conflicting values "yes" and bool
+project-drops-floor-required policy.approval.required: conflicting values false and true
+required-not-a-bool policy.approval.required: conflicting values "yes" and bool
 EOF
 
 # No control character reaches a string of the policy: a path pattern, a

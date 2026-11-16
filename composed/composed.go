@@ -6,8 +6,9 @@
 // deriver runs.
 //
 // Compose reads the check definitions the integrator reads, the
-// restacker's cap, whether an approval must be signed with a hardware key,
-// and the policy's digest. Read reads the whole policy the deriver
+// restacker's cap, whether the policy requires an approval to land and
+// whether an approval must be signed with a hardware key, and the policy's
+// digest. Read reads the whole policy the deriver
 // (../derive) derives required checks from: every class, the unclassified
 // set, and whether each requirement is mandatory.
 //
@@ -51,7 +52,17 @@ type Floor struct {
 	Ref  string // the ref whose tip is authoritative
 	Dir  string // the floor's directory in that tip's tree
 	Path string // a materialized layer, when no repository carries one
+
+	// NoLazyFetch reads the floor with git's lazy fetching off. In a
+	// partial clone, an object the repository does not hold then fails
+	// the read rather than being fetched from the promisor remote and
+	// written into the repository. A reader that must write nothing to
+	// the repository it reads sets it.
+	NoLazyFetch bool
 }
+
+// noLazyFetch is the environment that turns git's lazy fetching off.
+const noLazyFetch = "GIT_NO_LAZY_FETCH=1"
 
 // Floorless ends every refusal to find a floor. The floor is the minimum,
 // and a missing minimum reads equally as a reader pointed at the wrong
@@ -91,7 +102,11 @@ func (f Floor) Open(ctx context.Context, prefix string) (string, func(), error) 
 		}
 		at = oid
 	}
-	dir, found, done, err := readLayer(ctx, f.Repo, at, f.Dir, prefix)
+	var env []string
+	if f.NoLazyFetch {
+		env = []string{noLazyFetch}
+	}
+	dir, found, done, err := readLayer(ctx, f.Repo, at, f.Dir, prefix, env)
 	switch {
 	case err != nil:
 		return "", noop, err
@@ -114,7 +129,7 @@ func (f Floor) Open(ctx context.Context, prefix string) (string, func(), error) 
 // because cue is handed a directory of *.cue and has no spelling for "no
 // layer".
 func Project(ctx context.Context, repo, treeish, dir, prefix string) (string, string, func(), error) {
-	path, found, done, err := readLayer(ctx, repo, treeish, dir, prefix)
+	path, found, done, err := readLayer(ctx, repo, treeish, dir, prefix, nil)
 	if err != nil {
 		return "", "", func() {}, err
 	}
@@ -172,9 +187,9 @@ const (
 // such as naïve.cue, and the quoted name does not end in .cue, so that
 // document would be skipped. A materialized floor's glob finds it, and so
 // does this.
-func readLayer(ctx context.Context, repo, treeish, dir, prefix string) (string, int, func(), error) {
+func readLayer(ctx context.Context, repo, treeish, dir, prefix string, env []string) (string, int, func(), error) {
 	noop := func() {}
-	listing, err := git(ctx, repo, "--literal-pathspecs", "ls-tree", "--full-tree", "--name-only", "-z", "--end-of-options", treeish, dir+"/")
+	listing, err := gitEnv(ctx, repo, env, "--literal-pathspecs", "ls-tree", "--full-tree", "--name-only", "-z", "--end-of-options", treeish, dir+"/")
 	if err != nil {
 		if ctx.Err() != nil {
 			err = ctx.Err()
@@ -195,7 +210,7 @@ func readLayer(ctx context.Context, repo, treeish, dir, prefix string) (string, 
 			continue
 		}
 		name := path[strings.LastIndexByte(path, '/')+1:]
-		body, err := git(ctx, repo, "cat-file", "blob", treeish+":"+path)
+		body, err := gitEnv(ctx, repo, env, "cat-file", "blob", treeish+":"+path)
 		if err != nil {
 			done()
 			return "", absent, noop, fmt.Errorf("reading %s from %s at %s: %w", path, repo, treeish, err)
@@ -242,9 +257,14 @@ type Policy struct {
 	// field out does not require a hardware key.
 	HardwareApproval bool
 
+	// RequiredApproval is approval.required: whether the policy requires a
+	// change to carry a signed approval to land. A policy that leaves the
+	// field out records no requirement. No landing decision reads it.
+	RequiredApproval bool
+
 	// Digest is the SHA-256 of the whole export, so everything the policy
 	// composes is in it: every check, every class's paths, requirements and
-	// carry mode, the restacker's cap, and the hardware requirement.
+	// carry mode, the restacker's cap, and the approval requirements.
 	Digest string
 }
 
@@ -268,8 +288,19 @@ func compose(ctx context.Context, cue string, docs []string) (*Policy, []byte, e
 	if err != nil {
 		return nil, nil, fmt.Errorf("composing the policy: %w", err)
 	}
+	pol, err := readExport(out)
+	if err != nil {
+		return nil, nil, err
+	}
+	return pol, out, nil
+}
+
+// readExport reads the policy from its export, as cue wrote it. A field
+// the export leaves out reads as its zero value, and the digest is of the
+// export's bytes exactly.
+func readExport(out []byte) (*Policy, error) {
 	if err := exported.check(out); err != nil {
-		return nil, nil, fmt.Errorf("reading the composed policy: %w", err)
+		return nil, fmt.Errorf("reading the composed policy: %w", err)
 	}
 	var read struct {
 		Checks  map[string]Check `json:"checks"`
@@ -278,18 +309,20 @@ func compose(ctx context.Context, cue string, docs []string) (*Policy, []byte, e
 		} `json:"restack"`
 		Approval struct {
 			Hardware bool `json:"hardware"`
+			Required bool `json:"required"`
 		} `json:"approval"`
 	}
 	if err := json.Unmarshal(out, &read); err != nil {
-		return nil, nil, fmt.Errorf("reading the composed policy: %w", err)
+		return nil, fmt.Errorf("reading the composed policy: %w", err)
 	}
 	sum := sha256.Sum256(out)
 	return &Policy{
 		Checks:               read.Checks,
 		MaxAutomaticVersions: read.Restack.MaxAutomaticVersions,
 		HardwareApproval:     read.Approval.Hardware,
+		RequiredApproval:     read.Approval.Required,
 		Digest:               hex.EncodeToString(sum[:]),
-	}, out, nil
+	}, nil
 }
 
 // shape is what the reader expects of one value of the export: its kind,
@@ -327,7 +360,7 @@ var (
 		}}},
 		"unclassified": set,
 		"restack":      {kind: "object", fields: map[string]shape{"maxAutomaticVersions": number}},
-		"approval":     {kind: "object", fields: map[string]shape{"hardware": flag}},
+		"approval":     {kind: "object", fields: map[string]shape{"hardware": flag, "required": flag}},
 	}}
 )
 
@@ -503,8 +536,16 @@ func command(ctx context.Context, name string, args ...string) *exec.Cmd {
 }
 
 func git(ctx context.Context, repo string, args ...string) (string, error) {
+	return gitEnv(ctx, repo, nil, args...)
+}
+
+// gitEnv is git with env added to the environment it inherits.
+func gitEnv(ctx context.Context, repo string, env []string, args ...string) (string, error) {
 	cmd := command(ctx, "git", args...)
 	cmd.Dir = repo
+	if env != nil {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {

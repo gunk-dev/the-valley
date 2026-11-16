@@ -14,8 +14,16 @@ import (
 // into the error, because a git failure that does not say what git said is
 // a failure the reader has to reproduce by hand.
 func git(repo string, args ...string) (string, error) {
+	return gitIn(repo, nil, args...)
+}
+
+// gitIn is git with env added to the environment it inherits.
+func gitIn(repo string, env []string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = repo
+	if env != nil {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb

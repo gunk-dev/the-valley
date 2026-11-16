@@ -114,6 +114,17 @@ flags:
                       only). A pass starts soon after a writer creates
                       DIR/due, and once more after any pass that lands
                       something; see below
+  --approval-signers F
+                      the approval signers file the identity compiler
+                      writes. The controller takes the path and reads
+                      nothing from it; a file that is not there yet is
+                      taken all the same
+  --approval-signers-hardware F
+                      the hardware approval signers file the identity
+                      compiler writes, taken the same way. A controller
+                      given one absolute path for both refuses to start
+  --push-policy F     the project's push policy, the file the pre-receive
+                      hook reads, taken the same way
   --system SYSTEM     flake system for closure recomputation
   --interval D        watch: how long to wait after a pass before the next,
                       when nothing starts one sooner (default 15s)
@@ -218,6 +229,10 @@ type integrator struct {
 	wake         string // the check worker's wake directory, or empty
 	system       string
 
+	// approval holds the paths of the approval inputs. No pass reads
+	// them.
+	approval approvalInputs
+
 	// floorReaders are the wake directories of the controllers that read
 	// the floor this controller lands, marked after a landing on the
 	// floor's ref (bus.go). Empty for every controller but the instance
@@ -294,6 +309,9 @@ func run(args []string, loop bool) error {
 	var floorReaders dirList
 	fs.Var(&floorReaders, "wake-floor-reader", "a floor-reading controller's wake directory, marked due after each floor landing")
 	wokenBy := fs.String("woken-by", "", "watch: this controller's own wake directory")
+	approvalSigners := fs.String("approval-signers", "", "the approval signers file the identity compiler writes")
+	approvalHardware := fs.String("approval-signers-hardware", "", "the hardware approval signers file the identity compiler writes")
+	pushPolicy := fs.String("push-policy", "", "the project's push policy, as the pre-receive hook reads it")
 	system := fs.String("system", "", "flake system")
 	interval := fs.Duration("interval", 15*time.Second, "how long to wait between passes")
 	now := fs.String("now", "", "judge as at this instant")
@@ -374,6 +392,9 @@ func run(args []string, loop bool) error {
 	if in.project == "" {
 		in.project = projectName(in.repo)
 	}
+	if in.approval, err = newApprovalInputs(*approvalSigners, *approvalHardware, *pushPolicy); err != nil {
+		return err
+	}
 	if in.signerProjects, in.signerProjectsData, err = readSignerProjects(*signerProjects, in.signerName); err != nil {
 		return err
 	}
@@ -448,6 +469,33 @@ func serve(repo string, sweep func(string), loop func(owned func() error) error)
 	defer owner.Close()
 	sweep(repo)
 	return loop(owner.check)
+}
+
+// approvalInputs are the paths of the files that say who may approve and
+// how the project's refs take pushes: the two approval signers files the
+// identity compiler writes, and the project's push policy as the
+// pre-receive hook reads it. Each is absolute, or "" when it is not given.
+type approvalInputs struct {
+	signers, hardware, pushPolicy string
+}
+
+// newApprovalInputs takes the three paths without opening any of them, so
+// a file not written yet is taken as well as one that is. The two signers
+// files must be two files: one never stands in for the other.
+func newApprovalInputs(signers, hardware, pushPolicy string) (approvalInputs, error) {
+	a := approvalInputs{}
+	for _, p := range []struct {
+		into  *string
+		value string
+	}{{&a.signers, signers}, {&a.hardware, hardware}, {&a.pushPolicy, pushPolicy}} {
+		if p.value != "" {
+			*p.into = abs(p.value)
+		}
+	}
+	if a.signers != "" && a.signers == a.hardware {
+		return approvalInputs{}, fmt.Errorf("--approval-signers and --approval-signers-hardware both name %s: they are two files, and one never stands in for the other", a.signers)
+	}
+	return a, nil
 }
 
 // dirList is a flag given once per directory.

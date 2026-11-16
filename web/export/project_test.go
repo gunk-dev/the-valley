@@ -453,10 +453,10 @@ func TestDecodeIsStrict(t *testing.T) {
 			[]byte(`"former_names":["App"]`), 1),
 			`the web name of project app and former name 0 of project app are both "App"`},
 		{"brackets in place of the document", []byte(brackets),
-			`export.json: the document is an array, and export.Export holds no array`},
+			`export.json: the document is an array, where an object belongs`},
 		{"brackets in place of an alias", bytes.Replace(f.ExportJSON, []byte(`"aliases":["app"]`),
 			[]byte(`"aliases":[`+brackets+`]`), 1),
-			`export.json: projects[0].aliases[0] is an array, and string holds no array`},
+			`export.json: projects[0].aliases[0] is an array, where a string belongs`},
 	} {
 		if _, err := export.Decode(c.data); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("Decode of %s gave %v, want an error saying %q", c.name, err, c.want)

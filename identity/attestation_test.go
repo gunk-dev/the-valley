@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"the-valley/approval"
 	"the-valley/note"
 )
 
@@ -563,6 +564,48 @@ func TestApprovalFilesRenderTheSameWhateverTheOrder(t *testing.T) {
 	}
 	if !bytes.Equal(first.approvalSigners, second.approvalSigners) || !bytes.Equal(first.approvalHardware, second.approvalHardware) {
 		t.Error("reordering founder's keys changed the approval files")
+	}
+}
+
+// Each approval signers file is written opening with the stamp of the
+// commit the registry was read from and the day it was judged on, --now's
+// included, and then the render byte for byte. The same render and source
+// write the same bytes, and a source the stamp cannot name writes nothing.
+func TestApprovalFilesNameTheCommitAndDayTheyRender(t *testing.T) {
+	pki := newTestPKI(t)
+	trustBoth(t, pki)
+	on := day(t, "2026-10-22")
+	a, err := render(approvalRegistry(t, pki), on, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := strings.Repeat("5e", 20)
+	source := approval.Authority{Ref: "refs/heads/main", Commit: commit, Day: on}
+	approvers, hardware, err := stampApproval(a, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := "# valley-approval-authority-v1 ref=refs/heads/main commit=" + commit + " day=2026-10-22\n"
+	for _, c := range []struct {
+		name          string
+		got, rendered []byte
+	}{
+		{"approval-signers", approvers, a.approvalSigners},
+		{"approval-signers-hardware", hardware, a.approvalHardware},
+	} {
+		if string(c.got) != stamp+string(c.rendered) {
+			t.Errorf("%s is written as\n%s\nnot the stamp and the render", c.name, c.got)
+		}
+		if got, err := approval.ReadAuthority(bytes.NewReader(c.got)); err != nil || got != source {
+			t.Errorf("%s's stamp reads as %+v, %v", c.name, got, err)
+		}
+	}
+	again, _, err := stampApproval(a, source)
+	if err != nil || !bytes.Equal(again, approvers) {
+		t.Errorf("stamping one render twice wrote different files (%v)", err)
+	}
+	if _, _, err := stampApproval(a, approval.Authority{Ref: "main", Commit: commit, Day: on}); err == nil {
+		t.Error("a short ref name was stamped")
 	}
 }
 

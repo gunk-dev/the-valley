@@ -29,6 +29,7 @@ project: {
 		"knots-e2e",
 		"note-unit",
 		"exactjson-unit",
+		"pushpolicy-unit",
 		"change-unit",
 		"knot-unit",
 		"knot-agree",
@@ -117,13 +118,17 @@ project: {
 	// its package built again with its tests, which runs `go test`. The
 	// package itself runs no tests (nix/packages.nix).
 
-	// The pre-receive hook and the git user's login shell. protect-e2e
-	// pushes to bare repositories wired with the hook a host renders,
-	// valley-ready pushes change records through that hook, and knots-e2e
-	// pushes the plan graph through it.
+	// The pre-receive hook and the git user's login shell, and the push
+	// policy reader the hook decides every push with (pushpolicy/), which
+	// is the hook's code wherever it lives. protect-e2e pushes to bare
+	// repositories wired with the hook a host renders, valley-ready pushes
+	// change records through that hook, and knots-e2e pushes the plan graph
+	// through it.
 	classes: valleyhook: {
 		paths: "valleyhook/**":      true
+		paths: "pushpolicy/**":      true
 		requires: "valleyhook-unit": true
+		requires: "pushpolicy-unit": true
 		requires: "protect-e2e":     true
 		requires: "valley-ready":    true
 		requires: "knots-e2e":       true
@@ -240,13 +245,14 @@ project: {
 		requires: "restack-e2e":        true
 	}
 
-	// The strict JSON reader. The hook reads its push policy with it, the
+	// The strict JSON reader. The push policy reader reads with it, the
 	// identity compiler its registry, read access a policy/read, and the
 	// web export, publisher, server and receiver what they are sent, so a
 	// change to it requires their unit tests as well as its own.
 	classes: exactjson: {
 		paths: "exactjson/**":          true
 		requires: "exactjson-unit":     true
+		requires: "pushpolicy-unit":    true
 		requires: "valleyhook-unit":    true
 		requires: "identity-unit":      true
 		requires: "readaccess-unit":    true
@@ -255,11 +261,14 @@ project: {
 		requires: "web-receiver-unit":  true
 	}
 
-	// Approval statements, their signing and verifying, and the PIV
-	// session signer.
+	// Approval statements, their signing and verifying, the PIV session
+	// signer, and the authority stamp, which the identity compiler writes
+	// and the signers publisher leaves out.
 	classes: approval: {
-		paths: "approval/**":      true
-		requires: "approval-unit": true
+		paths: "approval/**":        true
+		requires: "approval-unit":   true
+		requires: "identity-unit":   true
+		requires: "integrator-unit": true
 	}
 
 	// The identity registry compiler, and the registries it is driven over.
@@ -647,7 +656,7 @@ project: {
 		"web.nix": ["web-unit", "web-server-unit", "web-reader-state-crash", "web-receiver-unit", "web-image", "readaccess-unit"]
 		"schema.nix": ["cue-vet", "attest-schema", "identity-schema"]
 		"knowledge.nix": ["knowledge-lint-consumer", "knowledge-lint-rejects", "prose-format"]
-		"hooks.nix": ["valleyhook-unit", "change-unit", "mirror-e2e", "protect-e2e", "init-e2e", "bus-e2e"]
+		"hooks.nix": ["valleyhook-unit", "change-unit", "pushpolicy-unit", "mirror-e2e", "protect-e2e", "init-e2e", "bus-e2e"]
 		"host-module.nix": ["module-eval"]
 		"fail-nth.sh": ["policy-deriver", "valley-request"]
 		"review-notes-editor.sh": ["review-notes"]

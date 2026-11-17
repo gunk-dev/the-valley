@@ -52,6 +52,14 @@ instructions.
   and quality, while checks catch bugs without re-approval.
 - Explain trust changes as who can do what and what stops whom; dense prose is a design smell.
 
+## Go dependencies
+
+Go modules in this repository use only the Go standard library and modules in this repository. Only
+`flow/`, the module `the-valley/flow`, may import third-party Go modules. No other module imports
+from `flow/`, directly or transitively. Nothing a host runs with authority imports from `flow/`, and
+the `valley` client keeps this boundary because it signs approvals. The `go-dependencies` check
+enforces the import rules. A wider exception is a separate decision.
+
 ## A change lands as one commit
 
 Each change lands as one commit keeping its head message, so follow-up rounds amend it or end with a

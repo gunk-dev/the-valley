@@ -18,6 +18,10 @@
 #                    its validator held to the schema and the lint
 #   delta.nix        delta-unit — valley-delta-v1, its conformance vectors,
 #                    and the trees it reads and refuses
+#   go-dependencies.nix
+#                    go-dependencies — every Go module's imports and
+#                    go.mod held to the standard library and this
+#                    repository's modules, with flow/ the one exception
 #   derive.nix       derive-unit, composed-unit — the Go deriver of
 #                    required checks, and the composed-policy reader's
 #                    layer reads
@@ -175,6 +179,7 @@ import ./checks/host-module.nix args
 // import ./checks/knowledge.nix args
 // import ./checks/knot.nix args
 // import ./checks/delta.nix args
+// import ./checks/go-dependencies.nix args
 // import ./checks/derive.nix args
 // import ./checks/review.nix args
 // import ./checks/attest.nix args

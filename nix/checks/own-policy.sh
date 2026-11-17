@@ -102,6 +102,20 @@ if grep -qx prose-format <<<"$got"; then
   exit 1
 fi
 
+# A change adding only an entry named vendor, such as a symlink, requires
+# go-dependencies: Go vendors a module's packages from it with no change to
+# a go.mod or a .go file.
+git checkout --quiet -B vendor "$base"
+ln -s ../docs valleyhook/vendor
+git add valleyhook/vendor
+git commit --quiet -m vendor
+got="$(required)"
+grep -qx go-dependencies <<<"$got" || {
+  echo "own-policy: a change adding a vendor symlink must require go-dependencies, got:" >&2
+  echo "$got" >&2
+  exit 1
+}
+
 # A check's own files require that check. Every file under nix/checks/
 # named after a flake check requires that check, and every other script
 # there requires some check the nix class does not. A script that matched

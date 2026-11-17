@@ -72,6 +72,7 @@ project: {
 		"valley-self-update",
 		"policy-deriver",
 		"own-policy",
+		"go-dependencies",
 		"module-eval",
 		"cue-vet",
 		"attest-schema",
@@ -618,6 +619,23 @@ project: {
 		requires: "restack-host-e2e":          true
 		requires: "valley-changes":            true
 		requires: "valley-walk":               true
+	}
+
+	// The Go dependency boundary (AGENTS.md): Go source, module and
+	// workspace manifests, vendor directories and anything named vendor,
+	// which Go vendors from even as a symlink, and the checker's own
+	// module, which its check-go-dependencies class below covers only as a
+	// script and a definition.
+	classes: "go-dependencies": {
+		paths: "**/*.go":                               true
+		paths: "**/go.mod":                             true
+		paths: "**/go.sum":                             true
+		paths: "**/go.work":                            true
+		paths: "**/go.work.sum":                        true
+		paths: "**/vendor":                             true
+		paths: "**/vendor/**":                          true
+		paths: "nix/checks/go-dependencies-checker/**": true
+		requires: "go-dependencies":                    true
 	}
 
 	// A check's own files require that check: its script,

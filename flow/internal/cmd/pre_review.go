@@ -1,0 +1,290 @@
+package cmd
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+	"time"
+
+	"the-valley/flow/internal/backend"
+	"the-valley/flow/internal/config"
+	"the-valley/flow/internal/event"
+	"the-valley/flow/internal/project"
+	"the-valley/flow/internal/review"
+	"the-valley/flow/internal/stream"
+	"github.com/spf13/cobra"
+)
+
+var preReviewCmd = &cobra.Command{
+	Use:    "_pre-review",
+	Short:  "Run pre-PR linting, peer review and prose rewrites",
+	Hidden: true,
+	RunE: func(cmd *cobra.Command, args []string) (err error) {
+		dir, _ := cmd.Flags().GetString("dir")
+		if dir == "" {
+			var err error
+			dir, err = os.Getwd()
+			if err != nil {
+				return fmt.Errorf("getting working directory: %w", err)
+			}
+		}
+
+		cfg, err := config.Load(dir)
+		if err != nil {
+			return fmt.Errorf("loading config: %w", err)
+		}
+
+		// forbidden_terms is host config, so a repo's pre_review.enabled
+		// doesn't turn its check off.
+		forbidden := forbiddenTermsFor(cfg, dir, "")
+		if !cfg.PreReviewEnabled() && len(forbidden) == 0 {
+			fmt.Println("Pre-review is disabled in config.")
+			return nil
+		}
+
+		check := startPreReviewCheck()
+		defer func() {
+			if err != nil {
+				check.finish(false, map[string]interface{}{"error": errorLine(err)})
+			}
+		}()
+
+		fmt.Println("=== Pre-PR Review ===")
+		fmt.Println()
+
+		// Forbidden terms go first, so a diff that adds one is never sent
+		// to the peer reviewer, which then reviews the diff they checked.
+		reviewBase := cfg.DefaultBranch
+		if len(forbidden) > 0 {
+			reviewBase = defaultBranchRef(dir, cfg.DefaultBranch)
+			fmt.Println("Forbidden terms:")
+			hits, err := scanForbiddenTerms(dir, reviewBase, "HEAD", forbidden)
+			if err != nil {
+				return fmt.Errorf("checking forbidden terms: %w", err)
+			}
+			printForbiddenTerms(os.Stdout, hits)
+			fmt.Println()
+			if len(hits) > 0 {
+				check.finish(false, map[string]interface{}{"forbidden_terms": len(hits)})
+				fmt.Println("Forbidden terms added — PR creation should be blocked.")
+				os.Exit(1)
+			}
+			if !cfg.PreReviewEnabled() {
+				check.finish(true, nil)
+				fmt.Println("Pre-review is disabled in config; only forbidden terms were checked.")
+				return nil
+			}
+		}
+
+		// Run linters
+		linters := cfg.PreReviewLinters()
+		lintFailed := false
+		if len(linters) > 0 {
+			fmt.Println("Linters:")
+			results, err := review.RunLinters(dir, linters)
+			if err != nil {
+				return fmt.Errorf("running linters: %w", err)
+			}
+			for _, r := range results {
+				if r.Passed {
+					fmt.Printf("  ✓ %s\n", r.Command)
+				} else {
+					lintFailed = true
+					// Count issues from output lines
+					lines := strings.Split(strings.TrimSpace(r.Output), "\n")
+					count := 0
+					for _, l := range lines {
+						if strings.TrimSpace(l) != "" {
+							count++
+						}
+					}
+					fmt.Printf("  ✗ %s (%d issues)\n", r.Command, count)
+					// Print up to 10 lines of output indented
+					for i, line := range lines {
+						if i >= 10 {
+							fmt.Printf("    ... and %d more\n", count-10)
+							break
+						}
+						if strings.TrimSpace(line) != "" {
+							fmt.Printf("    %s\n", line)
+						}
+					}
+				}
+			}
+			fmt.Println()
+		}
+
+		// Run peer review with a different model family than the worker's.
+		authorName := os.Getenv("KLAUS_BACKEND")
+		if authorName == "" {
+			selected, err := resolveAgentBackend(cmd, cfg)
+			if err != nil {
+				return err
+			}
+			authorName = string(selected)
+		}
+		author, err := backend.Parse(authorName)
+		if err != nil {
+			return err
+		}
+		kind, model, err := review.ChooseReviewer(author, cfg)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Peer Review (reviewer: %s; author: %s):\n", review.BackendModel(string(kind), model), author)
+		check.data["reviewer"] = string(kind)
+		check.data["lint_ms"] = time.Since(check.start).Milliseconds()
+		reviewStart := time.Now()
+		reg, _ := project.Load()
+		houseRules := loadHouseRules(cmd.Context(), dir, cfg, reg, cmd.ErrOrStderr()).Text
+		printProse := startProsePass(cmd.Context(), dir, cfg, author, houseRules)
+		result, err := review.ReviewDiff(dir, review.ReviewConfig{
+			Backend:      string(kind),
+			Model:        model,
+			MaxFixRounds: cfg.PreReviewMaxFixRounds(),
+			HouseRules:   houseRules,
+		}, reviewBase)
+		if err != nil {
+			printProse(os.Stdout)
+			return fmt.Errorf("running peer review: %w", err)
+		}
+		printFindings(os.Stdout, result.Findings)
+		fmt.Println()
+		printProse(os.Stdout)
+
+		// Determine if we should block
+		blockOn := cfg.PreReviewBlockOn()
+		blockSeverities := severitiesAtOrAbove(blockOn)
+		blockCount := 0
+		for _, f := range result.Findings {
+			if blockSeverities[f.Severity] {
+				blockCount++
+			}
+		}
+
+		// os.Exit skips deferred calls, so the check ends first.
+		check.finish(!lintFailed && blockCount == 0, map[string]interface{}{
+			"review_ms":   time.Since(reviewStart).Milliseconds(),
+			"findings":    len(result.Findings),
+			"blocking":    blockCount,
+			"lint_failed": lintFailed,
+		})
+
+		if lintFailed {
+			fmt.Println("Lint failures detected — PR creation should be blocked.")
+			os.Exit(1)
+		}
+
+		if blockCount > 0 {
+			label := "finding"
+			if blockCount > 1 {
+				label = "findings"
+			}
+			fmt.Printf("%d %s %s — PR creation should be blocked.\n", blockCount, blockOn+"+", label)
+			os.Exit(1)
+		}
+
+		fmt.Println("All checks passed.")
+		return nil
+	},
+}
+
+// preReviewCheck reports a _pre-review run as a check of the run whose pane
+// it runs in (runIDEnv): check:started when it starts, check:completed when
+// it finishes. On a sandbox host (runEventsEnv) it prints check:completed in
+// its output instead, for the pane's _format-stream to record. Outside a
+// run's pane it reports nothing.
+type preReviewCheck struct {
+	run     *paneRun
+	report  io.Writer // where a sandbox run's check is printed; nil otherwise
+	start   time.Time
+	data    map[string]interface{}
+	started bool
+	done    bool
+}
+
+func startPreReviewCheck() *preReviewCheck {
+	c := &preReviewCheck{start: time.Now()}
+	c.data = map[string]interface{}{"kind": event.CheckPreReview, "command": "klaus _pre-review", "source": "pre-review", "started_at": eventTime(c.start)}
+	if os.Getenv(runIDEnv) != "" && os.Getenv(runEventsEnv) == runEventsOutput {
+		c.report = os.Stdout
+		return c
+	}
+	c.run = currentPaneRun()
+	if c.run != nil && c.run.state != nil {
+		c.run.emit(event.CheckStarted, c.data)
+		c.started = true
+	}
+	return c
+}
+
+// finish emits check:completed, once, with extra added to the check's data.
+// A run launch hadn't saved yet when the check started gets both events now,
+// once launch saves it or, after paneRunSaveWait, under the run's ID alone.
+func (c *preReviewCheck) finish(success bool, extra map[string]interface{}) {
+	if c.done || c.run == nil && c.report == nil {
+		return
+	}
+	c.done = true
+	if c.run != nil && !c.started {
+		c.run.awaitState()
+		c.run.emit(event.CheckStarted, c.data)
+	}
+	end := time.Now()
+	data := map[string]interface{}{"ended_at": eventTime(end), "duration_ms": end.Sub(c.start).Milliseconds(), "success": success}
+	for k, v := range c.data {
+		data[k] = v
+	}
+	for k, v := range extra {
+		data[k] = v
+	}
+	if c.report != nil {
+		if line, err := json.Marshal(data); err == nil {
+			fmt.Fprintf(c.report, "%s%s\n", stream.ReportPrefix, line)
+		}
+		return
+	}
+	c.run.emit(event.CheckCompleted, data)
+}
+
+func printFindings(w io.Writer, findings []review.Finding) {
+	if len(findings) == 0 {
+		fmt.Fprintln(w, "  No issues found.")
+		return
+	}
+	for _, f := range findings {
+		sev := strings.ToUpper(f.Severity)
+		if f.Line > 0 {
+			fmt.Fprintf(w, "  %-8s %s:%d — %s\n", sev, f.File, f.Line, f.Description)
+		} else {
+			fmt.Fprintf(w, "  %-8s %s — %s\n", sev, f.File, f.Description)
+		}
+	}
+}
+
+// severitiesAtOrAbove returns a set of severity levels at or above the given level.
+func severitiesAtOrAbove(level string) map[string]bool {
+	order := []string{"low", "medium", "high", "critical"}
+	result := make(map[string]bool)
+	found := false
+	for _, s := range order {
+		if s == strings.ToLower(level) {
+			found = true
+		}
+		if found {
+			result[s] = true
+		}
+	}
+	// If level not recognized, block on critical only
+	if !found {
+		result["critical"] = true
+	}
+	return result
+}
+
+func init() {
+	preReviewCmd.Flags().String("dir", "", "Worktree directory to review (defaults to current directory)")
+	rootCmd.AddCommand(preReviewCmd)
+}

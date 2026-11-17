@@ -1,0 +1,397 @@
+package integration
+
+import (
+	"context"
+	"log/slog"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
+	"the-valley/flow/internal/run"
+	"the-valley/flow/internal/valley"
+)
+
+// ValleyChecker asks a valley where pushed runs' changes stand, and defers to
+// a GitChecker for the runs the valley doesn't place.
+//
+// A check runs `valley changes --all --json` once, for every repo the valley
+// serves, and only when finalize found that some run's repo delivers to a
+// valley (run.State.Valley), or a valley change is tracked (TracksChange). It places a run by repo, change ID and version
+// head: the run's version is the one whose head is the run's pushed SHA, in
+// the listed repo that is the run's own. A run whose repo klaus doesn't know
+// is never placed, and neither is any run in a repo the valley couldn't read
+// or whose change is in a state klaus doesn't know.
+// If valley fails or prints a schema klaus doesn't know, every run is judged
+// by git and the report says why (ValleyErr). The failure is logged at warn
+// level once per streak of failures, and the recovery once.
+//
+// Git can't settle a change finalize marked ready: a deleted branch says
+// nothing about a change the valley still holds as uncertain or rejected. For
+// such a run, git's Gone is Unknown.
+type ValleyChecker struct {
+	git    *GitChecker
+	logger *slog.Logger
+
+	mu      sync.Mutex
+	failing bool // the previous check failed: log the next failure only after a success
+}
+
+// NewValleyChecker returns a ValleyChecker that logs failed checks to logger
+// (slog.Default when nil).
+func NewValleyChecker(logger *slog.Logger) *ValleyChecker {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &ValleyChecker{git: NewGitChecker(logger), logger: logger}
+}
+
+// Check returns a result for every run that Applies, and the valley's view
+// of every change it lists.
+func (c *ValleyChecker) Check(ctx context.Context, runs []*run.State) Report {
+	dir, ok := valleyDir(runs)
+	if !ok {
+		return Report{Runs: c.judgeByGit(ctx, runs)}
+	}
+	start := time.Now()
+	changes, err := valley.List(ctx, dir)
+	c.note(dir, err, time.Since(start))
+	if err != nil {
+		return Report{Runs: c.judgeByGit(ctx, runs), Asked: true, ValleyErr: oneLine(err)}
+	}
+	for _, vr := range changes.Repos {
+		if e := vr.Err(); e != "" {
+			c.logger.Debug("valley couldn't read a repo; judging its runs by git", "repo", vr.Repo, "err", e)
+		}
+	}
+	out := make(map[string]Result)
+	var rest []*run.State
+	for _, s := range runs {
+		if r, ok := place(changes, s); ok {
+			out[s.ID] = r
+		} else {
+			rest = append(rest, s)
+		}
+	}
+	for id, r := range c.judgeByGit(ctx, rest) {
+		out[id] = r
+	}
+	return Report{Runs: out, Changes: activeVersions(changes), Listing: changes, Asked: true}
+}
+
+// note logs a check's outcome when it starts or ends a streak of failures.
+func (c *ValleyChecker) note(dir string, err error, took time.Duration) {
+	c.mu.Lock()
+	was := c.failing
+	c.failing = err != nil
+	c.mu.Unlock()
+	switch {
+	case err != nil && !was:
+		c.logger.Warn("valley check failed; judging runs by git", "dir", dir, "err", err, "took", took.Round(time.Millisecond))
+	case err == nil && was:
+		c.logger.Warn("valley check recovered", "dir", dir, "took", took.Round(time.Millisecond))
+	}
+}
+
+// oneLine is err's message on one line, without the "valley changes: "
+// prefix a valley.Error carries.
+func oneLine(err error) string {
+	msg := err.Error()
+	if ve, ok := err.(*valley.Error); ok {
+		msg = ve.Reason
+	}
+	return strings.Join(strings.Fields(msg), " ")
+}
+
+// judgeByGit asks the GitChecker about runs the valley didn't place. A run
+// finalize marked ready on a valley is never Gone, only Unknown: its change
+// may still need the operator, whatever became of its branch.
+func (c *ValleyChecker) judgeByGit(ctx context.Context, runs []*run.State) map[string]Result {
+	out := c.git.judge(ctx, runs)
+	for _, s := range runs {
+		if r, ok := out[s.ID]; ok && r.Verdict == Gone && RecordedChange(s) != nil {
+			out[s.ID] = Result{Verdict: Unknown}
+		}
+	}
+	return out
+}
+
+// valleyDir picks where to run valley: the clone of a run whose repo
+// delivers to a valley, or of a tracked valley change (TracksChange), or the
+// current directory when no such clone is there. ok is false when no run's
+// repo delivers to a valley and no change is tracked.
+func valleyDir(runs []*run.State) (dir string, ok bool) {
+	for _, s := range runs {
+		if !(Applies(s) || TracksChange(s)) || s.Valley == nil {
+			continue
+		}
+		ok = true
+		if s.CloneDir != nil && *s.CloneDir != "" {
+			if fi, err := os.Stat(*s.CloneDir); err == nil && fi.IsDir() {
+				return *s.CloneDir, true
+			}
+		}
+	}
+	return "", ok
+}
+
+// place finds a run's version among the valley's changes: in the run's repo,
+// a change with the run's change ID and a version whose head is the run's
+// pushed SHA. When several match, the one that is its change's active version
+// wins. ok is false when none does, when klaus doesn't know the run's repo,
+// or when the valley couldn't read that repo: records listed beside a read
+// error may be stale. A change in a state klaus doesn't know, from a later
+// valley, places nothing.
+func place(changes *valley.Changes, s *run.State) (Result, bool) {
+	repo := RepoName(s)
+	if !Applies(s) || s.ChangeID == "" || repo == "" {
+		return Result{}, false
+	}
+	var found Result
+	ok := false
+	for _, vr := range changes.Repos {
+		if vr.Repo != repo || vr.Err() != "" {
+			continue
+		}
+		for _, ch := range vr.Changes {
+			if ch.ChangeID != s.ChangeID || !knownState(ch.State) {
+				continue
+			}
+			v, match := versionAt(ch, *s.PushedSHA)
+			if !match {
+				continue
+			}
+			r := Result{Verdict: verdictOf(ch, v), Change: changeAt(vr.Repo, ch, v)}
+			if v.N == ch.Active {
+				return r, true
+			}
+			if !ok {
+				found, ok = r, true
+			}
+		}
+	}
+	return found, ok
+}
+
+// activeVersions is the valley's view of every change it lists in a repo it
+// could read and a state klaus knows: the change's active version, and what
+// the valley's record of it says (ListedChanges).
+func activeVersions(changes *valley.Changes) map[ChangeKey]Result {
+	out := make(map[ChangeKey]Result)
+	for k, ch := range ListedChanges(changes) {
+		v, _ := ActiveVersion(ch)
+		out[k] = Result{Verdict: verdictOf(ch, v), Change: changeAt(k.Repo, ch, v)}
+	}
+	return out
+}
+
+// ListedChanges is the valley's record of every change it lists in a repo
+// it could read and a state klaus knows, by change: the record that decides
+// where the change stands, whatever became of any one run's version. A
+// change whose active version isn't listed has none. Where a repo lists a
+// change ID more than once (under several targets), a withdrawn record
+// gives way to another.
+func ListedChanges(changes *valley.Changes) map[ChangeKey]valley.Change {
+	out := make(map[ChangeKey]valley.Change)
+	if changes == nil {
+		return out
+	}
+	for _, vr := range changes.Repos {
+		if vr.Err() != "" {
+			continue
+		}
+		for _, ch := range vr.Changes {
+			if !knownState(ch.State) {
+				continue
+			}
+			k := ChangeKey{Repo: vr.Repo, ChangeID: ch.ChangeID}
+			if prev, ok := out[k]; ok {
+				if v, _ := ActiveVersion(prev); verdictOf(prev, v) != Withdrawn {
+					continue
+				}
+			}
+			if _, ok := ActiveVersion(ch); ok {
+				out[k] = ch
+			}
+		}
+	}
+	return out
+}
+
+// ActiveVersion returns ch's active version; ok is false when it isn't
+// listed.
+func ActiveVersion(ch valley.Change) (valley.Version, bool) {
+	for _, v := range ch.Versions {
+		if v.N == ch.Active {
+			return v, true
+		}
+	}
+	return valley.Version{}, false
+}
+
+// changeAt is how the valley knows version v of change ch in repo.
+func changeAt(repo string, ch valley.Change, v valley.Version) *Change {
+	c := &Change{Repo: repo, ChangeID: ch.ChangeID, Handle: ch.Handle, Title: v.Title,
+		Version: v.N, Head: v.Head, Branch: v.Branch, Active: v.N == ch.Active, Checks: v.Checks}
+	if w, ok := LandedAs(ch, v); ok {
+		c.LandedAs, c.LandedCommit = w.N, w.Head
+		if w.LandedCommit != nil && *w.LandedCommit != "" {
+			c.LandedCommit = *w.LandedCommit
+		}
+	}
+	for _, k := range ch.Knots {
+		c.Knots = append(c.Knots, k.ID)
+	}
+	return c
+}
+
+// knownState reports whether klaus knows what a change state means.
+func knownState(state string) bool {
+	return state == valley.StateReady || state == valley.StateDraft || state == valley.StateWithdrawn
+}
+
+// RepoName is the valley's name for a run's repo, as finalize's `valley
+// ready` reported it; or else, for a run that continues another's change, the
+// repo that run had (ChangeRepo), so a follow-up names its change as the run
+// it continues does; or else as launch's `valley unready` reported it; or
+// else the short name of the run's target repo: its last path component,
+// without ".git". "" means unknown, and an unknown repo matches none. It is
+// how klaus tells which runs share a change: the same repo and change ID.
+func RepoName(s *run.State) string {
+	if s.Valley != nil && s.Valley.Repo != "" {
+		return s.Valley.Repo
+	}
+	if s.ChangeRepo != "" {
+		return s.ChangeRepo
+	}
+	if s.Unready != nil && s.Unready.Repo != "" {
+		return s.Unready.Repo
+	}
+	if s.TargetRepo == nil {
+		return ""
+	}
+	name := strings.TrimRight(*s.TargetRepo, "/")
+	if i := strings.LastIndexAny(name, "/:"); i >= 0 {
+		name = name[i+1:]
+	}
+	return strings.TrimSuffix(name, ".git")
+}
+
+// versionAt returns the version of ch whose head is head: the active one if
+// that head was marked ready more than once, else the latest.
+func versionAt(ch valley.Change, head string) (valley.Version, bool) {
+	var found valley.Version
+	ok := false
+	for _, v := range ch.Versions {
+		if v.Head != head {
+			continue
+		}
+		if v.N == ch.Active {
+			return v, true
+		}
+		if !ok || v.N > found.N {
+			found, ok = v, true
+		}
+	}
+	return found, ok
+}
+
+// verdictOf reads the valley's record of version v of change ch, whose state
+// klaus knows. Landing evidence comes first: once the valley says the change
+// landed (LandedAs), every version of it is Integrated, whichever is active
+// and even if the change went back to draft. A draft change's active version is otherwise Draft, whatever the
+// valley is unsure of or the integrator decided on its request: its submitter
+// has it back, and there is nothing for the operator to do.
+func verdictOf(ch valley.Change, v valley.Version) Verdict {
+	if _, ok := LandedAs(ch, v); ok {
+		return Integrated
+	}
+	switch {
+	case ch.State == valley.StateWithdrawn:
+		return Withdrawn
+	case v.N != ch.Active:
+		return Superseded
+	case ch.State == valley.StateDraft:
+		return Draft
+	case v.Landing == valley.Uncertain:
+		return Uncertain
+	case v.Outcome != nil:
+		switch strings.ToLower(v.Outcome.Decision) {
+		case "stale":
+			return StaleReason(ch, v)
+		case "rejected":
+			return Rejected
+		case "failed":
+			return Failed
+		}
+		return Uncertain
+	case v.Landing != valley.NotLanded:
+		// A landing value from a later valley.
+		return Uncertain
+	case v.Request != nil:
+		return Approved
+	default:
+		return Ready
+	}
+}
+
+// LandedAs is the version change ch landed as, seen from its version v, and
+// whether it landed: the valley's own verdict (landed_version), which reads
+// a next round, made on a main that already holds a landing, unlanded. A
+// valley older than the verdict leaves klaus the rule the versions show: a
+// change has landed once any of its versions has (the valley's
+// rebase.Snapshot.LandedAs), as v if it landed, else the newest that did.
+func LandedAs(ch valley.Change, v valley.Version) (valley.Version, bool) {
+	if lv := ch.LandedVersion; lv.Listed {
+		if lv.N == nil {
+			return valley.Version{}, false
+		}
+		w := valley.Version{N: *lv.N}
+		for _, x := range ch.Versions {
+			if x.N == *lv.N {
+				w = x
+			}
+		}
+		if ch.LandedCommit != nil && *ch.LandedCommit != "" {
+			w.LandedCommit = ch.LandedCommit
+		}
+		return w, true
+	}
+	if landed(v) {
+		return v, true
+	}
+	var found valley.Version
+	ok := false
+	for _, w := range ch.Versions {
+		if landed(w) && (!ok || w.N > found.N) {
+			found, ok = w, true
+		}
+	}
+	return found, ok
+}
+
+// landed reports whether the valley says version v landed.
+func landed(v valley.Version) bool {
+	return v.Landing == valley.Landed || v.Landing == valley.LandedRecorded
+}
+
+// StaleReason says what a stale decision on version v of change ch means. A
+// conflict in the change's current restack report is Conflicting. Else the
+// checks decide: pending ones leave the change Approved (the integrator
+// re-judges the request when the evidence arrives), failed ones ChecksFailed. Passed
+// checks, or none listed (an older valley), leave Stale: the evidence was
+// found lacking for another reason.
+func StaleReason(ch valley.Change, v valley.Version) Verdict {
+	if rs := ch.Restack; rs != nil && rs.Current && rs.Report != nil && rs.Report.Result == valley.RestackConflict {
+		return Conflicting
+	}
+	if v.Checks != nil {
+		switch v.Checks.State {
+		case valley.ChecksPending:
+			return Approved
+		case valley.ChecksFailed:
+			return ChecksFailed
+		}
+	}
+	return Stale
+}

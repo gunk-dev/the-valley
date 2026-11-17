@@ -1,0 +1,93 @@
+package git
+
+import "context"
+
+// Client defines the interface for all git operations Klaus uses.
+// Implementations must be safe for concurrent use.
+type Client interface {
+	// CommonDir returns the absolute path to the git common directory.
+	// This works from worktrees too (returns the main repo's .git dir).
+	CommonDir(ctx context.Context) (string, error)
+
+	// FetchAll fetches all branches and tags from origin, pruning deleted remote branches.
+	FetchAll(ctx context.Context, repoDir string) error
+
+	// FetchBranch fetches a single branch from origin.
+	FetchBranch(ctx context.Context, repoDir, branch string) error
+
+	// WorktreeAdd creates a new worktree at path on a new branch based on startPoint.
+	// If the branch is already checked out in a stale worktree, it prunes and retries once.
+	WorktreeAdd(ctx context.Context, repoDir, path, branch, startPoint string) error
+
+	// WorktreeRemove removes a worktree. repoDir is the main repo directory.
+	WorktreeRemove(ctx context.Context, repoDir, path string) error
+
+	// WorktreeAddTrack creates a worktree tracking an existing remote branch.
+	// It never removes a worktree: it refuses when path exists, and with a
+	// *WorktreeInUseError when the branch is checked out in a worktree whose
+	// directory exists. Unless discard is set, it refuses with a
+	// *LocalWorkError when the local branch has commits origin lacks.
+	WorktreeAddTrack(ctx context.Context, repoDir, path, branch string, discard bool) error
+
+	// WorktreePrune removes stale worktree tracking information.
+	WorktreePrune(ctx context.Context, repoDir string) error
+
+	// BranchDelete deletes a local branch.
+	BranchDelete(ctx context.Context, repoDir, branch string) error
+
+	// IsClean reports whether the working tree at repoDir has no uncommitted changes.
+	IsClean(ctx context.Context, repoDir string) (bool, error)
+
+	// CurrentBranch returns the short name of the currently checked-out branch,
+	// or "" when HEAD is detached.
+	CurrentBranch(ctx context.Context, repoDir string) (string, error)
+
+	// HasUpstream reports whether the current branch has a tracking upstream.
+	HasUpstream(ctx context.Context, repoDir string) (bool, error)
+
+	// MergeFastForward runs `git merge --ff-only @{u}` in repoDir.
+	MergeFastForward(ctx context.Context, repoDir string) error
+
+	// CommitsBehindUpstream returns how many commits the current branch is
+	// behind its upstream. Returns 0 if already up-to-date.
+	CommitsBehindUpstream(ctx context.Context, repoDir string) (int, error)
+
+	// CommitsAhead returns the number of commits on ref not reachable from base.
+	CommitsAhead(ctx context.Context, repoDir, base, ref string) (int, error)
+
+	// BranchPushed reports whether origin's branch tip equals the local tip,
+	// checked against the remote itself; an error means unverified.
+	BranchPushed(ctx context.Context, repoDir, branch string) (bool, error)
+
+	// RemoteBranchSHA returns origin's tip of branch, or "" when origin has
+	// no such branch, checked against the remote itself.
+	RemoteBranchSHA(ctx context.Context, repoDir, branch string) (string, error)
+
+	// EnsureDataRef ensures the custom data ref exists. Creates it with an empty
+	// initial commit if it doesn't.
+	EnsureDataRef(ctx context.Context, repoDir, dataRef string) error
+
+	// SyncToDataRef commits files to the data ref using a temporary index.
+	// files is a map of path-in-tree -> local-file-path.
+	SyncToDataRef(ctx context.Context, repoDir, dataRef, commitMsg string, files map[string]string) error
+
+	// EnsureClone clones a repo to destDir if it doesn't already exist.
+	// If it already exists, fetches the latest from origin.
+	EnsureClone(ctx context.Context, cloneURL, destDir string) error
+
+	// PushDataRef pushes the data ref to origin.
+	PushDataRef(ctx context.Context, repoDir, dataRef string) error
+
+	// FetchDataRef updates the local data ref from origin. Best-effort: the
+	// returned error can be ignored when there is no remote or no such ref.
+	FetchDataRef(ctx context.Context, repoDir, dataRef string) error
+
+	// ReadDataRefFile returns the raw bytes of a file stored in the data ref tree.
+	ReadDataRefFile(ctx context.Context, repoDir, dataRef, treePath string) ([]byte, error)
+
+	// InstallHooks installs klaus's hooks in the given linked worktree only:
+	// commit-msg strips Claude/Anthropic attribution and adds prov's trailers,
+	// pre-commit runs format and re-stages the staged files, and each then
+	// runs the repository's own hook of its name.
+	InstallHooks(ctx context.Context, worktreeDir string, prov Provenance, format []string) error
+}

@@ -1,0 +1,399 @@
+package cmd
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"the-valley/flow/internal/git"
+	"the-valley/flow/internal/project"
+	"github.com/spf13/cobra"
+)
+
+var projectCmd = &cobra.Command{
+	Use:   "project",
+	Short: "Manage the project registry",
+	Long: `Register, list, and remove projects from the klaus project registry.
+
+The registry maps project names to local paths and is stored in ~/.klaus/projects.json.
+
+  klaus project add owner/repo                       Clone and register a project
+  klaus project add owner/repo --path .              Register with explicit local path
+  klaus project add owner/repo -d "what it does"     Register with a description
+  klaus project list                                 Show registered projects
+  klaus project remove <name>                        Unregister a project
+  klaus project describe <name> <desc>               Set a one-line description (empty to clear)
+  klaus project set-dir ~/hack                       Set the default projects directory`,
+}
+
+var projectAddCmd = &cobra.Command{
+	Use:   "add <owner/repo | name>",
+	Short: "Clone and register a project",
+	Long: `Register a project in the klaus project registry.
+
+With owner/repo format, clones the repo into the projects directory and registers it.
+With just a name, searches your GitHub repos for a match.
+
+If --path is provided, registers the project at that path (must be an existing git repo).
+If the repo is already cloned at the expected path, it is registered without re-cloning.
+
+If --description is provided, it is stored as the project's one-line description.
+When --description is omitted, klaus tries 'gh repo view --json description' to fetch
+the GitHub description automatically; if that fails or returns empty, no description
+is stored (you can set one later with 'klaus project describe').`,
+	Args: cobra.ExactArgs(1),
+	RunE: runProjectAdd,
+}
+
+var projectListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "Show registered projects",
+	Args:  cobra.NoArgs,
+	RunE:  runProjectList,
+}
+
+var projectRemoveCmd = &cobra.Command{
+	Use:   "remove <name>",
+	Short: "Unregister a project (does not delete the local clone)",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runProjectRemove,
+}
+
+var projectSetDirCmd = &cobra.Command{
+	Use:   "set-dir <path>",
+	Short: "Set the default projects directory",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runProjectSetDir,
+}
+
+var projectDescribeCmd = &cobra.Command{
+	Use:   "describe <name> <description>",
+	Short: "Set a one-line description for a registered project (empty string clears it)",
+	Long: `Set a freeform one-line description for a registered project.
+
+The description is shown in 'klaus project list' and included in the session
+coordinator's system prompt so the coordinator knows what each project is for.
+
+Pass an empty string to clear an existing description:
+
+  klaus project describe my-tool "CLI for managing X"
+  klaus project describe my-tool ""`,
+	Args: cobra.ExactArgs(2),
+	RunE: runProjectDescribe,
+}
+
+func runProjectAdd(cmd *cobra.Command, args []string) error {
+	ref := args[0]
+	explicitPath, _ := cmd.Flags().GetString("path")
+	description, _ := cmd.Flags().GetString("description")
+
+	reg, err := project.Load()
+	if err != nil {
+		return err
+	}
+
+	deps := getProjectDeps()
+	var owner, repoName, cloneURL string
+
+	if strings.Contains(ref, "/") {
+		// owner/repo format
+		parts := strings.SplitN(ref, "/", 2)
+		owner = parts[0]
+		repoName = parts[1]
+		cloneURL = git.CloneURL(owner, repoName)
+	} else {
+		// Bare name — search GitHub repos
+		repoName = ref
+		ghOwner, ghURL, err := deps.ResolveGitHubRepo(ref)
+		if err != nil {
+			return err
+		}
+		owner = ghOwner
+		cloneURL = ghURL
+	}
+
+	// If the user didn't supply --description, try to pull one from GitHub.
+	// Best-effort: any error or empty result leaves description blank.
+	if description == "" && owner != "" && repoName != "" {
+		description = deps.FetchDescription(owner + "/" + repoName)
+	}
+
+	if explicitPath != "" {
+		// Register with explicit path
+		expanded, err := project.ExpandHome(explicitPath)
+		if err != nil {
+			return err
+		}
+		absPath, err := filepath.Abs(expanded)
+		if err != nil {
+			return fmt.Errorf("resolving path: %w", err)
+		}
+
+		if !isGitRepo(absPath) {
+			return fmt.Errorf("%s is not a git repository", absPath)
+		}
+
+		if err := reg.Add(repoName, absPath); err != nil {
+			return err
+		}
+		if description != "" {
+			if err := reg.Describe(repoName, description); err != nil {
+				return err
+			}
+		}
+		if err := reg.Save(); err != nil {
+			return err
+		}
+		printRegistered(cmd, repoName, absPath, description)
+		return nil
+	}
+
+	// Clone to projects_dir/<repo-name>
+	projDir, err := reg.ExpandedProjectsDir()
+	if err != nil {
+		return err
+	}
+	targetDir := filepath.Join(projDir, repoName)
+
+	if isGitRepo(targetDir) {
+		fmt.Fprintf(cmd.OutOrStdout(), "Already cloned at %s\n", targetDir)
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "Cloning %s/%s into %s...\n", owner, repoName, targetDir)
+		if err := deps.GitClone(cloneURL, targetDir); err != nil {
+			return fmt.Errorf("cloning: %w", err)
+		}
+	}
+
+	if err := reg.Add(repoName, targetDir); err != nil {
+		return err
+	}
+	if description != "" {
+		if err := reg.Describe(repoName, description); err != nil {
+			return err
+		}
+	}
+	if err := reg.Save(); err != nil {
+		return err
+	}
+	printRegistered(cmd, repoName, targetDir, description)
+	return nil
+}
+
+func printRegistered(cmd *cobra.Command, name, path, description string) {
+	if description != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "Registered %s → %s — %s\n", name, path, description)
+		return
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Registered %s → %s\n", name, path)
+}
+
+func runProjectList(cmd *cobra.Command, _ []string) error {
+	reg, err := project.Load()
+	if err != nil {
+		return err
+	}
+
+	projects := reg.List()
+	if len(projects) == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "No projects registered. Use 'klaus project add' to register one.")
+		return nil
+	}
+
+	for name, localPath := range projects {
+		remote := gitRemoteURL(localPath)
+		desc := reg.Description(name)
+		line := fmt.Sprintf("%-20s %s", name, localPath)
+		if remote != "" {
+			line += fmt.Sprintf("  (%s)", remote)
+		}
+		if desc != "" {
+			line += " — " + desc
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), line)
+	}
+	return nil
+}
+
+func runProjectDescribe(cmd *cobra.Command, args []string) error {
+	name := args[0]
+	description := args[1]
+
+	reg, err := project.Load()
+	if err != nil {
+		return err
+	}
+
+	if err := reg.Describe(name, description); err != nil {
+		return err
+	}
+	if err := reg.Save(); err != nil {
+		return err
+	}
+
+	if description == "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "Cleared description for %s\n", name)
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "Set description for %s: %s\n", name, description)
+	}
+	return nil
+}
+
+func runProjectRemove(cmd *cobra.Command, args []string) error {
+	name := args[0]
+
+	reg, err := project.Load()
+	if err != nil {
+		return err
+	}
+
+	if err := reg.Remove(name); err != nil {
+		return err
+	}
+	if err := reg.Save(); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Removed %s from registry (local clone was not deleted)\n", name)
+	return nil
+}
+
+func runProjectSetDir(cmd *cobra.Command, args []string) error {
+	dir := args[0]
+
+	expanded, err := project.ExpandHome(dir)
+	if err != nil {
+		return err
+	}
+	absDir, err := filepath.Abs(expanded)
+	if err != nil {
+		return fmt.Errorf("resolving path: %w", err)
+	}
+
+	reg, err := project.Load()
+	if err != nil {
+		return err
+	}
+
+	reg.SetProjectsDir(absDir)
+	if err := reg.Save(); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Projects directory set to %s\n", absDir)
+	return nil
+}
+
+// ghRepoEntry represents a repo from gh repo list JSON output.
+type ghRepoEntry struct {
+	Name          string `json:"name"`
+	NameWithOwner string `json:"nameWithOwner"`
+	URL           string `json:"url"`
+}
+
+// ProjectDeps holds dependencies for project commands.
+type ProjectDeps struct {
+	ResolveGitHubRepo func(name string) (string, string, error)
+	GitClone          func(url, targetDir string) error
+	// FetchDescription returns the GitHub description for owner/repo, or "" on
+	// any failure (missing binary, auth issue, no description set). It must
+	// never return an error — a missing description is not an error condition.
+	FetchDescription func(repoSlug string) string
+}
+
+// DefaultProjectDeps returns ProjectDeps wired to real implementations.
+func DefaultProjectDeps() ProjectDeps {
+	return ProjectDeps{
+		ResolveGitHubRepo: defaultResolveGitHubRepo,
+		GitClone:          defaultGitClone,
+		FetchDescription:  defaultFetchDescription,
+	}
+}
+
+// getProjectDeps lets tests swap in stub dependencies without touching cobra.
+var getProjectDeps = DefaultProjectDeps
+
+// defaultFetchDescription shells out to `gh repo view <slug> --json description -q .description`.
+// Returns "" if gh is unavailable, unauthenticated, the repo doesn't exist, or
+// the repo has no description set. All failure modes collapse to empty so that
+// `klaus project add` does not fail just because a description couldn't be fetched.
+func defaultFetchDescription(repoSlug string) string {
+	out, err := exec.Command("gh", "repo", "view", repoSlug, "--json", "description", "-q", ".description").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// defaultResolveGitHubRepo searches the user's GitHub repos for a name match.
+// Returns (owner, cloneURL, error).
+func defaultResolveGitHubRepo(name string) (string, string, error) {
+	out, err := exec.Command("gh", "repo", "list", "--json", "name,nameWithOwner,url", "--limit", "200").Output()
+	if err != nil {
+		return "", "", fmt.Errorf("running gh repo list: %w", err)
+	}
+
+	var repos []ghRepoEntry
+	if err := json.Unmarshal(out, &repos); err != nil {
+		return "", "", fmt.Errorf("parsing gh output: %w", err)
+	}
+
+	var matches []ghRepoEntry
+	for _, r := range repos {
+		if r.Name == name {
+			matches = append(matches, r)
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return "", "", fmt.Errorf("no GitHub repo found matching %q. Use owner/repo format to be explicit", name)
+	case 1:
+		parts := strings.SplitN(matches[0].NameWithOwner, "/", 2)
+		return parts[0], matches[0].URL + ".git", nil
+	default:
+		var names []string
+		for _, m := range matches {
+			names = append(names, m.NameWithOwner)
+		}
+		return "", "", fmt.Errorf("multiple repos match %q: %s. Use owner/repo format to be specific", name, strings.Join(names, ", "))
+	}
+}
+
+// isGitRepo checks whether the given directory exists and contains a .git directory.
+func isGitRepo(dir string) bool {
+	info, err := os.Stat(filepath.Join(dir, ".git"))
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
+}
+
+// defaultGitClone clones a repository to the target directory.
+func defaultGitClone(url, targetDir string) error {
+	c := exec.Command("git", "clone", url, targetDir)
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	return c.Run()
+}
+
+// gitRemoteURL returns the origin remote URL for a repo, or empty string on error.
+func gitRemoteURL(repoDir string) string {
+	c := exec.Command("git", "-C", repoDir, "remote", "get-url", "origin")
+	out, err := c.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func init() {
+	projectAddCmd.Flags().String("path", "", "Register with an explicit local path instead of cloning")
+	projectAddCmd.Flags().StringP("description", "d", "", "One-line description for the project (falls back to 'gh repo view' if unset)")
+	projectCmd.AddCommand(projectAddCmd)
+	projectCmd.AddCommand(projectListCmd)
+	projectCmd.AddCommand(projectRemoveCmd)
+	projectCmd.AddCommand(projectSetDirCmd)
+	projectCmd.AddCommand(projectDescribeCmd)
+	rootCmd.AddCommand(projectCmd)
+}

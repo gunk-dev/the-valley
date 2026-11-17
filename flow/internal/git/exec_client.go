@@ -1,0 +1,106 @@
+package git
+
+import "context"
+
+// ExecClient implements Client by shelling out to the git binary.
+type ExecClient struct{}
+
+// NewExecClient returns a new ExecClient.
+func NewExecClient() *ExecClient {
+	return &ExecClient{}
+}
+
+func (c *ExecClient) CommonDir(ctx context.Context) (string, error) {
+	return CommonDir(ctx)
+}
+
+func (c *ExecClient) FetchAll(ctx context.Context, repoDir string) error {
+	return FetchAll(ctx, repoDir)
+}
+
+func (c *ExecClient) FetchBranch(ctx context.Context, repoDir, branch string) error {
+	return FetchBranch(ctx, repoDir, branch)
+}
+
+func (c *ExecClient) WorktreeAdd(ctx context.Context, repoDir, path, branch, startPoint string) error {
+	return WorktreeAdd(ctx, repoDir, path, branch, startPoint)
+}
+
+func (c *ExecClient) WorktreeRemove(ctx context.Context, repoDir, path string) error {
+	return WorktreeRemove(ctx, repoDir, path)
+}
+
+func (c *ExecClient) WorktreeAddTrack(ctx context.Context, repoDir, path, branch string, discard bool) error {
+	return WorktreeAddTrack(ctx, repoDir, path, branch, discard)
+}
+
+func (c *ExecClient) WorktreePrune(ctx context.Context, repoDir string) error {
+	return WorktreePrune(ctx, repoDir)
+}
+
+func (c *ExecClient) BranchDelete(ctx context.Context, repoDir, branch string) error {
+	return BranchDelete(ctx, repoDir, branch)
+}
+
+func (c *ExecClient) IsClean(ctx context.Context, repoDir string) (bool, error) {
+	return IsClean(ctx, repoDir)
+}
+
+func (c *ExecClient) CurrentBranch(ctx context.Context, repoDir string) (string, error) {
+	return CurrentBranch(ctx, repoDir)
+}
+
+func (c *ExecClient) HasUpstream(ctx context.Context, repoDir string) (bool, error) {
+	return HasUpstream(ctx, repoDir)
+}
+
+func (c *ExecClient) MergeFastForward(ctx context.Context, repoDir string) error {
+	return MergeFastForward(ctx, repoDir)
+}
+
+func (c *ExecClient) CommitsBehindUpstream(ctx context.Context, repoDir string) (int, error) {
+	return CommitsBehindUpstream(ctx, repoDir)
+}
+
+func (c *ExecClient) CommitsAhead(ctx context.Context, repoDir, base, ref string) (int, error) {
+	return CommitsAhead(ctx, repoDir, base, ref)
+}
+
+func (c *ExecClient) BranchPushed(ctx context.Context, repoDir, branch string) (bool, error) {
+	return BranchPushed(ctx, repoDir, branch)
+}
+
+func (c *ExecClient) RemoteBranchSHA(ctx context.Context, repoDir, branch string) (string, error) {
+	return RemoteBranchSHA(ctx, repoDir, branch)
+}
+
+func (c *ExecClient) EnsureDataRef(ctx context.Context, repoDir, dataRef string) error {
+	return EnsureDataRef(ctx, repoDir, dataRef)
+}
+
+func (c *ExecClient) SyncToDataRef(ctx context.Context, repoDir, dataRef, commitMsg string, files map[string]string) error {
+	return SyncToDataRef(ctx, repoDir, dataRef, commitMsg, files)
+}
+
+func (c *ExecClient) EnsureClone(ctx context.Context, cloneURL, destDir string) error {
+	return EnsureClone(ctx, cloneURL, destDir)
+}
+
+func (c *ExecClient) PushDataRef(ctx context.Context, repoDir, dataRef string) error {
+	return PushDataRef(ctx, repoDir, dataRef)
+}
+
+func (c *ExecClient) FetchDataRef(ctx context.Context, repoDir, dataRef string) error {
+	return FetchDataRef(ctx, repoDir, dataRef)
+}
+
+func (c *ExecClient) ReadDataRefFile(ctx context.Context, repoDir, dataRef, treePath string) ([]byte, error) {
+	return ReadDataRefFile(ctx, repoDir, dataRef, treePath)
+}
+
+func (c *ExecClient) InstallHooks(ctx context.Context, worktreeDir string, prov Provenance, format []string) error {
+	return InstallHooks(ctx, worktreeDir, prov, format)
+}
+
+// compile-time check
+var _ Client = (*ExecClient)(nil)

@@ -1,0 +1,1026 @@
+package cmd
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"log/slog"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/fsnotify/fsnotify"
+	"the-valley/flow/internal/config"
+	"the-valley/flow/internal/event"
+	"the-valley/flow/internal/git"
+	gh "the-valley/flow/internal/github"
+	"the-valley/flow/internal/integration"
+	"the-valley/flow/internal/jobs"
+	"the-valley/flow/internal/pipeline"
+	"the-valley/flow/internal/restack"
+	"the-valley/flow/internal/run"
+	"the-valley/flow/internal/tmux"
+	"the-valley/flow/internal/webhook"
+	"github.com/spf13/cobra"
+)
+
+// dashboardError holds a pipeline error for TUI display.
+type dashboardError struct {
+	Time    time.Time
+	Message string
+}
+
+var dashboardCmd = &cobra.Command{
+	Use:   "dashboard",
+	Short: "Live TUI dashboard for monitoring agents and PRs",
+	Long: `Shows a persistent, auto-refreshing terminal UI that monitors all active
+agent runs and their PR statuses: CI status, merge conflicts, and review
+decisions.
+
+Local state updates instantly via filesystem watching.
+GitHub state (CI, conflicts, reviews) polls every 30 seconds by default.
+
+When webhook config is present in .klaus/config.json, the dashboard starts
+an HTTP server to receive push events from github-relay instead of polling.
+Set "webhook": {"port": 9800} in config to enable. When another dashboard
+of the same user already holds the port, this one polls instead.
+
+In webhook-only mode (poll_fallback false), a slow reconcile heartbeat runs
+a full status re-fetch every 5 minutes by default (configurable via
+"reconcile_interval_seconds") so a dropped webhook can't strand a PR forever.
+
+Runs are listed by what they work on: the runs on a PR share its row, and
+so do the runs without a PR on its change (the same change ID in the same
+repo, the repo named by the valley's name or its short name, and by its
+GitHub owner where a run knows it, so alice/widget and bob/widget are two
+repos), as when a run that stopped before opening the PR was continued by
+one that opened it. Where the change stands apart from its PR keeps its own
+row: when a valley lists the change, or one of those runs pushed a branch
+that waits for integration, they share the change's row, as the runs
+without a PR on a change no PR carries do. A run with neither has a row of
+its own. A run that needs attention stops counting once a run of its
+change records taking its pushed work on (see klaus launch) and is running
+or finished: that run carries the attention, and the row reads ATTN if it
+in turn ended needing attention or failing. Rows are grouped by whose move
+it is, most recent first within each group:
+  yours     needs you: needs attention (ATTN), a valley change to approve
+            (READY) or to look at (STALE, REJECTED, FAILED, UNCERTAIN,
+            DRAFT), a pushed branch to submit (SUBMIT), or a PR that is ready
+            to merge and not yet approved
+  agents    an agent is running on it: a fix agent on a PR, a follow-up
+            (--resume-from, --pr or a pipeline fix) on a change
+  pipeline  an open PR the pipeline is handling: CI running or failing,
+            conflicts, behind, approved and waiting to merge; or a valley
+            change that is approved and waiting on the integrator (APPROVED)
+            or a draft awaiting its review (REVIEW)
+  done      merged, closed, integrated, gone, withdrawn, no access, or
+            exited
+The line above the list counts each group (e.g. "2 yours") and shows the
+scroll position (e.g. "12–30 of 34").
+
+A pushed branch (a run that finished without a PR) shows SUBMIT until its
+work lands on the default branch. Every minute the dashboard checks the run's
+clone against origin: INTEGRATED means the pushed commit, or the branch's
+current tip, is on the default branch; INTEGRATED~ means a commit on the
+default branch carries the same change (equal patch-id), which is strong
+evidence rather than proof; GONE means the branch was deleted without
+landing. A PR the agent can no longer read on GitHub shows NO ACCESS and is
+re-checked every 30 minutes.
+
+A run whose repo delivers to a valley shows as its change: the repo (always
+shown), the change's handle and its title, then the version and head (e.g.
+v2@1a2b3c4). Finalize marked the pushed head ready, or, with
+"ready_at_finalize": false in config, left it a draft awaiting review. One
+"valley changes --all --json" for all such runs says where each stands. It
+runs at once when the valley host reports a decision or new evidence, and
+otherwise every minute: REVIEW (a draft finalize left that awaits review; approve refuses it,
+and the footer offers the 'klaus ready <handle> --head <head>' that marks the
+head on screen ready once its review passes), READY (ready and waiting for you), APPROVED, INTEGRATED
+(landed), UNCERTAIN (no landing evidence: look), STALE, REJECTED or FAILED
+(the integrator's decision), WITHDRAWN, or DRAFT (returned to draft, as
+launch does when a follow-up run continues the change, and no run of it is
+running). If valley can't be asked, the git check above decides, and a change
+waiting on it reads READY, or REVIEW when finalize left it a draft. A run
+whose change finalize couldn't mark ready shows SUBMIT and the reason.
+A ready change's row shows its required checks as a PR row shows CI: CI …
+(pending), CI ✗ and the failed checks' names, or CI ✓. They don't change
+READY: you may approve before they finish. After each check the dashboard
+dispatches a run to fix a failed head of a change klaus owns, as
+'klaus failed-checks' does.
+
+A change's row is built like a PR's. It shows the valley's handle, else the
+first 8 characters of the change ID; the valley's title, else the subject
+of the head its latest run pushed; and where the valley says the change's
+active version stands, with that version's head to approve, wherever it
+was marked ready (for a change no valley lists, where its latest push
+stands). Earlier versions fold into the row. A newer push the valley
+doesn't hold as a version, as when its ready failed, doesn't take the row
+over: the footer notes it ("a newer push 1a2b3c4 isn't ready"). While an agent runs on a PR or a change, the row names it (e.g.
+"agent:1a2b running"), sorts with the agents and offers no approve command,
+and the footer says which agent is working on it. Once it exits, the row
+goes back to where the PR or change stands.
+
+Below the run rows, a jobs section lists the session's consults, reviews and prose passes,
+as klaus status does: every running job, with how long it has run, and those
+that finished in the last 3 hours, with how long they took and how they
+ended (SUCCEEDED, FAILED, TIMED OUT, INTERRUPTED, or DIED when the job's klaus
+was killed without recording its end). It follows the job records as they
+change. Press tab to select a job: the footer says how it stands, with its
+error and where its raw output was saved, and enter opens its record and
+answer, as 'klaus jobs show' prints them; esc goes back. On a short pane the
+jobs lines go before any run row does.
+
+Done rows older than an hour are hidden until you press h; the line above the
+list says how many are hidden. A row the dashboard watched finish stays for
+the full hour. Set "dashboard": {"hide_finished_after_minutes": N} in config
+to change the threshold, or a negative N to never hide them.
+
+Set "dashboard": {"approve_command": "cd ~/hack/{repo} && valley approve {handle} --head {head}"}
+to show, in the footer, the command that approves the selected READY row
+(or submits a SUBMIT row). {repo} is the repo as the row names it, {branch}
+the pushed branch, {change} the full change ID, {handle} the change's handle
+and {head} the pushed head, so the approval binds the head you saw. A row
+with no value for a placeholder the template uses, such as {handle} on a
+branch no valley knows, shows no command, and neither does a DRAFT or
+REVIEW row or one with an agent running on it. The command is for you to run on your own
+machine; the dashboard never runs it. "submit_command" is the
+deprecated name of "approve_command", read only when approve_command is
+unset.
+
+Every 30 seconds the dashboard resolves klaus on PATH, symlinks and all.
+When it names a different file than the running binary, and that file runs
+--version, as after klaus self-update, the footer says "klaus updated to
+<version>; restarting". Once no key has been pressed for 10 seconds, the
+dashboard shuts down as on q, releasing its webhook port, and execs the new
+klaus with the same arguments and environment. If the exec fails, it keeps
+running on the old klaus, shows the error, and leaves that file alone.
+
+Keyboard shortcuts:
+  j / k or ↑ / ↓  move the selection
+  PgUp / PgDn     move a page
+  g / G           jump to the top / bottom (also Home / End)
+  h               show all runs / hide old done rows
+  a               approve the selected PR
+  d               discuss the selected PR with the coordinator
+  o               open the selected PR in a browser
+  tab             select a job / back to the runs
+  enter           read the selected job's answer (esc to go back)
+  r               refresh, and redraw the whole screen
+  q               quit`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		bin := newBinCheck()
+		var notice string
+		for {
+			next, err := runDashboard(cmd, bin, notice)
+			if next == nil {
+				return err
+			}
+			// The dashboard has shut down and released its port: become the
+			// new klaus, with the same arguments and environment.
+			err = syscall.Exec(next.path, os.Args, os.Environ())
+			// Still here: keep running on this klaus, and leave that file be.
+			bin.failed[next.path] = true
+			notice = fmt.Sprintf("klaus updated to %s, but restarting onto it failed: %v", next.version, err)
+		}
+	},
+}
+
+// runDashboard runs the dashboard until it quits. It returns the klaus to
+// restart onto when it quit for that, once everything is shut down. notice,
+// if set, starts in the footer as an error.
+func runDashboard(cmd *cobra.Command, bin *binCheck, notice string) (*binUpdateMsg, error) {
+	{
+		store, err := sessionStore()
+		if err != nil {
+			return nil, fmt.Errorf("KLAUS_SESSION_ID not set; run inside a klaus session")
+		}
+
+		// Load config once — used for both the dashboard model and webhook setup.
+		repoRoot, _ := git.RepoRoot()
+		cfg, err := config.Load(repoRoot)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: loading config: %v\n", err)
+		}
+
+		// Shared context for coordinating graceful shutdown of all subsystems.
+		ctx, cancel := context.WithCancel(cmd.Context())
+
+		ghClient := gh.NewGHCLIClient("")
+		model := newDashboardModel(store, cfg, ghClient)
+		model.shutdownCancel = cancel
+		model.bin = bin
+		model.binNotice, model.binNoticeErr = notice, notice != ""
+		defer logTo(model.logger)()
+
+		// Tail the session event log so klaus-internal commands (e.g.
+		// `klaus approve`) can wake the dashboard FSM without waiting for
+		// a GitHub webhook. The tail runs even when no webhook server is
+		// configured — it is the invalidation channel for our own CLI.
+		if model.eventsPath != "" {
+			internalCh := make(chan event.Event, 64)
+			model.internalEventCh = internalCh
+			go func() {
+				defer close(internalCh)
+				if err := event.Tail(ctx, model.eventsPath, internalCh); err != nil {
+					model.logger.Warn("event tail stopped", "err", err)
+				}
+			}()
+		}
+
+		webhookSrv, err := setupWebhook(&model, cfg)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+
+		model.waker = startValleyWaker(ctx, model.logger)
+
+		p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(ctx))
+		finalModel, err := p.Run()
+		cancel()
+
+		// BubbleTea has exited — centralize cleanup of watcher and log file.
+		var restart *binUpdateMsg
+		if m, ok := finalModel.(dashboardModel); ok {
+			if m.watcher != nil {
+				m.watcher.Close()
+			}
+			if m.logFile != nil {
+				m.logFile.Close()
+			}
+			if m.restarting && err == nil {
+				restart = m.restart
+			}
+		}
+
+		// Gracefully shut down the webhook server so the port is released promptly.
+		if webhookSrv != nil {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer shutdownCancel()
+			if err := webhookSrv.Shutdown(shutdownCtx); err != nil {
+				fmt.Fprintf(os.Stderr, "webhook server shutdown: %v\n", err)
+			}
+		}
+
+		return restart, err
+	}
+}
+
+// setupWebhook starts the webhook server when cfg asks for one and sets the
+// model's data source to match. When another dashboard already holds the
+// port, the model polls instead and says so; any other listen error is
+// returned. The returned server is nil when none runs.
+func setupWebhook(model *dashboardModel, cfg config.Config) (*webhook.Server, error) {
+	if cfg.Webhook == nil {
+		model.pollEnabled = true
+		return nil, nil
+	}
+	ch := make(chan webhook.Event, 64)
+	port := cfg.Webhook.Port
+	if port == 0 {
+		port = 9800
+	}
+	srv := webhook.NewServer(port, cfg.Webhook.Path, ch)
+	if err := srv.Listen(); err != nil {
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			return nil, fmt.Errorf("webhook server: %w", err)
+		}
+		model.pollEnabled = true
+		model.webhookHeldNote = fmt.Sprintf("webhook port %d is held by another dashboard", port)
+		model.logger.Info("polling instead of receiving webhooks", "reason", model.webhookHeldNote)
+		return nil, nil
+	}
+
+	model.webhookCh = ch
+	model.useWebhook = true
+	model.pollEnabled = cfg.Webhook.PollFallback
+	model.webhookAddr = srv.Addr()
+	model.reconcileEvery = reconcileInterval(cfg.Webhook)
+
+	logger := model.logger
+	go func() {
+		if err := srv.Serve(); err != nil && err != http.ErrServerClosed {
+			logger.Error("webhook server", "err", err)
+		}
+	}()
+	return srv, nil
+}
+
+func init() {
+	rootCmd.AddCommand(dashboardCmd)
+}
+
+// logTo sends what slog's and log's default loggers write to logger until
+// the returned func restores them. Nothing may write to the terminal under
+// the dashboard: a line there scrolls the pane, and the renderer, which
+// redraws only the lines that changed, would leave the scrolled lines on
+// screen for good.
+func logTo(logger *slog.Logger) (restore func()) {
+	prev, out, flags := slog.Default(), log.Writer(), log.Flags()
+	slog.SetDefault(logger)
+	return func() {
+		slog.SetDefault(prev)
+		log.SetOutput(out)
+		log.SetFlags(flags)
+	}
+}
+
+// dashboardModel is the bubbletea model for the dashboard.
+type dashboardModel struct {
+	store           run.StateStore
+	ghClient        gh.Client
+	ghPoller        *ghPoller
+	ghLimitedUntil  time.Time // GitHub rate-limited PR polling until then
+	tmuxDeps        run.TmuxDeps
+	tmux            tmux.Client // for keyboard-driven actions (discuss)
+	cursor          int         // index into the displayed rows of the selected row
+	selKey          string      // dashRow.key of the selected row; survives reordering
+	offset          int         // index of the first row in the viewport
+	showAll         bool        // show old done rows that are hidden by default
+	hideAfter       time.Duration
+	runningSnap     map[string]bool      // run ID -> agent running, see agentRunning
+	seenUnfinished  map[string]bool      // row keys seen before they finished
+	finishedAt      map[string]time.Time // when a watched row was first seen finished
+	states          []*run.State
+	ghStatus        map[string]*prStatus // keyed by PR URL
+	sandboxHosts    map[string]bool      // host -> reachable
+	pipelineCtrl    *pipeline.Controller
+	pipelineStates  map[string]*pipeline.PRPipelineState
+	noAccessAt      map[string]time.Time // PR URL -> when last found unreadable
+	checker         integration.Checker
+	integration     map[string]integration.Result                // run ID -> latest check; nil before the first check
+	changes         map[integration.ChangeKey]integration.Result // the valley's view of each change's active version
+	integrationOn   bool                                         // the integration check loop has started
+	valleyErr       string                                       // why the latest valley check failed; "" when it didn't
+	checking        bool                                         // an integration check is running
+	checkAgain      bool                                         // a wake came during the running check: run one more after it
+	wakeHeld        bool                                         // a wake waits wakeSettle for the rest of its burst
+	checkSeq        int                                          // the latest arming of the integration timer
+	waker           *valleyWaker                                 // follows valley hosts' telemetry; nil when not started
+	logger          *slog.Logger                                 // writes dashboard.log
+	changeLedger    *pipeline.ChangeLedger                       // the valley change transitions seen and reported; nil outside a session
+	restackOn       bool                                         // each integration check runs a restack pass
+	restacks        map[integration.ChangeKey]restack.View       // where each restack conflict on a change klaus owns stands
+	approveTemplate string                                       // dashboard.approve_command, or the deprecated submit_command
+	recentErrors    []dashboardError                             // last N pipeline errors shown in TUI
+	jobsDir         string                                       // the session's job records; "" outside a session
+	jobs            []*jobs.Job                                  // every job record, newest first
+	jobFocus        bool                                         // a job is selected rather than a run
+	jobCursor       int                                          // index into the shown jobs of the selected job
+	jobSel          string                                       // ID of the selected job; survives reordering
+	detail          *jobDetail                                   // the job shown in place of the list, if any
+	width           int
+	height          int
+	err             error
+	watcher         *fsnotify.Watcher
+	logFile         *os.File
+	shutdownCancel  context.CancelFunc   // cancels the shared shutdown context
+	webhookCh       <-chan webhook.Event // non-nil when webhook mode is active
+	webhookHeldNote string               // why polling replaced the webhook: another dashboard holds the port
+	webhookAddr     string               // e.g. "127.0.0.1:9800"
+	useWebhook      bool                 // true when webhook server is running
+	pollEnabled     bool                 // true when polling is active (default or poll_fallback)
+	reconcileEvery  time.Duration        // slow reconcile heartbeat interval (webhook-only mode)
+	// internalEventCh carries klaus-emitted invalidation events (e.g.
+	// PRApprovalChanged from `klaus approve`). It is symmetric to webhookCh
+	// but sourced from the local event log rather than an HTTP listener,
+	// so internal CLI commands can wake the FSM without waiting for a real
+	// GitHub webhook.
+	internalEventCh <-chan event.Event
+	eventsPath      string // path to events.jsonl for the tail goroutine
+	// lastWebhookAt records the wall-clock time of the most recent webhook
+	// delivery (any event). The zero value means none received yet. It drives
+	// the footer freshness indicator; the existing 30s tick re-renders the view
+	// so the displayed age advances without a dedicated timer.
+	lastWebhookAt time.Time
+	// bin watches klaus on PATH; restart is the new klaus it found, which
+	// the dashboard restarts onto once the keyboard is quiet (lastKeyAt).
+	// restarting means it quit to do so. binNotice is the footer's line
+	// about it, an error if binNoticeErr.
+	bin          *binCheck
+	restart      *binUpdateMsg
+	restarting   bool
+	lastKeyAt    time.Time
+	binNotice    string
+	binNoticeErr bool
+	// clearing is the clear the x key awaits confirmation of; nil when none.
+	clearing *dashClear
+	// jobsClearedAt is when the x key last cleared finished jobs from the
+	// jobs section.
+	jobsClearedAt time.Time
+	// cleared sums the runs cleanup removed, for the header's totals.
+	cleared run.Cleared
+}
+
+func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Client) dashboardModel {
+	var eventLog *event.Log
+	var logWriter io.Writer = io.Discard
+	var logFile *os.File
+	var eventsPath, jobsDir, ledgerPath string
+	var changeLedger *pipeline.ChangeLedger
+	if hds, ok := store.(*run.HomeDirStore); ok {
+		eventLog = event.NewLog(hds.BaseDir())
+		eventsPath = eventLog.Path()
+		jobsDir = jobs.NewStore(hds.BaseDir()).Dir
+		ledgerPath = filepath.Join(hds.BaseDir(), pipeline.LedgerFile)
+		logPath := filepath.Join(hds.BaseDir(), "dashboard.log")
+		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+			logWriter = f
+			logFile = f
+		}
+	}
+	logger := slog.New(slog.NewTextHandler(logWriter, nil))
+	ctrl := pipeline.New(store, eventLog, logger)
+	ctrl.SetAutoMergeOnApproval(cfg.AutoMergesOnApproval())
+	if ledgerPath != "" {
+		// The ledger outlives the dashboard, so a restart doesn't report a
+		// PR's approval or merge again.
+		ledger, err := pipeline.LoadLedger(ledgerPath)
+		if err != nil {
+			logger.Error("reading the PR transition ledger", "err", err)
+		}
+		ctrl.SetLedger(ledger)
+		// The change ledger does the same for valley changes.
+		changeLedger, err = pipeline.LoadChangeLedger(filepath.Join(filepath.Dir(ledgerPath), pipeline.ChangeLedgerFile))
+		if err != nil {
+			logger.Error("reading the change transition ledger", "err", err)
+		}
+	}
+
+	return dashboardModel{
+		store:           store,
+		ghClient:        ghClient,
+		ghPoller:        newGHPoller(ghClient, cfg.TrustedReviewers),
+		tmuxDeps:        run.DefaultTmuxDeps(),
+		tmux:            tmux.NewExecClient(),
+		ghStatus:        make(map[string]*prStatus),
+		sandboxHosts:    make(map[string]bool),
+		pipelineCtrl:    ctrl,
+		pipelineStates:  make(map[string]*pipeline.PRPipelineState),
+		noAccessAt:      make(map[string]time.Time),
+		checker:         integration.NewValleyChecker(logger),
+		changeLedger:    changeLedger,
+		restackOn:       ledgerPath != "", // a restack pass keeps its ledger in the session directory
+		approveTemplate: cfg.Dashboard.ApproveTemplate(),
+		hideAfter:       hideFinishedAfter(cfg.Dashboard),
+		logFile:         logFile,
+		eventsPath:      eventsPath,
+		jobsDir:         jobsDir,
+		logger:          logger,
+	}
+}
+
+func (m dashboardModel) Init() tea.Cmd {
+	cmds := []tea.Cmd{
+		// Start on a clear screen, as after a restart onto a new klaus.
+		tea.ClearScreen,
+		loadStatesCmd(m.store),
+		loadJobsCmd(m.jobsDir),
+		startWatcherCmd(m.store, m.jobsDir),
+		tickCmd(), // always tick once on startup for initial fetch
+	}
+	if m.webhookCh != nil {
+		cmds = append(cmds, waitForWebhookCmd(m.webhookCh))
+	}
+	if shouldScheduleReconcile(m.useWebhook, m.pollEnabled, m.reconcileEvery) {
+		cmds = append(cmds, reconcileTickAfterCmd(m.reconcileEvery))
+	}
+	if m.internalEventCh != nil {
+		cmds = append(cmds, waitForInternalEventCmd(m.internalEventCh))
+	}
+	if m.waker != nil {
+		cmds = append(cmds, m.waker.waitCmd())
+	}
+	return tea.Batch(cmds...)
+}
+
+func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	dm, ok := next.(dashboardModel)
+	if !ok {
+		return next, cmd
+	}
+	// Re-resolve the run list whenever it or the pane can have changed, so
+	// the selection stays on its row and in view.
+	switch msg.(type) {
+	case statesLoadedMsg, ghStatusMsg, tickMsg, integrationMsg:
+		dm.snapshotRunning()
+		dm.syncView(time.Now())
+	case tea.KeyMsg, tea.WindowSizeMsg, jobsLoadedMsg:
+		dm.syncView(time.Now())
+	}
+	return dm, cmd
+}
+
+func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		m.lastKeyAt = time.Now()
+		key := msg.String()
+		if m.detail != nil && key != "ctrl+c" {
+			return m.detailKey(key), nil
+		}
+		if c := m.clearing; c != nil {
+			m.clearing = nil
+			if key != "y" {
+				return m, nil
+			}
+			m.jobsClearedAt = m.lastKeyAt
+			return m, m.clearCmd(c)
+		}
+		if m.jobFocus {
+			if next, ok := m.jobKey(key, m.lastKeyAt); ok {
+				return next, nil
+			}
+		}
+		switch key {
+		case "q", "ctrl+c":
+			// Cancel the shared context to signal all subsystems to stop.
+			if m.shutdownCancel != nil {
+				m.shutdownCancel()
+			}
+			return m, tea.Quit
+		case "r":
+			// Redraw every line: the renderer redraws only the lines that
+			// changed, so whatever else wrote to the pane stays until then.
+			return m, tea.Batch(
+				tea.ClearScreen,
+				loadStatesCmd(m.store),
+				loadJobsCmd(m.jobsDir),
+				m.fetchGHStatusCmd(m.states),
+			)
+		case "tab":
+			// Select the top job: running ones come first.
+			m.jobFocus = m.resolve(m.lastKeyAt).jobsShown > 0
+			m.jobCursor, m.jobSel = 0, ""
+		case "up", "k":
+			m.moveSelection(-1, 0)
+		case "down", "j":
+			m.moveSelection(1, 0)
+		case "pgup":
+			m.moveSelection(0, -1)
+		case "pgdown":
+			m.moveSelection(0, 1)
+		case "g", "home":
+			m.selectEdge(false)
+		case "G", "end":
+			m.selectEdge(true)
+		case "h":
+			m.showAll = !m.showAll
+		case "x":
+			// Clear what's finished, as klaus cleanup --done does, once
+			// the operator confirms.
+			m.clearing = m.planClear(m.lastKeyAt)
+		case "a":
+			// Approve the selected PR immediately (no confirmation).
+			r, ok := m.selectedPR("approve")
+			if !ok {
+				break
+			}
+			if err := markApproved(r.state(), m.store); err != nil {
+				m.noteError(fmt.Sprintf("approve PR #%s: %v", r.prNum, err))
+			}
+			// Reload so the row reflects approval immediately; the fsnotify
+			// watcher also catches the save, but this avoids the round-trip lag.
+			return m, loadStatesCmd(m.store)
+		case "d":
+			// Discuss the selected PR with the coordinator: pre-fill a prompt
+			// in the coordinator pane and switch focus there.
+			r, ok := m.selectedPR("discuss")
+			if !ok {
+				break
+			}
+			pane := m.coordinatorPane()
+			if pane == "" {
+				m.noteError("coordinator pane unknown (older session; relaunch to enable discuss)")
+				break
+			}
+			if err := m.discussPR(r.prNum, pane); err != nil {
+				m.noteError(fmt.Sprintf("discuss PR #%s: %v", r.prNum, err))
+			}
+		case "o":
+			// Open the selected PR in the system browser.
+			r, ok := m.selectedPR("open")
+			if !ok {
+				break
+			}
+			s := r.state()
+			if s.PRURL == nil || *s.PRURL == "" {
+				break
+			}
+			url := *s.PRURL
+			prNum := r.prNum
+			// Fire-and-forget so Update stays clean and the UI never blocks on
+			// the browser launch. Surface a transient hint on failure.
+			return m, func() tea.Msg {
+				if err := openInBrowser(url); err != nil {
+					return errHintMsg{msg: fmt.Sprintf("open PR #%s: %v", prNum, err)}
+				}
+				return nil
+			}
+		}
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+
+	case clearedMsg:
+		if len(msg.failed) > 0 {
+			m.noteError(fmt.Sprintf("clear finished: couldn't remove %v", msg.failed))
+		}
+		return m, loadStatesCmd(m.store)
+
+	case statesLoadedMsg:
+		m.states = msg.states
+		m.cleared = msg.cleared
+		// Detect and finalize stale (orphaned) runs so they stop appearing as active.
+		for _, s := range m.states {
+			if s.IsStaleWith(m.tmuxDeps) {
+				slog.Info("finalizing stale run", "id", s.ID)
+				markRunFailed(m.store, s)
+			}
+		}
+		// Follow the valley hosts of the changes the check asks about, so
+		// the host's decisions wake it.
+		m.waker.Track(valleyCheckouts(m.states))
+		cmd := m.fetchGHStatusCmd(m.states)
+		if !m.integrationOn {
+			// The first load starts the integration check loop; it then
+			// re-arms itself each time a check completes.
+			m.integrationOn = true
+			var check tea.Cmd
+			m, check = m.startIntegrationCheck()
+			cmd = tea.Batch(cmd, check)
+		}
+		return m, cmd
+
+	case integrationTickMsg:
+		if msg.seq != m.checkSeq || m.checking {
+			return m, nil // a woken check took this tick's place
+		}
+		return m.startIntegrationCheck()
+
+	case valleyWakeMsg:
+		cmd := m.waker.waitCmd()
+		if !m.wakeHeld {
+			m.wakeHeld = true
+			cmd = tea.Batch(cmd, tea.Tick(wakeSettle, func(time.Time) tea.Msg { return valleyWakeCheckMsg{} }))
+		}
+		return m, cmd
+
+	case valleyWakeCheckMsg:
+		m.wakeHeld = false
+		if m.checking {
+			m.checkAgain = true
+			return m, nil
+		}
+		if !m.integrationOn {
+			return m, nil // the first load's check is yet to start
+		}
+		return m.startIntegrationCheck()
+
+	case integrationMsg:
+		m.integration = keepValleyViews(m.integration, msg.results)
+		m.changes = keepChangeViews(m.changes, msg.changes)
+		m.valleyErr = msg.valleyErr
+		if msg.restacks != nil {
+			m.restacks = msg.restacks
+		}
+		m.checking = false
+		if m.checkAgain {
+			m.checkAgain = false
+			return m.startIntegrationCheck()
+		}
+		m.checkSeq++
+		return m, integrationTickAfterCmd(m.checkSeq)
+
+	case ghStatusMsg:
+		now := time.Now()
+		m.ghLimitedUntil = msg.rateLimitedUntil
+		for url, v := range msg.statuses {
+			m.ghStatus[url] = v
+			if v.State == gh.StateNoAccess {
+				m.noAccessAt[url] = now
+			} else {
+				delete(m.noAccessAt, url)
+			}
+		}
+		// Feed statuses to the pipeline controller, which keys PRs by number:
+		// the first run state for a number decides which PR it tracks. PRs the
+		// agent can't read are left out; the pipeline can't act on them.
+		pStatuses := make(map[string]*pipeline.PRStatus, len(msg.statuses))
+		claimed := make(map[string]bool)
+		for _, s := range m.states {
+			prNum, url := extractPRNumber(s), extractPRRef(s)
+			if prNum == "" || claimed[prNum] {
+				continue
+			}
+			claimed[prNum] = true
+			v, ok := msg.statuses[url]
+			if !ok || v.State == gh.StateNoAccess {
+				continue
+			}
+			ps := &pipeline.PRStatus{
+				PRNumber:              v.PRNumber,
+				PRURL:                 url,
+				State:                 v.State,
+				CI:                    v.CI,
+				Conflicts:             v.Conflicts,
+				BehindBy:              v.BehindBy,
+				ReviewDecision:        v.ReviewDecision,
+				HasNewTrustedComments: v.HasNewTrustedComments,
+				Labels:                v.Labels,
+				HeadSHA:               v.HeadSHA,
+				TrustedFeedbackAt:     v.TrustedFeedbackAt,
+			}
+			if s.TargetRepo != nil {
+				ps.TargetRepo = *s.TargetRepo
+			}
+			pStatuses[prNum] = ps
+		}
+		actions := m.pipelineCtrl.HandleGHStatus(context.Background(), pStatuses, m.states)
+		m.pipelineStates = m.pipelineCtrl.PipelineStates()
+		if len(actions) > 0 {
+			return m, func() tea.Msg {
+				return pipelineActionMsg{actions: actions}
+			}
+		}
+
+	case pipelineActionMsg:
+		// Capture any error actions for TUI display.
+		for _, a := range msg.actions {
+			if a.Error != "" {
+				errMsg := a.Detail + " — " + a.Error
+				m.recentErrors = append(m.recentErrors, dashboardError{
+					Time:    time.Now(),
+					Message: errMsg,
+				})
+				if len(m.recentErrors) > 3 {
+					m.recentErrors = m.recentErrors[len(m.recentErrors)-3:]
+				}
+			}
+		}
+		// Pipeline dispatched agents or merged PRs — refresh state.
+		return m, loadStatesCmd(m.store)
+
+	case fsEventMsg:
+		return m, tea.Batch(loadStatesCmd(m.store), watchFSCmd(m.watcher, m.jobsDir))
+
+	case jobsFSMsg:
+		return m, tea.Batch(loadJobsCmd(m.jobsDir), watchFSCmd(m.watcher, m.jobsDir))
+
+	case jobsLoadedMsg:
+		m.jobs = msg.jobs
+		m.refreshJobDetail(time.Now())
+
+	case sandboxStatusMsg:
+		for k, v := range msg.hosts {
+			m.sandboxHosts[k] = v
+		}
+
+	case webhookMsg:
+		// Webhooks are invalidation signals, not data sources. When a
+		// webhook arrives, trigger an immediate re-fetch of PR status
+		// via the same code path that polling uses. This eliminates
+		// the class of bugs where the webhook path diverges from polling.
+		ev := msg.event
+		// Record the delivery time for the footer freshness indicator. Every
+		// delivery counts, regardless of PRNumber/type.
+		m.lastWebhookAt = time.Now()
+		if ev.PRNumber != "" {
+			// Find run states that match this PR for a targeted fetch.
+			var matchedStates []*run.State
+			for _, s := range m.states {
+				if extractPRNumber(s) == ev.PRNumber {
+					matchedStates = append(matchedStates, s)
+				}
+			}
+			if len(matchedStates) > 0 {
+				return m, tea.Batch(
+					m.fetchGHStatusCmd(matchedStates),
+					waitForWebhookCmd(m.webhookCh),
+				)
+			}
+		} else if ev.EventType == "push" && ev.Repo != "" {
+			// Push to default branch — re-fetch all open PRs since
+			// conflicts may have changed.
+			return m, tea.Batch(
+				m.fetchGHStatusCmd(m.states),
+				waitForWebhookCmd(m.webhookCh),
+			)
+		}
+		return m, waitForWebhookCmd(m.webhookCh)
+
+	case webhookClosedMsg:
+		// Live webhook consumption has stopped. Do not re-arm (re-reading a
+		// closed channel busy-loops). Surface it non-fatally; the reconcile
+		// heartbeat, if active, still bounds staleness.
+		m.recentErrors = append(m.recentErrors, dashboardError{
+			Time:    time.Now(),
+			Message: "webhook event channel closed; live webhook updates stopped (reconcile heartbeat still active)",
+		})
+		if len(m.recentErrors) > 3 {
+			m.recentErrors = m.recentErrors[len(m.recentErrors)-3:]
+		}
+		return m, nil
+
+	case internalEventMsg:
+		// Klaus-internal invalidation events are handled symmetrically to
+		// webhooks: a CLI command (e.g. `klaus approve`) signalled that the
+		// pipeline preconditions for a PR may have changed, so we trigger
+		// a targeted re-fetch of GitHub status. That re-fetch funnels into
+		// the same HandleGHStatus path that polling and webhooks use, so
+		// the FSM gets a fresh evaluation without any divergent code path.
+		ev := msg.event
+		prNum := internalEventPRNumber(ev)
+		if shouldInvalidate(ev.Type) && prNum != "" {
+			var matchedStates []*run.State
+			for _, s := range m.states {
+				if extractPRNumber(s) == prNum {
+					matchedStates = append(matchedStates, s)
+				}
+			}
+			if len(matchedStates) > 0 {
+				return m, tea.Batch(
+					m.fetchGHStatusCmd(matchedStates),
+					waitForInternalEventCmd(m.internalEventCh),
+				)
+			}
+		}
+		return m, waitForInternalEventCmd(m.internalEventCh)
+
+	case trustedCommentsMsg:
+		existing, ok := m.ghStatus[msg.prURL]
+		if ok {
+			existing.HasNewTrustedComments = msg.hasNewTrustedComments
+		}
+
+	case reconcileTickMsg:
+		// Slow reconcile heartbeat (webhook-only mode). Webhooks are the only
+		// reconcile trigger when poll_fallback is false, so a single dropped
+		// or missed event would strand a PR forever. This periodic full
+		// re-fetch bounds worst-case staleness (see issue #271). It re-arms
+		// itself; it is never scheduled when polling is active (which already
+		// re-fetches every 30s), so there is no double-fetch.
+		return m, tea.Batch(
+			m.fetchGHStatusCmd(m.states),
+			reconcileTickAfterCmd(m.reconcileEvery),
+		)
+
+	case tickMsg:
+		// Expire errors older than 3 minutes.
+		cutoff := time.Now().Add(-3 * time.Minute)
+		filtered := m.recentErrors[:0]
+		for _, e := range m.recentErrors {
+			if e.Time.After(cutoff) {
+				filtered = append(filtered, e)
+			}
+		}
+		m.recentErrors = filtered
+
+		cmds := []tea.Cmd{
+			checkSandboxCmd(m.states),
+			// Reloading the jobs judges again which running ones died.
+			loadJobsCmd(m.jobsDir),
+			tickAfterCmd(),
+		}
+		if m.bin != nil && m.restart == nil {
+			cmds = append(cmds, checkBinCmd(m.bin))
+		}
+		if m.pollEnabled {
+			cmds = append(cmds, m.fetchGHStatusCmd(m.states))
+		}
+		return m, tea.Batch(cmds...)
+
+	case *fsnotify.Watcher:
+		m.watcher = msg
+		return m, watchFSCmd(msg, m.jobsDir)
+
+	case binUpdateMsg:
+		if m.restart != nil {
+			break
+		}
+		m.restart = &msg
+		m.binNotice, m.binNoticeErr = "klaus updated to "+msg.version+"; restarting", false
+		// Show the notice for a moment before restarting.
+		return m, restartWaitCmd()
+
+	case restartWaitMsg:
+		return m.restartWhenIdle(time.Now())
+
+	case restartTargetMsg:
+		return m.restartOnto(msg.target, time.Now())
+
+	case errHintMsg:
+		m.noteError(msg.msg)
+
+	case errMsg:
+		m.err = msg.err
+	}
+
+	return m, nil
+}
+
+func (m dashboardModel) View() string {
+	if m.err != nil {
+		return fmt.Sprintf("Error: %v\n\nPress q to quit.", m.err)
+	}
+	if m.states == nil {
+		return "Loading..."
+	}
+
+	now := time.Now()
+	width := m.width
+	if width <= 0 {
+		width = defaultDashboardWidth
+	}
+	if m.detail != nil {
+		return m.renderJobDetail(width)
+	}
+	v := m.resolve(now)
+
+	chrome := func(c chromeItem) string {
+		switch c.kind {
+		case chromeHeader:
+			title := " klaus dashboard"
+			span := computeSessionDuration(m.states)
+			if first := m.cleared.FirstCreated; !first.IsZero() && now.Sub(first) > span {
+				span = now.Sub(first)
+			}
+			headerRight := fmt.Sprintf("Session: %s | Cost: $%.2f",
+				formatDuration(span), computeTotalCost(m.states)+m.cleared.CostUSD)
+			if now.Before(m.ghLimitedUntil) {
+				headerRight = "GitHub rate-limited until " + m.ghLimitedUntil.Format("15:04") + " | " + headerRight
+			}
+			pad := max(width-2-lipgloss.Width(title)-lipgloss.Width(headerRight), 1)
+			return headerStyle.Render(title + strings.Repeat(" ", pad) + headerRight)
+		case chromeSource:
+			return m.renderSourceLine()
+		case chromeSandbox:
+			return strings.TrimSuffix(renderSandboxStatus(m.sandboxHosts), "\n")
+		case chromeSummary:
+			return m.renderSummary(v, width)
+		case chromeError:
+			e := m.recentErrors[c.idx]
+			line := fmt.Sprintf("  %s ✗ %s", e.Time.Format("15:04"), e.Message)
+			return dimRedStyle.Render(truncateLine(line, max(width-1, 1)))
+		case chromeNotice:
+			style := yellowStyle
+			if m.binNoticeErr {
+				style = dimRedStyle
+			}
+			return style.Render(truncateLine("  "+m.binNotice, max(width-1, 1)))
+		case chromeValley:
+			return yellowStyle.Render(truncateLine("  "+integration.ValleyNote(m.valleyErr), max(width-1, 1)))
+		case chromeJobs:
+			return renderJobsHeader(v)
+		case chromeJob:
+			return renderJobLine(v.jobs[c.idx], v.jobFocus && c.idx == v.jobCursor, now)
+		case chromeFooter:
+			if v.jobFocus {
+				return renderJobsFooter(v, width)
+			}
+			return m.renderFooter(v, width)
+		}
+		return ""
+	}
+
+	var lines []string
+	for _, c := range v.chrome {
+		if c.top {
+			lines = append(lines, chrome(c))
+		}
+	}
+	if len(v.rows) == 0 && (m.height <= 0 || m.height > len(v.chrome)) {
+		msg := "  No runs found."
+		if v.hidden > 0 {
+			msg = fmt.Sprintf("  No runs to show: %d done hidden (h to show all).", v.hidden)
+		}
+		lines = append(lines, dimStyle.Render(msg))
+	}
+	lay := newRowLayout(v.all, width)
+	for i := v.offset; i < v.offset+v.bodyH && i < len(v.rows); i++ {
+		lines = append(lines, m.renderRow(v.rows[i], i == v.cursor && !v.jobFocus, lay, now))
+	}
+	for _, c := range v.chrome {
+		if !c.top {
+			lines = append(lines, chrome(c))
+		}
+	}
+
+	// One line each, never wrapped: a line break or a wrapped line would
+	// push rows off the bottom of the pane.
+	for i, l := range lines {
+		l, _, _ = strings.Cut(l, "\n")
+		lines[i] = ansi.Truncate(l, width, "…")
+	}
+	return strings.Join(lines, "\n")
+}

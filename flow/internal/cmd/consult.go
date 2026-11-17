@@ -1,0 +1,494 @@
+package cmd
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"sort"
+	"strings"
+	"syscall"
+	"time"
+
+	"the-valley/flow/internal/backend"
+	"the-valley/flow/internal/config"
+	"the-valley/flow/internal/consult"
+	"the-valley/flow/internal/event"
+	"the-valley/flow/internal/git"
+	"the-valley/flow/internal/jobs"
+	"the-valley/flow/internal/project"
+	"the-valley/flow/internal/run"
+	"github.com/spf13/cobra"
+)
+
+func newConsultCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "consult [flags] (\"<question>\" | --prompt-file PATH)",
+		Short: "Ask another model a read-only question without launching a worker",
+		Long: `Consult a model as a thinking partner, critic, or code reviewer. Answers stream
+as plain text. Defaults to the first installed backend other than KLAUS_BACKEND,
+using consult.order and per-backend model/effort defaults.
+
+Use --thread NAME for a persistent conversation in the current Klaus session
+(or the most recent session outside a pane). Its backend, model, effort, role,
+and directory are retained; conflicting overrides are rejected. --list shows
+these threads. One-shot questions also work without a Klaus session.
+
+--file inlines attachments (200KB total), each under a header with its path,
+so the partner needn't open them; for agy, which can't open a path outside its
+workspace, each sits between BEGIN and END lines. Attachment and prompt-file
+paths are relative to the invoking directory. --dir selects the partner's
+workspace, read as it stands. --repo selects a registered local project and
+reads a snapshot of origin's default branch (default_branch in the project's
+config, else main), fetched at the start of the turn: a detached worktree of
+the project's clone under ~/.klaus, never the clone's working tree. A
+--repo thread keeps the project and its own snapshot, which every later turn
+fetches and moves to the current origin branch; a one-shot consult's snapshot,
+shared by a panel, is removed when it ends. The prompt's first line names the
+commit read ("Workspace: <project> at origin/<branch> <commit>"), and the
+thread, the consult:started event and the job record keep it. When the fetch
+fails, a thread reads its last snapshot, with a warning naming its commit; with
+no snapshot yet, the consult fails. klaus cleanup --all removes threads'
+snapshots. --panel queries all
+installed model families other than the caller concurrently and groups their
+answers by backend. Panel answers are buffered to keep each response together.
+Each backend has a 10-minute deadline; use --timeout to change it. Timed-out
+members report "timed out" while other members finish.
+
+Inside a Klaus session each backend call emits consult:started and
+consult:completed events (see klaus watch) sharing a consult-... run ID, and
+leaves a job record under that ID (see klaus jobs): klaus status and the
+dashboard list it while it runs and after it ends. A one-shot consult's
+answer is saved beside the record, and a thread's stays in its log; either
+way 'klaus jobs show <id> --answer' prints it.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: runConsult,
+	}
+	f := c.Flags()
+	f.String("backend", "", "Model family: claude, codex, or agy (default: another installed family)")
+	f.String("model", "", "Model identifier (default: backends.<kind>.model)")
+	f.String("effort", "", "Reasoning effort (default: backends.<kind>.effort)")
+	f.String("role", "", "partner, critic, reviewer, or a verbatim system prompt (default: consult.default_role)")
+	f.String("thread", "", "Continue a named conversation in the current or most recent Klaus session")
+	f.String("dir", "", "Read-only workspace, read as it stands (default: cwd, or saved thread directory)")
+	f.String("repo", "", "Registered local project to read, as a fresh snapshot of origin's default branch")
+	f.StringArray("file", nil, "Inline a file in the prompt; repeatable, 200KB total")
+	f.String("prompt-file", "", "Read the question from a file instead of a positional argument")
+	f.Duration("timeout", 10*time.Minute, "Deadline per backend call (positive duration, e.g. 30s or 10m)")
+	f.Bool("panel", false, "Ask all installed families other than the caller concurrently")
+	f.Bool("list", false, "List stored threads with backend, turn count, and last-used time")
+	c.MarkFlagsMutuallyExclusive("dir", "repo")
+	c.MarkFlagsMutuallyExclusive("panel", "thread")
+	c.MarkFlagsMutuallyExclusive("panel", "backend")
+	return c
+}
+
+func runConsult(cmd *cobra.Command, args []string) error {
+	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	cmd.SetContext(ctx)
+	str := func(name string) string { v, _ := cmd.Flags().GetString(name); return v }
+	panel, _ := cmd.Flags().GetBool("panel")
+	list, _ := cmd.Flags().GetBool("list")
+	name := str("thread")
+	var store consult.Store
+	var jobStore jobs.Store
+	baseDir := ""
+	if s, err := sessionStore(); err == nil {
+		baseDir = s.(*run.HomeDirStore).BaseDir()
+		store = consult.NewStore(baseDir)
+		jobStore = jobs.NewStore(baseDir)
+	} else if list || name != "" {
+		return err
+	}
+	if list {
+		if len(args) > 0 {
+			return fmt.Errorf("--list cannot be combined with a question")
+		}
+		for _, flag := range []string{"backend", "model", "effort", "role", "thread", "dir", "repo", "file", "prompt-file", "panel"} {
+			if cmd.Flags().Changed(flag) {
+				return fmt.Errorf("--list cannot be combined with --%s", flag)
+			}
+		}
+		threads, err := store.List()
+		if err != nil {
+			return err
+		}
+		names := make([]string, 0, len(threads))
+		for n := range threads {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		fmt.Fprintln(cmd.OutOrStdout(), "THREAD\tBACKEND\tTURNS\tLAST-USED")
+		for _, n := range names {
+			t := threads[n]
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%d\t%s\n", n, t.Backend, t.Turns, t.LastUsed.Format(time.RFC3339))
+		}
+		return nil
+	}
+	timeout, _ := cmd.Flags().GetDuration("timeout")
+	if timeout <= 0 {
+		return fmt.Errorf("--timeout must be positive")
+	}
+	question, err := resolvePrompt(args, str("prompt-file"))
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(question) == "" {
+		return fmt.Errorf("question must not be empty")
+	}
+	excerpt := promptExcerpt(question)
+	paths, _ := cmd.Flags().GetStringArray("file")
+	files, err := consult.ReadFiles(paths)
+	if err != nil {
+		return err
+	}
+	var saved *consult.Thread
+	if name != "" {
+		unlock, err := store.Lock(name)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		saved, err = store.Load(name)
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	dir := str("dir")
+	repo := str("repo")
+	if saved != nil && (saved.Repo != "" || repo != "") {
+		switch {
+		case saved.Repo == "" || cmd.Flags().Changed("dir"):
+			return fmt.Errorf("workspace conflicts with saved thread %q", name)
+		case repo != "" && repo != saved.Repo:
+			return fmt.Errorf("--repo conflicts with saved thread %q", name)
+		}
+		repo = saved.Repo
+	}
+	// A --repo consult reads a snapshot of origin's default branch, fetched
+	// now: a thread's at a path of its own that every turn moves, a one-shot
+	// consult's (shared by a panel's members) in a directory removed after.
+	var snap *repoSnapshot
+	if repo != "" {
+		if name != "" {
+			if dir, err = store.WorkspaceDir(name); err != nil {
+				return err
+			}
+		} else {
+			var parent string
+			if parent, dir, err = oneShotSnapshotDir(repo); err != nil {
+				return err
+			}
+			defer func() {
+				warnSnapshot(cmd.ErrOrStderr(), git.RemoveSnapshot(context.Background(), dir))
+				os.RemoveAll(parent)
+			}()
+		}
+		if snap, err = prepareRepoSnapshot(cmd.Context(), repo, dir, cmd.ErrOrStderr()); err != nil {
+			return err
+		}
+	}
+	if dir == "" && saved != nil {
+		dir = saved.Dir
+	}
+	if dir == "" {
+		dir = "."
+	}
+	dir, err = filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	dir, err = filepath.EvalSymlinks(dir)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("workspace %s is not a directory", dir)
+	}
+	cfgDir := dir
+	if root, err := exec.CommandContext(cmd.Context(), "git", "-C", dir, "rev-parse", "--show-toplevel").Output(); err == nil {
+		cfgDir = strings.TrimSpace(string(root))
+	}
+	cfg, err := config.Load(cfgDir)
+	if err != nil {
+		return err
+	}
+	role := str("role")
+	if role == "" {
+		role = cfg.Consult.DefaultRole
+	}
+	if role == "" {
+		role = "partner"
+	}
+	var kinds []backend.Kind
+	switch {
+	case saved != nil:
+		if saved.BackendSessionID == "" {
+			return fmt.Errorf("thread %q has no backend session ID", name)
+		}
+		if kind, err := backend.Parse(string(saved.Backend)); err != nil || kind != saved.Backend {
+			return fmt.Errorf("invalid backend in saved thread %q", name)
+		}
+		for flag, value := range map[string]string{"backend": string(saved.Backend), "model": saved.Model, "effort": saved.Effort, "role": saved.Role} {
+			if cmd.Flags().Changed(flag) && str(flag) != value {
+				return fmt.Errorf("--%s conflicts with saved thread %q", flag, name)
+			}
+		}
+		if dir != saved.Dir {
+			return fmt.Errorf("workspace conflicts with saved thread %q", name)
+		}
+		kinds = []backend.Kind{saved.Backend}
+	case str("backend") != "":
+		kind, err := backend.Parse(str("backend"))
+		if err != nil {
+			return err
+		}
+		kinds = []backend.Kind{kind}
+	default:
+		order := cfg.Consult.Order
+		if len(order) == 0 {
+			order = []string{"codex", "claude", "agy"}
+		}
+		if panel {
+			order = append(append([]string{}, order...), "codex", "claude", "agy")
+		}
+		kinds, err = consult.Installed(order, os.Getenv("KLAUS_BACKEND"))
+		if err != nil {
+			return err
+		}
+		if len(kinds) == 0 {
+			return fmt.Errorf("no other backend installed; install one or choose --backend explicitly")
+		}
+		if !panel {
+			kinds = kinds[:1]
+		}
+	}
+	// A --repo consult carries the house rules, read once for all its members.
+	var houseRules string
+	if repo != "" {
+		reg, _ := project.Load()
+		_, clone := resolveRepoTarget(repo, "", reg)
+		houseRules = loadHouseRules(cmd.Context(), clone, cfg, reg, cmd.ErrOrStderr()).Text
+	}
+	threads := make([]*consult.Thread, 0, len(kinds))
+	for _, kind := range kinds {
+		defaults := cfg.AgentDefaults(string(kind))
+		t := &consult.Thread{Backend: kind, Model: defaults.Model, Effort: defaults.Effort, Role: role, Dir: dir, Repo: repo, CreatedAt: time.Now().UTC()}
+		if cmd.Flags().Changed("model") {
+			t.Model = str("model")
+		}
+		if cmd.Flags().Changed("effort") {
+			t.Effort = str("effort")
+		}
+		if saved != nil {
+			t = saved
+		}
+		if err := kind.ValidateEffort(t.Effort); err != nil {
+			return err
+		}
+		if snap != nil {
+			t.Commit = snap.commit
+		}
+		t.HouseRules = houseRules
+		threads = append(threads, t)
+	}
+	panelID := ""
+	if panel {
+		panelID = eventID("panel")
+	}
+	ask := func(t *consult.Thread, out, errOut io.Writer) (askErr error) {
+		prompt := consult.InlineFiles(t.Backend, question, files)
+		if snap != nil {
+			prompt = snap.workspaceLine() + "\n\n" + prompt
+		}
+		callCtx, cancel := context.WithTimeout(cmd.Context(), timeout)
+		defer cancel()
+		start := time.Now()
+		var job *jobs.Job
+		var turn *consult.Turn
+		var result consult.Result
+		if baseDir != "" {
+			consultID, data := consultEventID(), map[string]interface{}{"backend": t.Backend, "model": t.Model, "effort": t.Effort, "role": t.Role, "thread": name, "dir": t.Dir, "panel": panel, "prompt": excerpt}
+			if snap != nil {
+				data["repo"] = snap.project
+				data["commit"] = snap.commit
+			}
+			if str("prompt-file") != "" {
+				data["prompt_file"] = str("prompt-file")
+			}
+			if key := dirRepoKey(cmd.Context(), t.Dir); key != "" {
+				data["repo_key"] = key
+			}
+			job = &jobs.Job{ID: consultID, Kind: jobs.KindConsult, Panel: panelID, Thread: name, Role: t.Role,
+				Backend: string(t.Backend), Model: t.Model, Effort: t.Effort, Dir: t.Dir, Repo: repo, Commit: t.Commit, Prompt: excerpt}
+			warnJob(errOut, job, jobStore.Start(job))
+			emitEvent(baseDir, consultID, event.ConsultStarted, data)
+			// SIGINT/SIGTERM cancel cmd.Context() rather than killing the
+			// process, so every start gets a completion except on SIGKILL.
+			defer func() {
+				status, errText := jobOutcome(askErr, cmd.Context().Err() != nil,
+					errors.Is(callCtx.Err(), context.DeadlineExceeded), "timeout after "+timeout.String())
+				done := make(map[string]interface{}, len(data)+3)
+				for k, v := range data {
+					done[k] = v
+				}
+				done["duration_ms"] = time.Since(start).Milliseconds()
+				done["success"] = askErr == nil
+				if errText != "" {
+					done["error"] = errText
+				}
+				emitEvent(baseDir, consultID, event.ConsultCompleted, done)
+				finishConsultJob(jobStore, job, turn, result, status, errText, errOut)
+			}()
+		}
+		id := ""
+		if name != "" && t.Backend == backend.Claude && t.BackendSessionID == "" {
+			id = genUUIDv4()
+		}
+		if name != "" {
+			revision := t.Commit
+			if snap == nil {
+				out, _ := exec.CommandContext(callCtx, "git", "-C", t.Dir, "rev-parse", "--short", "HEAD").Output()
+				revision = strings.TrimSpace(string(out))
+			}
+			var err error
+			turn, err = store.BeginTurn(name, t, prompt, revision)
+			if err != nil {
+				return err
+			}
+			if job != nil {
+				job.Turn = turn.Number
+				warnJob(errOut, job, jobStore.Save(job))
+			}
+		}
+		result, askErr = consult.Ask(callCtx, t, prompt, name != "", id, out, errOut)
+		if name != "" {
+			if askErr != nil {
+				path, err := store.SaveRaw(name, turn.Number, result)
+				if err != nil {
+					askErr = errors.Join(askErr, fmt.Errorf("saving raw output %s: %w", path, err))
+				} else {
+					turn.RawOutput = path
+					askErr = fmt.Errorf("%w; raw output: %s", askErr, path)
+				}
+			}
+			if result.SessionID != "" && (askErr == nil || result.SessionIDSource != "assigned") {
+				t.BackendSessionID = result.SessionID
+				if askErr == nil {
+					t.Turns++
+				}
+				t.LastUsed = time.Now().UTC()
+				askErr = errors.Join(askErr, store.Save(name, t))
+			}
+			askErr = errors.Join(askErr, store.FinishTurn(name, turn, result, askErr))
+		}
+		return askErr
+	}
+
+	if !panel {
+		return ask(threads[0], cmd.OutOrStdout(), cmd.ErrOrStderr())
+	}
+	type result struct {
+		thread         *consult.Thread
+		answer, stderr string
+		err            error
+	}
+	results := make(chan result, len(threads))
+	for _, t := range threads {
+		go func() {
+			var out, errOut bytes.Buffer
+			err := ask(t, &out, &errOut)
+			results <- result{t, out.String(), errOut.String(), err}
+		}()
+	}
+	var errs []error
+	for range threads {
+		r := <-results
+		model := r.thread.Model
+		if model == "" {
+			model = "default"
+		}
+		if errors.Is(r.err, context.DeadlineExceeded) {
+			r.answer = "timed out"
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "## %s (%s)\n\n%s\n", r.thread.Backend, model, r.answer)
+		if r.stderr != "" {
+			fmt.Fprintf(cmd.ErrOrStderr(), "[%s]\n%s", r.thread.Backend, r.stderr)
+		}
+		if r.err != nil {
+			errs = append(errs, r.err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// warnSnapshot reports a one-shot consult's snapshot that couldn't be
+// removed; the answer stands.
+func warnSnapshot(w io.Writer, err error) {
+	if err != nil {
+		fmt.Fprintf(w, "warning: %v\n", err)
+	}
+}
+
+// consultEventID identifies one backend call in events.jsonl and its job
+// record, using the run ID format with a consult- prefix so it never
+// collides with an agent run.
+func consultEventID() string { return eventID("consult") }
+
+// eventID is a run ID with a prefix, such as consult-, review- or panel-.
+func eventID(prefix string) string {
+	id, err := run.GenID()
+	if err != nil {
+		id = time.Now().Format("20060102-1504")
+	}
+	return prefix + "-" + id
+}
+
+// finishConsultJob records how a consult call ended, and where its answer
+// is: a threaded consult's turn already keeps it, and its raw output on
+// failure; a one-shot consult's answer, or on failure everything the backend
+// wrote, goes in a file beside the record.
+func finishConsultJob(store jobs.Store, job *jobs.Job, turn *consult.Turn, result consult.Result, status jobs.Status, errText string, warn io.Writer) {
+	switch {
+	case turn != nil:
+		job.RawOutput = turn.RawOutput
+	case job.Thread != "":
+		// The thread never began its turn: there is no output.
+	case status == jobs.Succeeded:
+		path, err := store.WriteFile(job.ID, ".answer", []byte(result.Answer))
+		warnJob(warn, job, err)
+		if err == nil {
+			job.AnswerFile = path
+		}
+	case result.Answer != "" || result.Stderr != "":
+		path, err := store.WriteFile(job.ID, ".raw", []byte(result.Raw()))
+		warnJob(warn, job, err)
+		if err == nil {
+			job.RawOutput = path
+		}
+	}
+	warnJob(warn, job, store.Finish(job, status, errText))
+}
+
+// promptExcerpt is the first non-blank line of the question, capped at 120
+// characters, so events identify a consult without carrying the full prompt.
+func promptExcerpt(prompt string) string {
+	for _, line := range strings.Split(prompt, "\n") {
+		if strings.TrimSpace(line) != "" {
+			return truncateLine(line, 120)
+		}
+	}
+	return ""
+}
+
+func init() { rootCmd.AddCommand(newConsultCmd()) }

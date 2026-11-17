@@ -1,0 +1,241 @@
+// Package integration observes whether the work of a run that finished by
+// pushing its branch (no PR) has landed on its repo's default branch, and,
+// for a repo that delivers to a valley, where the run's change stands there.
+//
+// It is a display-time observation: nothing is persisted and no event is
+// emitted. If an observation is wrong, the next check corrects it.
+package integration
+
+import (
+	"context"
+
+	"the-valley/flow/internal/run"
+	"the-valley/flow/internal/valley"
+)
+
+// Verdict is what a check observed about one pushed run.
+type Verdict int
+
+const (
+	// Unknown means the check could not complete (no clone, origin
+	// unreachable, fetch failed), or the branch is gone but the clone lacks
+	// the history to rule out that it landed. Callers show the run as
+	// awaiting.
+	Unknown Verdict = iota
+	// Awaiting means the branch is on origin and its work has not landed.
+	Awaiting
+	// Integrated means the pushed SHA, or the branch's current tip, is an
+	// ancestor of the default branch.
+	Integrated
+	// IntegratedContent means a commit on the default branch carries the
+	// same change as the branch (equal patch-ids). It is evidence, not proof.
+	IntegratedContent
+	// Gone means the branch was deleted from origin without landing, as far
+	// as a complete check of the clone's history can tell.
+	Gone
+
+	// The verdicts below come from a valley's record of the run's version
+	// (ValleyChecker). A version the valley says landed is Integrated.
+
+	// Ready means the version is its change's active one, ready and
+	// awaiting the operator's approval.
+	Ready
+	// Approved means an integration request is filed for the version and the
+	// integrator hasn't decided it yet, or it judged the request stale only
+	// because the host's checks are pending (see StaleReason).
+	Approved
+	// Uncertain means a request for the version was consumed or failed with
+	// no landing evidence, or the valley's record says something klaus
+	// doesn't know. The operator must look.
+	Uncertain
+	// Stale, Rejected and Failed are the integrator's decision on the
+	// version's request.
+	Stale
+	Rejected
+	Failed
+	// ChecksFailed is a stale decision on a version whose checks failed.
+	ChecksFailed
+	// Conflicting is a stale decision on a change whose current restack
+	// report says a rebase conflicted.
+	Conflicting
+	// Withdrawn means the change was withdrawn.
+	Withdrawn
+	// Superseded means another version of the change is the active one, and
+	// the change hasn't landed.
+	Superseded
+	// Draft means the change is back with its submitter (`valley unready`),
+	// as when a follow-up run continues it: approve refuses it until a head
+	// is marked ready again.
+	Draft
+)
+
+// Landed reports whether the verdict says the run's work is on the default
+// branch.
+func (v Verdict) Landed() bool {
+	return v == Integrated || v == IntegratedContent
+}
+
+// Settled reports whether nothing is left to do for the run: its work
+// landed, its branch is gone, or its change was withdrawn or superseded.
+func (v Verdict) Settled() bool {
+	return v.Landed() || v == Gone || v == Withdrawn || v == Superseded
+}
+
+func (v Verdict) String() string {
+	switch v {
+	case Awaiting:
+		return "awaiting"
+	case Integrated:
+		return "integrated"
+	case IntegratedContent:
+		return "integrated-content"
+	case Gone:
+		return "gone"
+	case Ready:
+		return "ready"
+	case Approved:
+		return "approved"
+	case Uncertain:
+		return "uncertain"
+	case Stale:
+		return "stale"
+	case ChecksFailed:
+		return "checks-failed"
+	case Conflicting:
+		return "conflicting"
+	case Rejected:
+		return "rejected"
+	case Failed:
+		return "failed"
+	case Withdrawn:
+		return "withdrawn"
+	case Superseded:
+		return "superseded"
+	case Draft:
+		return "draft"
+	default:
+		return "unknown"
+	}
+}
+
+// Result is what a check observed about one pushed run.
+type Result struct {
+	Verdict Verdict
+	// Change is the valley's record of the run's change when a valley placed
+	// the run; nil when git judged it.
+	Change *Change
+	// Outdated marks a valley's view from an earlier check, kept by a caller
+	// because the latest check couldn't place the run. Checkers never set it.
+	Outdated bool
+}
+
+// Change is how a valley knows a run: the version of a change that the
+// run's pushed head is.
+type Change struct {
+	Repo     string // the valley's name for the repo
+	ChangeID string
+	Handle   string
+	Title    string
+	Version  int    // the run's version
+	Head     string // the version's head, which is the run's pushed SHA
+	Branch   string // the branch the version's head was pushed to, when known
+	// Active is set when the run's version is its change's active one. Every
+	// version of a change that landed reads Integrated, whichever is active.
+	Active bool
+	// LandedAs and LandedCommit are the version the change landed as and the
+	// commit it landed as (its landed_commit, else its head), when the valley
+	// says it landed (LandedAs).
+	LandedAs     int
+	LandedCommit string
+	// Knots are the IDs of the knots in the repo's plan graph that link the
+	// change, as the valley lists them.
+	Knots []string
+	// Checks is the host's check worker's view of the version's required
+	// checks, which the valley lists on a ready change's active version;
+	// nil when unknown.
+	Checks *valley.Checks
+}
+
+// ChangeKey identifies a change across runs and in a valley's listing: the
+// valley's name for its repo (RepoName) and its change ID.
+type ChangeKey struct{ Repo, ChangeID string }
+
+// Report is what a check observed.
+type Report struct {
+	// Runs holds a result per pushed run, by run ID. Runs a check can't
+	// judge are Unknown or missing; callers treat both as awaiting.
+	Runs map[string]Result
+	// Changes holds a valley's view of every change it lists in a repo it
+	// could read and a state klaus knows: the change's active version, with
+	// Active set, whichever machine marked it ready. It decides where a
+	// change stands; a run's own result says only where its version does.
+	// nil when no valley was asked, or it couldn't be.
+	Changes map[ChangeKey]Result
+	// Listing is the valley's listing the check read, as it read it; nil
+	// when no valley was asked, or it couldn't be.
+	Listing *valley.Changes
+	// Asked is set when the check asked a valley, whether or not it could
+	// be asked.
+	Asked bool
+	// ValleyErr is why the valley couldn't be asked, in one line; "" when
+	// it was asked and answered, or not asked. The runs were judged by git.
+	ValleyErr string
+}
+
+// ValleyNote is the one-line note for a failed valley check, "" when err is
+// empty.
+func ValleyNote(err string) string {
+	if err == "" {
+		return ""
+	}
+	return "valley unreachable: " + err + "; showing git's view"
+}
+
+// Checker observes integration for a set of pushed runs.
+//
+// GitChecker judges runs with git alone. ValleyChecker asks a valley about
+// the runs it serves and defers to a GitChecker for the rest.
+type Checker interface {
+	Check(ctx context.Context, runs []*run.State) Report
+}
+
+// Applies reports whether a run carries what a check needs: the branch it
+// pushed and the SHA it pushed.
+func Applies(s *run.State) bool {
+	return s.PushedBranch != nil && *s.PushedBranch != "" && s.PushedSHA != nil && *s.PushedSHA != ""
+}
+
+// RecordedChange is the change version finalize recorded for a run when it
+// marked the run's pushed head ready on a valley, or nil when it marked none.
+// It stands in for the valley's view when a check couldn't ask the valley.
+func RecordedChange(s *run.State) *Change {
+	v := s.Valley
+	if v == nil || v.Handle == "" || s.PushedSHA == nil {
+		return nil
+	}
+	c := &Change{Repo: v.Repo, ChangeID: s.ChangeID, Handle: v.Handle, Title: v.Title, Version: v.Version, Head: *s.PushedSHA}
+	if s.PushedBranch != nil {
+		c.Branch = *s.PushedBranch
+	}
+	return c
+}
+
+// TracksChange reports whether s is the record `klaus track` keeps of a
+// valley change: a track record naming the change and the valley's name for
+// its repo. It has no push of its own; where the change stands comes from
+// the valley's listing (Report.Changes).
+func TracksChange(s *run.State) bool {
+	return s.Type == "track" && s.ChangeID != "" && s.Valley != nil && s.Valley.Repo != ""
+}
+
+// TrackedChange is the change a tracked valley change's record names, as
+// klaus track found its active version, or nil when s isn't one. It stands
+// in for the valley's view until a check gets one.
+func TrackedChange(s *run.State) *Change {
+	if !TracksChange(s) {
+		return nil
+	}
+	v := s.Valley
+	return &Change{Repo: v.Repo, ChangeID: s.ChangeID, Handle: v.Handle, Title: v.Title,
+		Version: v.Version, Head: s.HeadSHA, Branch: s.Branch, Active: true}
+}

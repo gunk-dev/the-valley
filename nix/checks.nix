@@ -88,6 +88,13 @@
 #                    machine: its controller restacking a ready change
 #                    over sshd as its own principal, its Unix user's
 #                    isolation, and what its key can push
+#   flow.nix         flow-build, flow-unit, flow-vet, flow-e2e — klaus
+#                    (flow/): its package and version stamp, its unit
+#                    tests, go vet, and its end-to-end suite over real git,
+#                    a private tmux server and the valley command
+#   flow-policy.nix  flow-policy — what the project policy requires of a
+#                    change around klaus, from its Go and prose to the
+#                    valley command its end-to-end suite runs
 #   web-publisher-e2e.nix
 #                    web-publisher-e2e — the web publisher's sandbox in
 #                    a NixOS machine: the unit the module renders, with a
@@ -200,3 +207,5 @@ import ./checks/host-module.nix args
 // import ./checks/telemetry.nix args
 // import ./checks/restack-host-e2e.nix args
 // import ./checks/web-publisher-e2e.nix args
+// import ./checks/flow.nix args
+// import ./checks/flow-policy.nix args

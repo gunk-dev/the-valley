@@ -1,0 +1,485 @@
+//go:build e2e
+
+package e2e
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"the-valley/flow/internal/cmd"
+	"the-valley/flow/internal/config"
+	"the-valley/flow/internal/run"
+)
+
+// TestLaunchLifecycle is the headline scenario. With a fake claude, a real git
+// worktree, and a fake gh, it drives `klaus launch` end-to-end and asserts the
+// full lifecycle:
+//
+//	(a) a real pane is created in the isolated tmux server with the agent title,
+//	(b) run state is written with a branch, worktree, and pane,
+//	(c) the fake claude was invoked with the expected args,
+//	(d) after the agent completes, _finalize populates cost/duration/PR URL from
+//	    the stub's emitted stream-json, and
+//	(e) the worktree is removed and the pane is killed.
+//
+// The origin is on GitHub (UseGitHubOrigin), so the run delivers by PR and
+// takes the PR URL its log names.
+func TestLaunchLifecycle(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+	h.UseGitHubOrigin()
+
+	const prompt = "add a health check endpoint"
+	res := h.RunKlaus("launch", prompt)
+	if res.ExitCode != 0 {
+		t.Fatalf("launch exited %d\nstdout:\n%s\nstderr:\n%s", res.ExitCode, res.Stdout, res.Stderr)
+	}
+
+	// Exactly one run should have been recorded.
+	ids := h.RunIDs()
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 run, got %d: %v", len(ids), ids)
+	}
+	runID := ids[0]
+
+	// (b) State is written with branch/worktree/pane while the agent runs.
+	st, err := h.ReadState(runID)
+	if err != nil {
+		t.Fatalf("reading state: %v", err)
+	}
+	if st.Branch == "" {
+		t.Error("state has empty Branch")
+	}
+	if st.Worktree == "" {
+		t.Error("state has empty Worktree")
+	}
+	if st.TmuxPane == nil || *st.TmuxPane == "" {
+		t.Fatal("state has no TmuxPane")
+	}
+	pane := *st.TmuxPane
+
+	// The worktree should actually exist on disk during the run.
+	if _, err := os.Stat(st.Worktree); err != nil {
+		t.Errorf("worktree should exist during run: %v", err)
+	}
+
+	// Wait until the fake claude is actually running in the pane before we
+	// assert on the live pane (the stub blocks until released).
+	h.WaitForClaudeStart(30 * time.Second)
+
+	// (a) The pane exists in the isolated server with the expected title.
+	if !h.PaneExists(pane) {
+		t.Fatalf("expected pane %s to exist; panes: %v", pane, h.ListPanes())
+	}
+	wantTitle := cmd.FormatPaneTitle(runID, "", prompt)
+	if got := h.PaneTitle(pane); got != wantTitle {
+		t.Errorf("pane title = %q, want %q", got, wantTitle)
+	}
+
+	// (c) claude was invoked with the expected args, and the prompt on stdin.
+	argv := h.ClaudeArgv()
+	for _, want := range []string{"-p", "--output-format", "stream-json", "--max-budget-usd", "--append-system-prompt-file"} {
+		if !strings.Contains(argv, want) {
+			t.Errorf("claude argv missing %q\n--- argv ---\n%s", want, argv)
+		}
+	}
+	if strings.Contains(argv, prompt) {
+		t.Errorf("prompt should not be in argv\n--- argv ---\n%s", argv)
+	}
+	if got := h.ClaudeStdin(); got != prompt {
+		t.Errorf("claude stdin = %q, want the prompt %q", got, prompt)
+	}
+	// With neither flag nor config set, the claude command must not carry
+	// --model/--effort at all — claude's own resolution applies unchanged.
+	for _, absent := range []string{"--model", "--effort"} {
+		if strings.Contains(argv, absent) {
+			t.Errorf("claude argv should not carry %q when unset\n--- argv ---\n%s", absent, argv)
+		}
+	}
+
+	// Let the agent finish; the pipeline runs _format-stream then _finalize.
+	h.ReleaseClaude()
+
+	// (d) _finalize populates cost/duration/PR URL from the emitted log.
+	final := h.WaitForState(runID, func(s *run.State) bool {
+		return s.CostUSD != nil && s.TmuxPane == nil
+	}, 30*time.Second)
+
+	if final.CostUSD == nil || *final.CostUSD != 0.1234 {
+		t.Errorf("CostUSD = %v, want 0.1234", final.CostUSD)
+	}
+	if final.DurationMS == nil || *final.DurationMS != 4242 {
+		t.Errorf("DurationMS = %v, want 4242", final.DurationMS)
+	}
+	if final.Delivery != run.DeliveryPR {
+		t.Errorf("Delivery = %q, want %q", final.Delivery, run.DeliveryPR)
+	}
+	if final.PRURL == nil || *final.PRURL != "https://github.com/acme/widget/pull/4242" {
+		t.Errorf("PRURL = %v, want the PR URL from the stub log", final.PRURL)
+	}
+
+	// (e) The worktree is removed and the pane is killed.
+	if final.Worktree != "" {
+		t.Errorf("Worktree should be cleared after cleanup, got %q", final.Worktree)
+	}
+	if _, err := os.Stat(st.Worktree); !os.IsNotExist(err) {
+		t.Errorf("worktree dir should be removed, stat err: %v", err)
+	}
+	waitPaneGone(t, h, pane, 30*time.Second)
+}
+
+// waitPaneGone polls until the pane disappears from the isolated server.
+func waitPaneGone(t *testing.T, h *Harness, pane string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !h.PaneExists(pane) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Errorf("pane %s still alive after %s; panes: %v", pane, timeout, h.ListPanes())
+}
+
+// TestLaunchPromptFile covers the failure --prompt-file exists to prevent: a
+// prompt full of backticks passed as a shell argument is mangled by the shell
+// (in zsh, backticks inside double quotes are command substitution) long before
+// klaus sees it. Read from a file, the prompt must reach run state — and the
+// agent — byte for byte.
+func TestLaunchPromptFile(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+
+	const prompt = "Fix `ValidateToken()` in internal/auth/verify.go:87 —\n" +
+		"it uses `Before()` where it should use `After()`.\n" +
+		"Do not touch $HOME handling; run `go test ./...` before pushing.\n"
+	promptPath := filepath.Join(h.E2EDir, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte(prompt), 0o644); err != nil {
+		t.Fatalf("writing prompt file: %v", err)
+	}
+
+	res := h.RunKlaus("launch", "--prompt-file", promptPath, "--budget", "7.50")
+	if res.ExitCode != 0 {
+		t.Fatalf("launch exited %d\nstdout:\n%s\nstderr:\n%s", res.ExitCode, res.Stdout, res.Stderr)
+	}
+
+	ids := h.RunIDs()
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 run, got %d: %v", len(ids), ids)
+	}
+	runID := ids[0]
+
+	st, err := h.ReadState(runID)
+	if err != nil {
+		t.Fatalf("reading state: %v", err)
+	}
+	if st.Prompt != prompt {
+		t.Errorf("state prompt does not match the file byte for byte:\n got: %q\nwant: %q", st.Prompt, prompt)
+	}
+	// Everything else downstream behaves as it does for a positional prompt.
+	if st.Budget == nil || *st.Budget != "7.50" {
+		t.Errorf("Budget = %v, want 7.50", st.Budget)
+	}
+	if st.Branch == "" || st.Worktree == "" || st.TmuxPane == nil {
+		t.Errorf("state incomplete: branch=%q worktree=%q pane=%v", st.Branch, st.Worktree, st.TmuxPane)
+	}
+
+	// The agent is actually briefed with the full text, backticks intact.
+	h.WaitForClaudeStart(30 * time.Second)
+	if got := h.ClaudeStdin(); got != prompt {
+		t.Errorf("claude stdin does not match the file prompt:\n got: %q\nwant: %q", got, prompt)
+	}
+
+	h.ReleaseClaude()
+	h.WaitForState(runID, func(s *run.State) bool { return s.TmuxPane == nil }, 30*time.Second)
+}
+
+// TestLaunchModelEffort covers per-launch model/effort selection: config
+// defaults apply when a flag is unset, a flag overrides the config default,
+// the values reach the claude argv, and the run state records what the run
+// executed under.
+func TestLaunchModelEffort(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+
+	// Config sets defaults for both; the launch overrides only --effort.
+	h.AmendRepoConfig(map[string]any{
+		"default_agent_model":  "claude-config-model",
+		"default_agent_effort": "high",
+	})
+
+	res := h.RunKlaus("launch", "add retries to the fetcher", "--effort", "low")
+	if res.ExitCode != 0 {
+		t.Fatalf("launch exited %d\nstdout:\n%s\nstderr:\n%s", res.ExitCode, res.Stdout, res.Stderr)
+	}
+
+	ids := h.RunIDs()
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 run, got %d: %v", len(ids), ids)
+	}
+
+	h.WaitForClaudeStart(30 * time.Second)
+	argv := h.ClaudeArgv()
+	// Config default applies for the model; the flag wins for effort.
+	if !strings.Contains(argv, "--model\nclaude-config-model\n") {
+		t.Errorf("claude argv missing config-default model\n--- argv ---\n%s", argv)
+	}
+	if !strings.Contains(argv, "--effort\nlow\n") {
+		t.Errorf("claude argv missing flag-override effort\n--- argv ---\n%s", argv)
+	}
+	if strings.Contains(argv, "--effort\nhigh\n") {
+		t.Errorf("config effort should be overridden by the flag\n--- argv ---\n%s", argv)
+	}
+
+	// Run state records what the run executed under.
+	st, err := h.ReadState(ids[0])
+	if err != nil {
+		t.Fatalf("reading state: %v", err)
+	}
+	if st.Model == nil || *st.Model != "claude-config-model" {
+		t.Errorf("state Model = %v, want claude-config-model", st.Model)
+	}
+	if st.Effort == nil || *st.Effort != "low" {
+		t.Errorf("state Effort = %v, want low", st.Effort)
+	}
+
+	h.ReleaseClaude()
+	h.WaitForState(ids[0], func(s *run.State) bool { return s.TmuxPane == nil }, 30*time.Second)
+}
+
+// TestLaunchInvalidEffort asserts an effort outside the claude CLI's set is
+// rejected up front: non-zero exit, an error naming the valid values, and no
+// run recorded.
+func TestLaunchInvalidEffort(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+
+	res := h.RunKlaus("launch", "do the thing", "--effort", "turbo")
+	if res.ExitCode == 0 {
+		t.Fatalf("launch with invalid effort exited 0\nstdout:\n%s", res.Stdout)
+	}
+	for _, want := range []string{"turbo", "low", "medium", "high", "xhigh", "max"} {
+		if !strings.Contains(res.Stderr, want) {
+			t.Errorf("stderr should mention %q, got:\n%s", want, res.Stderr)
+		}
+	}
+	if ids := h.RunIDs(); len(ids) != 0 {
+		t.Errorf("no run should have been recorded, got %v", ids)
+	}
+}
+
+// TestLaunchPromptSourceErrors asserts the prompt source is unambiguous: both
+// sources or neither is a clear error and no agent is launched.
+func TestLaunchPromptSourceErrors(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+
+	promptPath := filepath.Join(h.E2EDir, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("do the thing\n"), 0o644); err != nil {
+		t.Fatalf("writing prompt file: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"both sources", []string{"launch", "do the thing", "--prompt-file", promptPath}},
+		{"no source", []string{"launch"}},
+		{"missing file", []string{"launch", "--prompt-file", filepath.Join(h.E2EDir, "nope.md")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := h.RunKlaus(tc.args...)
+			if res.ExitCode == 0 {
+				t.Fatalf("launch %v exited 0, want a failure\nstdout:\n%s", tc.args, res.Stdout)
+			}
+			if !strings.Contains(res.Stderr, "prompt") {
+				t.Errorf("stderr should name the problem, got:\n%s", res.Stderr)
+			}
+		})
+	}
+
+	if ids := h.RunIDs(); len(ids) != 0 {
+		t.Errorf("no run should have been recorded, got %v", ids)
+	}
+}
+
+// TestLaunchLongPromptOverStdin is the regression test for issue #308: a brief
+// well past tmux's ~16KB command limit launches through the real tmux path,
+// reaches the worker byte for byte on stdin, and stays on disk as the audit copy.
+func TestLaunchLongPromptOverStdin(t *testing.T) {
+	for _, kind := range []string{"claude", "codex"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			h := NewHarness(t)
+			h.WriteStub(kind, h.claudeStubScript())
+
+			line := "Fix `ValidateToken()`; don't touch $(rm -rf ~) or ${HOME} or #{pane_id} — keep \"quotes\" and 'these'.\n"
+			prompt := strings.Repeat(line, 40*1024/len(line)+1)
+			promptPath := filepath.Join(h.E2EDir, "brief.md")
+			if err := os.WriteFile(promptPath, []byte(prompt), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			res := h.RunKlaus("launch", "--backend", kind, "--prompt-file", promptPath)
+			if res.ExitCode != 0 {
+				t.Fatalf("launch exited %d\nstdout:\n%s\nstderr:\n%.2000s", res.ExitCode, res.Stdout, res.Stderr)
+			}
+			ids := h.RunIDs()
+			if len(ids) != 1 {
+				t.Fatalf("expected 1 run, got %v", ids)
+			}
+			runID := ids[0]
+			st, err := h.ReadState(runID)
+			if err != nil || st.TmuxPane == nil {
+				t.Fatalf("state: %+v, %v", st, err)
+			}
+
+			h.WaitForClaudeStart(30 * time.Second)
+			if got := h.ClaudeStdin(); got != prompt {
+				t.Fatalf("worker stdin is %d bytes, want the %d-byte prompt verbatim", len(got), len(prompt))
+			}
+			if argv := h.ClaudeArgv(); strings.Contains(argv, "ValidateToken") {
+				t.Fatalf("prompt leaked into argv:\n%.500s", argv)
+			}
+
+			saved := filepath.Join(h.Home, ".klaus", "sessions", h.SessionID, "prompts", runID+".md")
+			info, err := os.Stat(saved)
+			if err != nil || info.Mode().Perm() != 0o600 {
+				t.Fatalf("prompt file %s: %v, %v", saved, info, err)
+			}
+
+			releaseBackendWorkers(t, h)
+			if data, err := os.ReadFile(saved); err != nil || string(data) != prompt {
+				t.Fatalf("audit copy of the prompt not kept after the run: %v", err)
+			}
+		})
+	}
+}
+
+// TestLaunchSizeGuard: when an inline part (here the worker system prompt,
+// which Codex takes as an argument) would push the pane command past tmux's
+// limit, launch fails up front with the sizes, before creating a worktree.
+// Claude reads the same system prompt from a file and launches fine.
+func TestLaunchSizeGuard(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+	sysPrompt := strings.Repeat("Follow the house rules.\n", 13000/24+1)
+	if err := os.WriteFile(filepath.Join(h.RepoDir, ".klaus", "prompt.md"), []byte(sysPrompt), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := h.RunKlaus("launch", "--backend", "codex", "small task")
+	if res.ExitCode == 0 {
+		t.Fatalf("launch should fail the size guard\nstdout:\n%s", res.Stdout)
+	}
+	delivery, err := config.RenderDelivery(config.PromptVars{DirectPush: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSize := fmt.Sprintf("the worker system prompt is %d bytes", len(config.WithWorkerRules(strings.TrimRight(sysPrompt, "\n")+"\n\n"+delivery)))
+	for _, want := range []string{"over the 12000-byte limit", wantSize} {
+		if !strings.Contains(res.Stderr, want) {
+			t.Errorf("stderr missing %q:\n%s", want, res.Stderr)
+		}
+	}
+	if strings.Contains(res.Stderr, "cleaning up worktree") || strings.Contains(res.Stdout, "worktree:") {
+		t.Errorf("guard fired after the worktree was created:\n%s%s", res.Stdout, res.Stderr)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(filepath.Dir(h.RepoDir), "worktrees")); len(entries) != 0 {
+		t.Errorf("worktree base should be empty, has %d entries", len(entries))
+	}
+	if ids := h.RunIDs(); len(ids) != 0 {
+		t.Errorf("no run should have been recorded, got %v", ids)
+	}
+
+	res = h.RunKlaus("launch", "small task")
+	if res.ExitCode != 0 {
+		t.Fatalf("claude launch exited %d\nstdout:\n%s\nstderr:\n%.2000s", res.ExitCode, res.Stdout, res.Stderr)
+	}
+	h.WaitForClaudeStart(30 * time.Second)
+	argv := strings.Split(h.ClaudeArgv(), "\n")
+	var sysFile string
+	for i, a := range argv {
+		if a == "--append-system-prompt-file" && i+1 < len(argv) {
+			sysFile = argv[i+1]
+		}
+	}
+	if data, err := os.ReadFile(sysFile); err != nil || !strings.Contains(string(data), sysPrompt) {
+		t.Fatalf("system prompt file %q not written: %v", sysFile, err)
+	}
+	h.ReleaseClaude()
+	h.WaitForState(h.RunIDs()[0], func(s *run.State) bool { return s.TmuxPane == nil && s.Worktree == "" }, 30*time.Second)
+}
+
+// TestLaunchDeliveryFollowsOrigin: launch reads the repo's origin to pick the
+// worker's delivery, and records it on the run. The harness origin is a local
+// bare repo, like a valley remote with no GitHub PRs, so the agent is told to
+// push its branch and report; a github.com origin keeps the PR workflow. The
+// GitHub case serves the github.com URL from the same bare repo
+// (UseGitHubOrigin), so launch's real fetch works offline.
+func TestLaunchDeliveryFollowsOrigin(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		github     bool
+		wantPrompt []string
+		noPrompt   []string
+	}{
+		{
+			name:       "direct-push origin",
+			wantPrompt: []string{"Do not create a PR", "head SHA", "the operator reviews from your final report"},
+			noPrompt:   []string{"Create a PR.", "--reviewer"},
+		},
+		{
+			name:       "github origin",
+			github:     true,
+			wantPrompt: []string{"6. Create a PR.", "Use --reviewer"},
+			noPrompt:   []string{"Do not create a PR", "head SHA"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := NewHarness(t)
+			if tc.github {
+				h.UseGitHubOrigin()
+			}
+
+			res := h.RunKlaus("launch", "tidy the README")
+			if res.ExitCode != 0 {
+				t.Fatalf("launch exited %d\nstdout:\n%s\nstderr:\n%s", res.ExitCode, res.Stdout, res.Stderr)
+			}
+			if got := strings.Contains(res.Stdout, "delivery: push branch, no PR"); got == tc.github {
+				t.Errorf("delivery line printed = %v, want %v\nstdout:\n%s", got, !tc.github, res.Stdout)
+			}
+
+			h.WaitForClaudeStart(30 * time.Second)
+			sysPrompt := h.WorkerSystemPrompt()
+			for _, want := range append(tc.wantPrompt, "`git push -u origin HEAD`", "Never commit directly to the default branch") {
+				if !strings.Contains(sysPrompt, want) {
+					t.Errorf("system prompt missing %q:\n%s", want, sysPrompt)
+				}
+			}
+			for _, absent := range tc.noPrompt {
+				if strings.Contains(sysPrompt, absent) {
+					t.Errorf("system prompt should not contain %q:\n%s", absent, sysPrompt)
+				}
+			}
+
+			h.ReleaseClaude()
+			st := h.WaitForState(h.RunIDs()[0], func(s *run.State) bool { return s.TmuxPane == nil && s.Worktree == "" }, 30*time.Second)
+			// Launch records the delivery, which finalize then honours.
+			want := run.DeliveryPush
+			if tc.github {
+				want = run.DeliveryPR
+			}
+			if st.Delivery != want {
+				t.Errorf("recorded delivery = %q, want %q", st.Delivery, want)
+			}
+		})
+	}
+}

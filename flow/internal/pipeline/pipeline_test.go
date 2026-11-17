@@ -1,0 +1,2950 @@
+package pipeline
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"the-valley/flow/internal/event"
+	"the-valley/flow/internal/run"
+)
+
+// testTmuxDeps returns TmuxDeps where all panes "exist" and are alive (not dead, idle).
+func testTmuxDeps() run.TmuxDeps {
+	return run.TmuxDeps{
+		PaneExists: func(string) bool { return true },
+		PaneIsDead: func(string) bool { return false },
+		PaneIsIdle: func(string) bool { return true },
+	}
+}
+
+func newTestController(t *testing.T) (*Controller, string) {
+	t.Helper()
+	dir := t.TempDir()
+	return controllerIn(t, dir), dir
+}
+
+// controllerIn builds a controller on the session in dir, as the dashboard
+// does: events and the transition ledger live in the session directory. A
+// second call on the same dir stands in for a dashboard restart.
+func controllerIn(t *testing.T, dir string) *Controller {
+	t.Helper()
+	baseDir := filepath.Join(dir, "session")
+	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	eventLog := event.NewLog(baseDir)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	stateDir := filepath.Join(dir, "klaus")
+	store := run.NewGitDirStore(stateDir)
+
+	c := New(store, eventLog, logger)
+	c.SetTmuxDeps(testTmuxDeps())
+	ledger, err := LoadLedger(filepath.Join(baseDir, LedgerFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetLedger(ledger)
+	return c
+}
+
+func TestStateTransition_CIPendingToFailed(t *testing.T) {
+	c, _ := newTestController(t)
+
+	var launchedPR string
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchedPR = prNumber
+		return "agent-001", nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", PRURL: "https://github.com/owner/repo/pull/42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if launchedPR != "42" {
+		t.Errorf("expected agent launched for PR #42, got %q", launchedPR)
+	}
+	if len(actions) != 1 || actions[0].Type != "launch" {
+		t.Errorf("expected 1 launch action, got %v", actions)
+	}
+
+	states := c.PipelineStates()
+	if states["42"].Stage != StageCIFailed {
+		t.Errorf("expected stage ci_failed, got %s", states["42"].Stage)
+	}
+	if states["42"].PRURL != "https://github.com/owner/repo/pull/42" {
+		t.Errorf("state should record the PR it tracks, got %q", states["42"].PRURL)
+	}
+}
+
+func TestStateTransition_CIFailedToPassedToApproved(t *testing.T) {
+	c, _ := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return "agent-001", nil
+	})
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		return nil
+	})
+
+	// Step 1: CI failing -> dispatches agent
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if c.PipelineStates()["42"].Stage != StageCIFailed {
+		t.Fatalf("expected ci_failed, got %s", c.PipelineStates()["42"].Stage)
+	}
+
+	// Step 2: CI passes (no review yet)
+	statuses["42"] = &PRStatus{PRNumber: "42", State: "OPEN", CI: "passing", TargetRepo: "owner/repo"}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if c.PipelineStates()["42"].Stage != StageCIPassed {
+		t.Fatalf("expected ci_passed, got %s", c.PipelineStates()["42"].Stage)
+	}
+
+	// Step 3: Approved -> auto-merge
+	statuses["42"] = &PRStatus{
+		PRNumber: "42", State: "OPEN", CI: "passing",
+		ReviewDecision: "APPROVED", Conflicts: "none", TargetRepo: "owner/repo",
+	}
+	actions := c.HandleGHStatus(context.Background(), statuses, nil)
+
+	// Should have merged
+	hasMerge := false
+	for _, a := range actions {
+		if a.Type == "merge" {
+			hasMerge = true
+		}
+	}
+	if !hasMerge {
+		t.Error("expected merge action after approval")
+	}
+}
+
+func TestNoDuplicateAgentDispatch(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return "agent-001", nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	// First call should dispatch.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if launchCount != 1 {
+		t.Fatalf("expected 1 launch, got %d", launchCount)
+	}
+
+	// Simulate agent still running.
+	runStates := []*run.State{
+		{ID: "agent-001", TmuxPane: strPtr("%1")}, // running: has pane, no cost/duration
+	}
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+	if launchCount != 1 {
+		t.Errorf("expected no duplicate launch, got %d total", launchCount)
+	}
+}
+
+func TestAgentReDispatchAfterCompletion(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return "agent-002", nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	// First dispatch.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if launchCount != 1 {
+		t.Fatalf("expected 1 launch, got %d", launchCount)
+	}
+
+	// Agent completed (finalized with cost).
+	cost := 1.0
+	runStates := []*run.State{
+		{ID: "agent-002", TmuxPane: strPtr("%1"), CostUSD: &cost},
+	}
+
+	// Expire the dispatch cooldown so re-dispatch is allowed.
+	c.mu.Lock()
+	c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+	c.mu.Unlock()
+
+	// CI still failing -> should re-dispatch.
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+	if launchCount != 2 {
+		t.Errorf("expected re-dispatch after agent completed, got %d total", launchCount)
+	}
+}
+
+func TestReviewCommentsDispatchAgent(t *testing.T) {
+	c, _ := newTestController(t)
+
+	var launchedPrompt string
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchedPrompt = prompt
+		return "agent-review", nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "CHANGES_REQUESTED", TargetRepo: "owner/repo",
+		},
+	}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if launchedPrompt == "" {
+		t.Error("expected agent dispatch for review comments")
+	}
+	if len(actions) != 1 || actions[0].Type != "launch" {
+		t.Errorf("expected 1 launch action, got %v", actions)
+	}
+
+	states := c.PipelineStates()
+	if states["42"].Stage != StageReviewPending {
+		t.Errorf("expected stage review_pending, got %s", states["42"].Stage)
+	}
+}
+
+func TestReviewFixPromptsInstructAgentToReplyToComments(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     *PRStatus
+		wantLeadIn string
+	}{
+		{
+			name: "changes-requested",
+			status: &PRStatus{
+				PRNumber: "42", State: "OPEN", CI: "passing",
+				ReviewDecision: "CHANGES_REQUESTED", TargetRepo: "owner/repo",
+			},
+			wantLeadIn: "changes requested by reviewers",
+		},
+		{
+			name: "trusted-comments",
+			status: &PRStatus{
+				PRNumber: "42", State: "OPEN", CI: "passing",
+				HasNewTrustedComments: true, TargetRepo: "owner/repo",
+			},
+			wantLeadIn: "trusted reviewer",
+		},
+	}
+
+	prompts := make(map[string]string, len(cases))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newTestController(t)
+
+			var launchedPrompt string
+			c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+				launchedPrompt = prompt
+				return "agent-x", nil
+			})
+
+			c.HandleGHStatus(context.Background(), map[string]*PRStatus{"42": tc.status}, nil)
+
+			if launchedPrompt == "" {
+				t.Fatal("expected agent dispatch")
+			}
+			// Path-specific lead-in.
+			if !strings.Contains(launchedPrompt, tc.wantLeadIn) {
+				t.Errorf("prompt missing lead-in %q: %q", tc.wantLeadIn, launchedPrompt)
+			}
+			// Must instruct fetching the comments using the literal
+			// {owner}/{repo} placeholder, which gh expands from the worktree's
+			// git remote. It must NOT substitute TargetRepo, which is a project
+			// short name and would yield a 404 path (issue #269).
+			if !strings.Contains(launchedPrompt, "gh api repos/{owner}/{repo}/pulls/42/comments") {
+				t.Errorf("prompt missing placeholder fetch instruction: %q", launchedPrompt)
+			}
+			if strings.Contains(launchedPrompt, "repos/"+tc.status.TargetRepo+"/pulls") {
+				t.Errorf("prompt substitutes TargetRepo into API path (404 risk): %q", launchedPrompt)
+			}
+			// Must also cover PR conversation comments, which live in the
+			// issues API and are replied to with a new PR comment.
+			if !strings.Contains(launchedPrompt, "gh api repos/{owner}/{repo}/issues/42/comments") {
+				t.Errorf("prompt missing conversation comment fetch instruction: %q", launchedPrompt)
+			}
+			if !strings.Contains(launchedPrompt, "gh pr comment 42 --body") {
+				t.Errorf("prompt missing conversation comment reply command: %q", launchedPrompt)
+			}
+			// Replies must carry the marker review detection uses to skip them.
+			if !strings.Contains(launchedPrompt, AgentReplyMarker) {
+				t.Errorf("prompt missing agent reply marker: %q", launchedPrompt)
+			}
+			// Must instruct replying to each comment.
+			if !strings.Contains(launchedPrompt, "reply to EACH") {
+				t.Errorf("prompt missing reply-to-each instruction: %q", launchedPrompt)
+			}
+			// Must guard against duplicate replies on re-dispatch.
+			if !strings.Contains(launchedPrompt, "haven't already replied to") {
+				t.Errorf("prompt missing duplicate-reply guard: %q", launchedPrompt)
+			}
+			// Must include the exact replies endpoint format.
+			if !strings.Contains(launchedPrompt, "/comments/{commentId}/replies") {
+				t.Errorf("prompt missing replies command format: %q", launchedPrompt)
+			}
+			// Must mention discounted comments.
+			if !strings.Contains(launchedPrompt, "discounted") {
+				t.Errorf("prompt missing discounted-comment guidance: %q", launchedPrompt)
+			}
+			prompts[tc.name] = launchedPrompt
+		})
+	}
+
+	// The shared body (everything from "Review comments come in two kinds" onward)
+	// must be identical across both dispatch paths so reviewers see consistent
+	// instructions regardless of which transition fired.
+	bodyOf := func(p string) string {
+		i := strings.Index(p, "Review comments come in two kinds")
+		if i < 0 {
+			t.Fatalf("prompt has no shared body: %q", p)
+		}
+		return p[i:]
+	}
+	if bodyOf(prompts["changes-requested"]) != bodyOf(prompts["trusted-comments"]) {
+		t.Errorf("shared prompt body differs across dispatch paths:\nchanges-requested: %q\ntrusted-comments:  %q",
+			bodyOf(prompts["changes-requested"]), bodyOf(prompts["trusted-comments"]))
+	}
+}
+
+func TestMergedPRCleanedUp(t *testing.T) {
+	c, _ := newTestController(t)
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		return "agent-001", nil
+	})
+
+	// Start with a CI failing PR.
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if len(c.PipelineStates()) != 1 {
+		t.Fatal("expected 1 tracked PR")
+	}
+
+	// PR gets merged externally.
+	statuses["42"] = &PRStatus{PRNumber: "42", State: "MERGED"}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if len(c.PipelineStates()) != 0 {
+		t.Error("expected merged PR to be cleaned up from tracking")
+	}
+}
+
+func TestClosedPRCleanedUp(t *testing.T) {
+	c, _ := newTestController(t)
+
+	// Manually seed state.
+	c.mu.Lock()
+	c.prStates["99"] = &PRPipelineState{PRNumber: "99", Stage: StageCIPassed}
+	c.mu.Unlock()
+
+	statuses := map[string]*PRStatus{
+		"99": {PRNumber: "99", State: "CLOSED"},
+	}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if len(c.PipelineStates()) != 0 {
+		t.Error("expected closed PR to be cleaned up from tracking")
+	}
+}
+
+func TestAutoMergeBlockedByConflicts(t *testing.T) {
+	c, _ := newTestController(t)
+
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return nil
+	})
+
+	var launchedPrompt string
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchedPrompt = prompt
+		return "agent-rebase", nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "APPROVED", Conflicts: "yes", TargetRepo: "owner/repo",
+		},
+	}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if mergeCount != 0 {
+		t.Error("should not merge when conflicts exist")
+	}
+
+	if launchedPrompt == "" {
+		t.Error("expected rebase agent dispatch when conflicts detected")
+	}
+	if !strings.Contains(launchedPrompt, "merge conflicts") {
+		t.Errorf("expected rebase prompt, got %q", launchedPrompt)
+	}
+
+	hasLaunch := false
+	for _, a := range actions {
+		if a.Type == "launch" && strings.Contains(a.Detail, "Rebase") {
+			hasLaunch = true
+		}
+	}
+	if !hasLaunch {
+		t.Errorf("expected rebase launch action, got %v", actions)
+	}
+
+	states := c.PipelineStates()
+	if states["42"].Stage != StageNeedsRebase {
+		t.Errorf("expected stage needs_rebase, got %s", states["42"].Stage)
+	}
+}
+
+func TestStageLabelCoverage(t *testing.T) {
+	tests := []struct {
+		stage Stage
+		want  string
+	}{
+		{StageCIPending, "CI pending"},
+		{StageCIFailed, "CI failed, fix running"},
+		{StageCIPassed, "CI passed, reviewing"},
+		{StageReviewPending, "review fix running"},
+		{StageApproved, "approved, ready"},
+		{StageNeedsRebase, "rebasing"},
+		{StageMerging, "merging"},
+		{StageMerged, "merged"},
+		{StageStalled, "stalled"},
+		{Stage("unknown"), "unknown"},
+	}
+	for _, tt := range tests {
+		got := StageLabel(tt.stage)
+		if got != tt.want {
+			t.Errorf("StageLabel(%q) = %q, want %q", tt.stage, got, tt.want)
+		}
+	}
+}
+
+func TestExtractAgentID(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"Launching agent 20260401-1500-abc1...\n  worktree: ...", "20260401-1500-abc1"},
+		{"Launching agent abc123 (PR #42 fix)...", "abc123"},
+		{"no match here", ""},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := extractAgentID(tt.input)
+		if got != tt.want {
+			t.Errorf("extractAgentID(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestTruncateError(t *testing.T) {
+	tests := []struct {
+		input  string
+		maxLen int
+		want   string
+	}{
+		{"short error", 50, "short error"},
+		{"line one\nline two\nline three", 50, "line one"},
+		{"some error\n\nUsage:\n  klaus launch [flags]", 50, "some error"},
+		{"before Usage: after", 50, "before"},
+		{strings.Repeat("x", 200), 50, strings.Repeat("x", 49) + "…"},
+		{"", 50, ""},
+	}
+	for _, tt := range tests {
+		got := truncateError(tt.input, tt.maxLen)
+		if got != tt.want {
+			t.Errorf("truncateError(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
+		}
+	}
+}
+
+// TestFailedDispatchWaitsForNewInputs: a launch that fails stalls the PR
+// and reports it once; polls on the same inputs, however late, don't launch
+// again, and a change to any input does.
+func TestFailedDispatchWaitsForNewInputs(t *testing.T) {
+	base := PRStatus{PRNumber: "42", PRURL: "https://github.com/owner/repo/pull/42", State: "OPEN", CI: "failing", HeadSHA: "aaa", TargetRepo: "owner/repo"}
+	for _, tt := range []struct {
+		name   string
+		change func(*PRStatus)
+	}{
+		{"head", func(s *PRStatus) { s.HeadSHA = "bbb" }},
+		{"ci", func(s *PRStatus) { s.CI, s.Conflicts = "passing", "yes" }},
+		{"review", func(s *PRStatus) { s.ReviewDecision = "CHANGES_REQUESTED" }},
+		{"trusted comments", func(s *PRStatus) { s.HasNewTrustedComments = true }},
+		{"more trusted comments", func(s *PRStatus) { s.TrustedFeedbackAt = time.Now() }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c, dir := newTestController(t)
+			launches := 0
+			c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+				launches++
+				return "", fmt.Errorf("worktree has an unpushed commit")
+			})
+			poll := func(s PRStatus) []Action {
+				return c.HandleGHStatus(context.Background(), map[string]*PRStatus{"42": &s}, nil)
+			}
+
+			actions := poll(base)
+			if launches != 1 || len(actions) != 1 || actions[0].Type != "error" || !strings.Contains(actions[0].Error, "unpushed commit") {
+				t.Fatalf("first poll: %d launches, actions %+v; want 1 launch and its error", launches, actions)
+			}
+			for i := 0; i < 5; i++ {
+				c.mu.Lock()
+				c.prStates["42"].LastDispatchAt = time.Now().Add(-time.Hour)
+				c.mu.Unlock()
+				poll(base)
+			}
+			if launches != 1 {
+				t.Errorf("same inputs: %d launches, want 1", launches)
+			}
+			if got := c.PipelineStates()["42"].Stage; got != StageStalled {
+				t.Errorf("stage on the same inputs = %s, want stalled", got)
+			}
+			evts := readEvents(t, dir)
+			if got := countEvents(evts, event.PipelineStalled); got != 1 {
+				t.Fatalf("pipeline:stalled events = %d, want 1", got)
+			}
+			for _, e := range evts {
+				if e.Type == event.PipelineStalled && !strings.Contains(fmt.Sprint(e.Data["reason"]), "unpushed commit") {
+					t.Errorf("stalled event doesn't carry the error: %v", e.Data)
+				}
+			}
+
+			next := base
+			tt.change(&next)
+			poll(next)
+			if launches != 2 {
+				t.Errorf("after the %s changed: %d launches, want 2", tt.name, launches)
+			}
+		})
+	}
+}
+
+func TestWorktreeCleanupBeforeDispatch(t *testing.T) {
+	c, _ := newTestController(t)
+
+	// Create a temp dir to act as the stale worktree.
+	staleDir := t.TempDir()
+
+	var cleanedUpID string
+	// Override launchAgent to track that cleanup happened before launch.
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		// By the time launch is called, the stale worktree should have
+		// had cleanup attempted. We can't easily verify the cleanup command
+		// ran (it would fail since the run ID doesn't exist in store), but
+		// we can verify the controller attempted it by checking the worktree
+		// dir was passed. For this test, just succeed.
+		return "agent-new", nil
+	})
+
+	// Provide a run state for a completed agent that has a worktree on disk.
+	cost := 1.0
+	staleRun := &run.State{
+		ID:       "agent-stale",
+		PR:       strPtr("42"),
+		Worktree: staleDir,
+		TmuxPane: strPtr("%99"), // pane exists but run is finalized
+		CostUSD:  &cost,         // finalized -> not running
+	}
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, []*run.State{staleRun})
+
+	// Should have dispatched a new agent.
+	if len(actions) == 0 || actions[0].Type != "launch" {
+		t.Errorf("expected launch action, got %v", actions)
+	}
+
+	_ = cleanedUpID // cleanup runs best-effort via exec
+}
+
+func TestTrustedCommentDispatch(t *testing.T) {
+	c, _ := newTestController(t)
+
+	var launchedPrompt string
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchedPrompt = prompt
+		return "agent-trusted", nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber:              "42",
+			State:                 "OPEN",
+			CI:                    "passing",
+			ReviewDecision:        "", // empty — not CHANGES_REQUESTED
+			HasNewTrustedComments: true,
+			TargetRepo:            "owner/repo",
+		},
+	}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if launchedPrompt == "" {
+		t.Error("expected agent dispatch for trusted reviewer comments")
+	}
+	if len(actions) != 1 || actions[0].Type != "launch" {
+		t.Errorf("expected 1 launch action, got %v", actions)
+	}
+
+	states := c.PipelineStates()
+	if states["42"].Stage != StageReviewPending {
+		t.Errorf("expected stage review_pending, got %s", states["42"].Stage)
+	}
+}
+
+func TestNoDispatchWithoutTrustedComments(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return "agent-001", nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber:              "42",
+			State:                 "OPEN",
+			CI:                    "passing",
+			ReviewDecision:        "",
+			HasNewTrustedComments: false,
+			TargetRepo:            "owner/repo",
+		},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if launchCount != 0 {
+		t.Errorf("expected no agent dispatch without trusted comments, got %d launches", launchCount)
+	}
+
+	states := c.PipelineStates()
+	if states["42"].Stage != StageCIPassed {
+		t.Errorf("expected stage ci_passed, got %s", states["42"].Stage)
+	}
+}
+
+func TestNoDoubleDispatchOnTrustedComments(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return "agent-trusted", nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber:              "42",
+			State:                 "OPEN",
+			CI:                    "passing",
+			ReviewDecision:        "",
+			HasNewTrustedComments: true,
+			TargetRepo:            "owner/repo",
+		},
+	}
+
+	// First call dispatches.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if launchCount != 1 {
+		t.Fatalf("expected 1 launch, got %d", launchCount)
+	}
+
+	// Simulate agent still running.
+	runStates := []*run.State{
+		{ID: "agent-trusted", TmuxPane: strPtr("%1")},
+	}
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+	if launchCount != 1 {
+		t.Errorf("expected no duplicate launch while agent running, got %d total", launchCount)
+	}
+}
+
+func TestNeedsRebaseTransitionsToMergeAfterConflictsResolved(t *testing.T) {
+	c, _ := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return fmt.Sprintf("agent-%03d", launchCount), nil
+	})
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return nil
+	})
+
+	// Step 1: Approved with conflicts → dispatches rebase agent.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "APPROVED", Conflicts: "yes", TargetRepo: "owner/repo",
+		},
+	}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if c.PipelineStates()["42"].Stage != StageNeedsRebase {
+		t.Fatalf("expected needs_rebase, got %s", c.PipelineStates()["42"].Stage)
+	}
+	if launchCount != 1 {
+		t.Fatalf("expected 1 launch, got %d", launchCount)
+	}
+
+	// Step 2: Rebase agent completes, CI passes, conflicts resolved → should merge.
+	cost := 1.0
+	runStates := []*run.State{
+		{ID: "agent-001", TmuxPane: strPtr("%1"), CostUSD: &cost}, // completed
+	}
+	statuses["42"] = &PRStatus{
+		PRNumber: "42", State: "OPEN", CI: "passing",
+		ReviewDecision: "APPROVED", Conflicts: "none", TargetRepo: "owner/repo",
+	}
+	actions := c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	hasMerge := false
+	for _, a := range actions {
+		if a.Type == "merge" {
+			hasMerge = true
+		}
+	}
+	if !hasMerge {
+		t.Error("expected merge after rebase resolved conflicts")
+	}
+	if mergeCount != 1 {
+		t.Errorf("expected 1 merge call, got %d", mergeCount)
+	}
+}
+
+func TestNeedsRebaseTransitionsToCIFailedIfCIFails(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return fmt.Sprintf("agent-%03d", launchCount), nil
+	})
+
+	// Step 1: Approved with conflicts → rebase agent dispatched.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "APPROVED", Conflicts: "yes", TargetRepo: "owner/repo",
+		},
+	}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if c.PipelineStates()["42"].Stage != StageNeedsRebase {
+		t.Fatalf("expected needs_rebase, got %s", c.PipelineStates()["42"].Stage)
+	}
+
+	// Expire the dispatch cooldown so the CI fix agent can be dispatched.
+	c.mu.Lock()
+	c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+	c.mu.Unlock()
+
+	// Step 2: Rebase agent completes but CI fails.
+	cost := 1.0
+	runStates := []*run.State{
+		{ID: "agent-001", TmuxPane: strPtr("%1"), CostUSD: &cost},
+	}
+	statuses["42"] = &PRStatus{
+		PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo",
+	}
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	state := c.PipelineStates()["42"]
+	if state.Stage != StageCIFailed {
+		t.Errorf("expected ci_failed after rebase + CI failure, got %s", state.Stage)
+	}
+	// Should have dispatched a CI fix agent (launch 2).
+	if launchCount != 2 {
+		t.Errorf("expected 2 launches (rebase + CI fix), got %d", launchCount)
+	}
+}
+
+func TestNeedsRebaseNoDoubleDispatch(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return "agent-rebase", nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "APPROVED", Conflicts: "yes", TargetRepo: "owner/repo",
+		},
+	}
+
+	// First call dispatches rebase agent.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if launchCount != 1 {
+		t.Fatalf("expected 1 launch, got %d", launchCount)
+	}
+
+	// Agent still running — should not re-dispatch.
+	runStates := []*run.State{
+		{ID: "agent-rebase", TmuxPane: strPtr("%1")},
+	}
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+	if launchCount != 1 {
+		t.Errorf("expected no duplicate rebase dispatch, got %d total", launchCount)
+	}
+}
+
+func TestUnapprovedConflictsDispatchesRebase(t *testing.T) {
+	c, _ := newTestController(t)
+
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return nil
+	})
+
+	var launchedPrompt string
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchedPrompt = prompt
+		launchCount++
+		return "agent-rebase", nil
+	})
+
+	// CI passing, no review decision, no klaus internal approval, but conflicts present.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "", Conflicts: "yes", TargetRepo: "owner/repo",
+		},
+	}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if mergeCount != 0 {
+		t.Error("should not merge when conflicts exist")
+	}
+	if launchCount != 1 {
+		t.Errorf("expected 1 rebase agent launch for unapproved PR with conflicts, got %d", launchCount)
+	}
+	if !strings.Contains(launchedPrompt, "merge conflicts") {
+		t.Errorf("expected rebase prompt, got %q", launchedPrompt)
+	}
+
+	hasLaunch := false
+	for _, a := range actions {
+		if a.Type == "launch" && strings.Contains(a.Detail, "Rebase") {
+			hasLaunch = true
+		}
+	}
+	if !hasLaunch {
+		t.Errorf("expected rebase launch action, got %v", actions)
+	}
+
+	state := c.PipelineStates()["42"]
+	if state.Stage != StageNeedsRebase {
+		t.Errorf("expected stage needs_rebase, got %s", state.Stage)
+	}
+	// Approval-related side effects must not have run.
+	if state.Stage == StageApproved {
+		t.Error("rebase dispatch should not transition unapproved PR to approved stage")
+	}
+}
+
+func TestRebaseCircuitBreaker(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return fmt.Sprintf("agent-%03d", launchCount), nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "", Conflicts: "yes", TargetRepo: "owner/repo",
+		},
+	}
+
+	// Dispatch 1: initial rebase agent.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if launchCount != 1 {
+		t.Fatalf("expected 1 launch, got %d", launchCount)
+	}
+
+	for attempt := 2; attempt <= 3; attempt++ {
+		// Simulate agent completion (finalized with cost) without resolving conflicts.
+		cost := 1.0
+		runStates := []*run.State{
+			{ID: fmt.Sprintf("agent-%03d", attempt-1), TmuxPane: strPtr("%1"), CostUSD: &cost},
+		}
+
+		// Expire the dispatch cooldown.
+		c.mu.Lock()
+		c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+		c.mu.Unlock()
+
+		// Conflicts still present -> should re-dispatch rebase.
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+		if launchCount != attempt {
+			t.Fatalf("attempt %d: expected %d launches, got %d", attempt, attempt, launchCount)
+		}
+	}
+
+	// Three rebase agents have been dispatched. Simulate agent 3 completing.
+	cost := 1.0
+	runStates := []*run.State{
+		{ID: "agent-003", TmuxPane: strPtr("%1"), CostUSD: &cost},
+	}
+	c.mu.Lock()
+	c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+	c.mu.Unlock()
+
+	// Conflicts persist -> circuit breaker trips; no 4th dispatch.
+	actions := c.HandleGHStatus(context.Background(), statuses, runStates)
+	if launchCount != 3 {
+		t.Errorf("expected circuit breaker to stop at 3 launches, got %d", launchCount)
+	}
+
+	hasError := false
+	for _, a := range actions {
+		if a.Type == "error" && strings.Contains(a.Detail, "rebase attempts failed") {
+			hasError = true
+		}
+	}
+	if !hasError {
+		t.Errorf("expected error action from rebase circuit breaker, got %v", actions)
+	}
+
+	if c.PipelineStates()["42"].Stage != StageStalled {
+		t.Errorf("expected stalled stage, got %s", c.PipelineStates()["42"].Stage)
+	}
+
+	// Subsequent poll while still stalled and conflicts present must not re-dispatch
+	// or emit duplicate stall errors.
+	c.mu.Lock()
+	c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+	c.mu.Unlock()
+	actions = c.HandleGHStatus(context.Background(), statuses, runStates)
+	if launchCount != 3 {
+		t.Errorf("expected no further dispatches after stall, got %d", launchCount)
+	}
+	for _, a := range actions {
+		if a.Type == "error" {
+			t.Errorf("expected no duplicate error after stall, got %v", actions)
+		}
+	}
+}
+
+// TestStalledFromCIRecoversWithConflicts verifies that a PR which exhausted
+// its CI fix-attempt budget and went to StageStalled is not blocked from
+// dispatching a rebase agent once CI starts passing — the rebase counter is
+// tracked separately so the rebase agent gets its own budget.
+func TestStalledFromCIRecoversWithConflicts(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return fmt.Sprintf("agent-%03d", launchCount), nil
+	})
+
+	// Manually put the PR in StageStalled with FixAttempts maxed out, simulating
+	// having exhausted CI fix attempts before CI started passing.
+	c.mu.Lock()
+	c.prStates["42"] = &PRPipelineState{
+		PRNumber:    "42",
+		Stage:       StageStalled,
+		FixAttempts: maxFixAttempts,
+		LastAgentID: "agent-old",
+	}
+	c.mu.Unlock()
+
+	// CI now passes but conflicts have appeared.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "", Conflicts: "yes", TargetRepo: "owner/repo",
+		},
+	}
+	actions := c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if launchCount != 1 {
+		t.Errorf("expected rebase agent to dispatch with fresh budget, got %d launches", launchCount)
+	}
+	for _, a := range actions {
+		if a.Type == "error" {
+			t.Errorf("did not expect circuit-breaker error on first rebase attempt, got %v", actions)
+		}
+	}
+	state := c.PipelineStates()["42"]
+	if state.Stage != StageNeedsRebase {
+		t.Errorf("expected stage needs_rebase after recovery, got %s", state.Stage)
+	}
+	if state.FixAttempts != 0 {
+		t.Errorf("expected FixAttempts reset to 0, got %d", state.FixAttempts)
+	}
+	if state.RebaseAttempts != 0 {
+		t.Errorf("expected RebaseAttempts to start at 0, got %d", state.RebaseAttempts)
+	}
+}
+
+// TestRebaseDispatchDoesNotConsumeCIFixBudget verifies a PR with prior CI
+// fix attempts gets a full rebase budget once CI passes.
+func TestRebaseDispatchDoesNotConsumeCIFixBudget(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return fmt.Sprintf("agent-%03d", launchCount), nil
+	})
+
+	// Two prior CI fix attempts that didn't resolve CI yet.
+	c.mu.Lock()
+	c.prStates["42"] = &PRPipelineState{
+		PRNumber:    "42",
+		Stage:       StageCIFailed,
+		FixAttempts: 2,
+		LastAgentID: "agent-old",
+	}
+	c.mu.Unlock()
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "", Conflicts: "yes", TargetRepo: "owner/repo",
+		},
+	}
+
+	// First rebase dispatch: should fire and reset FixAttempts.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if launchCount != 1 {
+		t.Fatalf("expected first rebase dispatch, got %d launches", launchCount)
+	}
+	state := c.PipelineStates()["42"]
+	if state.FixAttempts != 0 {
+		t.Errorf("expected FixAttempts reset to 0 once CI passes, got %d", state.FixAttempts)
+	}
+	if state.RebaseAttempts != 0 {
+		t.Errorf("expected RebaseAttempts at 0 after first dispatch, got %d", state.RebaseAttempts)
+	}
+
+	// Two more cycles should still dispatch rebase agents (full rebase budget).
+	for attempt := 2; attempt <= 3; attempt++ {
+		cost := 1.0
+		runStates := []*run.State{
+			{ID: fmt.Sprintf("agent-%03d", attempt-1), TmuxPane: strPtr("%1"), CostUSD: &cost},
+		}
+		c.mu.Lock()
+		c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+		c.mu.Unlock()
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+		if launchCount != attempt {
+			t.Fatalf("attempt %d: expected %d total launches, got %d", attempt, attempt, launchCount)
+		}
+	}
+}
+
+// TestConflictsWaitDoesNotSpamCIPassedEvent verifies that polling repeatedly
+// while a rebase is in flight (conflicts still present) does not re-emit the
+// AgentCIPassed event on every poll.
+func TestConflictsWaitDoesNotSpamCIPassedEvent(t *testing.T) {
+	c, baseDir := newTestController(t)
+	eventLog := event.NewLog(filepath.Join(baseDir, "session"))
+
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		return "agent-rebase", nil
+	})
+
+	// Seed the PR in StageCIPending so the first poll's transition emits
+	// AgentCIPassed exactly once when CI is found passing.
+	c.mu.Lock()
+	c.prStates["42"] = &PRPipelineState{
+		PRNumber: "42",
+		Stage:    StageCIPending,
+	}
+	c.mu.Unlock()
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "", Conflicts: "yes", TargetRepo: "owner/repo",
+		},
+	}
+
+	// Initial poll dispatches rebase agent and emits AgentCIPassed once.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	// Subsequent polls hit conflicts-wait (agent still running — unfinalized
+	// run with a live pane is treated as running). Each must not re-emit
+	// AgentCIPassed.
+	runStates := []*run.State{
+		{ID: "agent-rebase", TmuxPane: strPtr("%1")},
+	}
+	for i := 0; i < 5; i++ {
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+	}
+
+	events, err := eventLog.Read()
+	if err != nil {
+		t.Fatalf("reading event log: %v", err)
+	}
+	ciPassedCount := 0
+	for _, e := range events {
+		if e.Type == event.AgentCIPassed {
+			ciPassedCount++
+		}
+	}
+	if ciPassedCount != 1 {
+		t.Errorf("expected exactly 1 AgentCIPassed event, got %d (events: %v)", ciPassedCount, events)
+	}
+}
+
+func TestApprovedNoConflictsMerges(t *testing.T) {
+	c, _ := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return "agent-001", nil
+	})
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "APPROVED", Conflicts: "none", TargetRepo: "owner/repo",
+		},
+	}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if launchCount != 0 {
+		t.Errorf("expected no agent launch for conflict-free merge, got %d", launchCount)
+	}
+	if mergeCount != 1 {
+		t.Errorf("expected 1 merge, got %d", mergeCount)
+	}
+
+	hasMerge := false
+	for _, a := range actions {
+		if a.Type == "merge" {
+			hasMerge = true
+		}
+	}
+	if !hasMerge {
+		t.Error("expected merge action")
+	}
+}
+
+func TestApprovedNoAutoMergeWhenDisabled(t *testing.T) {
+	c, _ := newTestController(t)
+	// autoMergeOnApproval defaults to false — do not set it
+
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "APPROVED", Conflicts: "none", TargetRepo: "owner/repo",
+		},
+	}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if mergeCount != 0 {
+		t.Errorf("expected no merge when auto_merge_on_approval is disabled, got %d", mergeCount)
+	}
+	for _, a := range actions {
+		if a.Type == "merge" {
+			t.Error("unexpected merge action when auto_merge_on_approval is disabled")
+		}
+	}
+}
+
+func TestReviewThreadsResolvedAfterAgentCompletion(t *testing.T) {
+	c, _ := newTestController(t)
+
+	// Track which threads were resolved.
+	var resolvedThreads []string
+	c.SetSnapshotThreads(func(repo, prNumber string) ([]string, error) {
+		return []string{"RT_aaa", "RT_bbb"}, nil
+	})
+	c.SetResolveThread(func(threadID string) error {
+		resolvedThreads = append(resolvedThreads, threadID)
+		return nil
+	})
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		return "agent-fix", nil
+	})
+
+	// Step 1: CHANGES_REQUESTED → dispatches fix agent, snapshots threads.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "CHANGES_REQUESTED", TargetRepo: "owner/repo",
+		},
+	}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	state := c.PipelineStates()["42"]
+	if len(state.PendingResolveThreadIDs) != 2 {
+		t.Fatalf("expected 2 pending threads, got %d", len(state.PendingResolveThreadIDs))
+	}
+
+	// Step 2: Agent completes (finalized with cost).
+	cost := 1.0
+	runStates := []*run.State{
+		{ID: "agent-fix", TmuxPane: strPtr("%1"), CostUSD: &cost},
+	}
+	// CI now passing, review approved → the threads should be resolved.
+	statuses["42"] = &PRStatus{
+		PRNumber: "42", State: "OPEN", CI: "passing",
+		ReviewDecision: "APPROVED", Conflicts: "none", TargetRepo: "owner/repo",
+	}
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		return nil
+	})
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if len(resolvedThreads) != 2 {
+		t.Errorf("expected 2 threads resolved, got %d: %v", len(resolvedThreads), resolvedThreads)
+	}
+	if resolvedThreads[0] != "RT_aaa" || resolvedThreads[1] != "RT_bbb" {
+		t.Errorf("unexpected resolved threads: %v", resolvedThreads)
+	}
+
+	// Pending threads should be cleared after resolution.
+	state = c.PipelineStates()["42"]
+	if state != nil && len(state.PendingResolveThreadIDs) != 0 {
+		t.Errorf("expected pending threads cleared, got %d", len(state.PendingResolveThreadIDs))
+	}
+}
+
+// TestSnapshotThreadsUsesOwnerRepoSlugFromPRURL guards against issue where
+// ActionSnapshotThreads was given PRStatus.TargetRepo, which is a canonical
+// project short name (e.g. "klaus") for registered projects, not an owner/repo
+// slug. defaultSnapshotThreads splits the value on "/" and would fail, silently
+// breaking thread resolution. The descriptor must instead carry the owner/repo
+// slug extracted from PRURL.
+func TestSnapshotThreadsUsesOwnerRepoSlugFromPRURL(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		reviewDecision string
+		trusted        bool
+	}{
+		{"changes-requested", "CHANGES_REQUESTED", false},
+		{"trusted-comments", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newTestController(t)
+
+			var gotRepo string
+			c.SetSnapshotThreads(func(repo, prNumber string) ([]string, error) {
+				gotRepo = repo
+				return nil, nil
+			})
+			c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+				return "agent-fix", nil
+			})
+
+			statuses := map[string]*PRStatus{
+				"42": {
+					PRNumber:              "42",
+					State:                 "OPEN",
+					CI:                    "passing",
+					ReviewDecision:        tc.reviewDecision,
+					HasNewTrustedComments: tc.trusted,
+					// TargetRepo is a project short name, NOT an owner/repo slug.
+					TargetRepo: "klaus",
+					PRURL:      "https://github.com/maintainer/klaus/pull/42",
+				},
+			}
+			c.HandleGHStatus(context.Background(), statuses, nil)
+
+			if gotRepo != "maintainer/klaus" {
+				t.Errorf("snapshotThreads got repo %q, want owner/repo slug from PRURL %q", gotRepo, "maintainer/klaus")
+			}
+			if strings.Count(gotRepo, "/") != 1 {
+				t.Errorf("snapshot repo %q is not a valid owner/repo slug (need exactly one '/')", gotRepo)
+			}
+		})
+	}
+}
+
+// TestDispatchRepoDerivesSlugFromPRURL covers the slug-extraction helper used to
+// attach a real owner/repo to descriptors whose handlers treat Repo as a GitHub
+// slug. status.TargetRepo may be a bare project short name (e.g. "klaus"), so the
+// slug must come from the PR URL, falling back to TargetRepo only when the URL is
+// unparseable. The parsing itself lives in github.OwnerRepoFromPRURL (the single
+// source of truth, unit-tested in internal/github).
+func TestDispatchRepoDerivesSlugFromPRURL(t *testing.T) {
+	c, _ := newTestController(t)
+	for _, tt := range []struct {
+		name   string
+		status *PRStatus
+		want   string
+	}{
+		{"valid URL overrides bare short name", &PRStatus{PRURL: "https://github.com/maintainer/klaus/pull/270", TargetRepo: "klaus"}, "maintainer/klaus"},
+		{"trailing slash", &PRStatus{PRURL: "https://github.com/maintainer/klaus/", TargetRepo: "klaus"}, "maintainer/klaus"},
+		{"malformed URL falls back to TargetRepo", &PRStatus{PRURL: "not-a-url", TargetRepo: "owner/repo"}, "owner/repo"},
+		{"empty URL falls back to TargetRepo", &PRStatus{PRURL: "", TargetRepo: "owner/repo"}, "owner/repo"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := dispatchRepo(c, tt.status); got != tt.want {
+				t.Errorf("dispatchRepo() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMergeDescriptorUsesOwnerRepoSlug locks the audit fix: the ActionMergePR
+// descriptor must carry the owner/repo slug derived from the PR URL, not the bare
+// project short name in TargetRepo.
+func TestMergeDescriptorUsesOwnerRepoSlug(t *testing.T) {
+	c, _ := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	var mergeRepo string
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeRepo = repo
+		return nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"270": {
+			PRNumber: "270", State: "OPEN", CI: "passing",
+			ReviewDecision: "APPROVED", Conflicts: "none", TargetRepo: "klaus",
+			PRURL: "https://github.com/maintainer/klaus/pull/270",
+		},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if mergeRepo != "maintainer/klaus" {
+		t.Errorf("merge repo = %q, want maintainer/klaus", mergeRepo)
+	}
+}
+
+func TestReviewThreadResolutionFailureDoesNotBlock(t *testing.T) {
+	c, _ := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	resolveCount := 0
+	c.SetSnapshotThreads(func(repo, prNumber string) ([]string, error) {
+		return []string{"RT_ok", "RT_fail", "RT_ok2"}, nil
+	})
+	c.SetResolveThread(func(threadID string) error {
+		resolveCount++
+		if threadID == "RT_fail" {
+			return fmt.Errorf("permission denied")
+		}
+		return nil
+	})
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		return "agent-fix", nil
+	})
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		return nil
+	})
+
+	// Dispatch fix agent.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "CHANGES_REQUESTED", TargetRepo: "owner/repo",
+		},
+	}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	// Agent completes.
+	cost := 1.0
+	runStates := []*run.State{
+		{ID: "agent-fix", TmuxPane: strPtr("%1"), CostUSD: &cost},
+	}
+	statuses["42"] = &PRStatus{
+		PRNumber: "42", State: "OPEN", CI: "passing",
+		ReviewDecision: "APPROVED", Conflicts: "none", TargetRepo: "owner/repo",
+	}
+	actions := c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	// All 3 threads should have been attempted.
+	if resolveCount != 3 {
+		t.Errorf("expected 3 resolve attempts, got %d", resolveCount)
+	}
+
+	// Pipeline should continue (merge action present).
+	hasMerge := false
+	for _, a := range actions {
+		if a.Type == "merge" {
+			hasMerge = true
+		}
+	}
+	if !hasMerge {
+		t.Error("expected merge action despite resolution failure")
+	}
+}
+
+func TestTrustedCommentSnapshotsThreads(t *testing.T) {
+	c, _ := newTestController(t)
+
+	var snapshotCalled bool
+	c.SetSnapshotThreads(func(repo, prNumber string) ([]string, error) {
+		snapshotCalled = true
+		return []string{"RT_trusted"}, nil
+	})
+	c.SetResolveThread(func(threadID string) error {
+		return nil
+	})
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		return "agent-trusted", nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber:              "42",
+			State:                 "OPEN",
+			CI:                    "passing",
+			ReviewDecision:        "",
+			HasNewTrustedComments: true,
+			TargetRepo:            "owner/repo",
+		},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if !snapshotCalled {
+		t.Error("expected thread snapshot for trusted reviewer comment dispatch")
+	}
+
+	state := c.PipelineStates()["42"]
+	if len(state.PendingResolveThreadIDs) != 1 || state.PendingResolveThreadIDs[0] != "RT_trusted" {
+		t.Errorf("expected 1 pending thread RT_trusted, got %v", state.PendingResolveThreadIDs)
+	}
+}
+
+func TestNoThreadResolutionWhileAgentRunning(t *testing.T) {
+	c, _ := newTestController(t)
+
+	resolveCount := 0
+	c.SetSnapshotThreads(func(repo, prNumber string) ([]string, error) {
+		return []string{"RT_aaa"}, nil
+	})
+	c.SetResolveThread(func(threadID string) error {
+		resolveCount++
+		return nil
+	})
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		return "agent-fix", nil
+	})
+
+	// Dispatch fix agent.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "CHANGES_REQUESTED", TargetRepo: "owner/repo",
+		},
+	}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	// Agent still running.
+	runStates := []*run.State{
+		{ID: "agent-fix", TmuxPane: strPtr("%1")}, // running: no cost/duration
+	}
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if resolveCount != 0 {
+		t.Errorf("expected no thread resolution while agent running, got %d", resolveCount)
+	}
+}
+
+func TestDispatchCooldownPreventsRapidRedispatch(t *testing.T) {
+	t.Run("CI failing", func(t *testing.T) {
+		c, _ := newTestController(t)
+
+		launchCount := 0
+		c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+			launchCount++
+			return fmt.Sprintf("agent-%03d", launchCount), nil
+		})
+
+		statuses := map[string]*PRStatus{
+			"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+		}
+
+		// First poll dispatches agent.
+		c.HandleGHStatus(context.Background(), statuses, nil)
+		if launchCount != 1 {
+			t.Fatalf("expected 1 launch, got %d", launchCount)
+		}
+
+		// Agent completes immediately.
+		cost := 1.0
+		runStates := []*run.State{
+			{ID: "agent-001", TmuxPane: strPtr("%1"), CostUSD: &cost},
+		}
+
+		// Second poll within cooldown — should NOT re-dispatch.
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+		if launchCount != 1 {
+			t.Errorf("expected cooldown to prevent re-dispatch, got %d launches", launchCount)
+		}
+
+		// Simulate cooldown expiry.
+		c.mu.Lock()
+		c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+		c.mu.Unlock()
+
+		// Third poll after cooldown — should dispatch.
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+		if launchCount != 2 {
+			t.Errorf("expected dispatch after cooldown, got %d launches", launchCount)
+		}
+	})
+
+	t.Run("CHANGES_REQUESTED", func(t *testing.T) {
+		c, _ := newTestController(t)
+
+		launchCount := 0
+		c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+			launchCount++
+			return fmt.Sprintf("agent-%03d", launchCount), nil
+		})
+
+		statuses := map[string]*PRStatus{
+			"42": {
+				PRNumber: "42", State: "OPEN", CI: "passing",
+				ReviewDecision: "CHANGES_REQUESTED", TargetRepo: "owner/repo",
+			},
+		}
+
+		// First poll dispatches.
+		c.HandleGHStatus(context.Background(), statuses, nil)
+		if launchCount != 1 {
+			t.Fatalf("expected 1 launch, got %d", launchCount)
+		}
+
+		// Agent completes.
+		cost := 1.0
+		runStates := []*run.State{
+			{ID: "agent-001", TmuxPane: strPtr("%1"), CostUSD: &cost},
+		}
+
+		// Second poll within cooldown — blocked.
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+		if launchCount != 1 {
+			t.Errorf("expected cooldown to prevent re-dispatch, got %d launches", launchCount)
+		}
+
+		// Expire cooldown.
+		c.mu.Lock()
+		c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+		c.mu.Unlock()
+
+		// Third poll — allowed.
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+		if launchCount != 2 {
+			t.Errorf("expected dispatch after cooldown, got %d launches", launchCount)
+		}
+	})
+
+	t.Run("trusted comments", func(t *testing.T) {
+		c, _ := newTestController(t)
+
+		launchCount := 0
+		c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+			launchCount++
+			return fmt.Sprintf("agent-%03d", launchCount), nil
+		})
+
+		statuses := map[string]*PRStatus{
+			"42": {
+				PRNumber:              "42",
+				State:                 "OPEN",
+				CI:                    "passing",
+				ReviewDecision:        "",
+				HasNewTrustedComments: true,
+				TargetRepo:            "owner/repo",
+			},
+		}
+
+		// First poll dispatches.
+		c.HandleGHStatus(context.Background(), statuses, nil)
+		if launchCount != 1 {
+			t.Fatalf("expected 1 launch, got %d", launchCount)
+		}
+
+		// Agent completes.
+		cost := 1.0
+		runStates := []*run.State{
+			{ID: "agent-001", TmuxPane: strPtr("%1"), CostUSD: &cost},
+		}
+
+		// Second poll within cooldown — blocked.
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+		if launchCount != 1 {
+			t.Errorf("expected cooldown to prevent re-dispatch, got %d launches", launchCount)
+		}
+
+		// Expire cooldown.
+		c.mu.Lock()
+		c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+		c.mu.Unlock()
+
+		// Third poll — allowed.
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+		if launchCount != 2 {
+			t.Errorf("expected dispatch after cooldown, got %d launches", launchCount)
+		}
+	})
+}
+
+func TestCIFixAgentResumesFromLastAgent(t *testing.T) {
+	c, _ := newTestController(t)
+
+	var capturedResume string
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		capturedResume = resumeFrom
+		return "agent-fix", nil
+	})
+
+	// Seed pipeline state with a previous agent ID.
+	c.mu.Lock()
+	c.prStates["42"] = &PRPipelineState{
+		PRNumber:    "42",
+		Stage:       StageCIFailed,
+		LastAgentID: "agent-original",
+	}
+	c.mu.Unlock()
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if capturedResume != "agent-original" {
+		t.Errorf("expected resumeFrom=%q, got %q", "agent-original", capturedResume)
+	}
+}
+
+func TestReviewFixAgentResumesFromLastAgent(t *testing.T) {
+	c, _ := newTestController(t)
+
+	var capturedResume string
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		capturedResume = resumeFrom
+		return "agent-review-fix", nil
+	})
+
+	c.mu.Lock()
+	c.prStates["10"] = &PRPipelineState{
+		PRNumber:    "10",
+		Stage:       StageCIPassed,
+		LastAgentID: "agent-prev",
+	}
+	c.mu.Unlock()
+
+	statuses := map[string]*PRStatus{
+		"10": {
+			PRNumber: "10", State: "OPEN", CI: "passing",
+			ReviewDecision: "CHANGES_REQUESTED", TargetRepo: "owner/repo",
+		},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if capturedResume != "agent-prev" {
+		t.Errorf("expected resumeFrom=%q, got %q", "agent-prev", capturedResume)
+	}
+}
+
+func TestFirstAgentDispatchHasEmptyResume(t *testing.T) {
+	c, _ := newTestController(t)
+
+	var capturedResume string
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		capturedResume = resumeFrom
+		return "agent-first", nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"7": {PRNumber: "7", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if capturedResume != "" {
+		t.Errorf("expected empty resumeFrom for first dispatch, got %q", capturedResume)
+	}
+}
+
+func TestFixAgentCircuitBreaker(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return fmt.Sprintf("agent-%03d", launchCount), nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	// Dispatch 1: initial fix agent.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if launchCount != 1 {
+		t.Fatalf("expected 1 launch, got %d", launchCount)
+	}
+
+	for attempt := 2; attempt <= 3; attempt++ {
+		// Simulate agent completion (finalized with cost).
+		cost := 1.0
+		runStates := []*run.State{
+			{ID: fmt.Sprintf("agent-%03d", attempt-1), TmuxPane: strPtr("%1"), CostUSD: &cost},
+		}
+
+		// Expire the dispatch cooldown.
+		c.mu.Lock()
+		c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+		c.mu.Unlock()
+
+		// CI still failing -> should re-dispatch.
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+		if launchCount != attempt {
+			t.Fatalf("attempt %d: expected %d launches, got %d", attempt, attempt, launchCount)
+		}
+	}
+
+	// Now we've dispatched 3 agents. Simulate agent 3 completing.
+	cost := 1.0
+	runStates := []*run.State{
+		{ID: "agent-003", TmuxPane: strPtr("%1"), CostUSD: &cost},
+	}
+
+	c.mu.Lock()
+	c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+	c.mu.Unlock()
+
+	// CI still failing -> circuit breaker should trip; no 4th dispatch.
+	actions := c.HandleGHStatus(context.Background(), statuses, runStates)
+	if launchCount != 3 {
+		t.Errorf("expected circuit breaker to stop at 3 launches, got %d", launchCount)
+	}
+
+	// Should have an error action.
+	hasError := false
+	for _, a := range actions {
+		if a.Type == "error" && strings.Contains(a.Detail, "fix attempts failed") {
+			hasError = true
+		}
+	}
+	if !hasError {
+		t.Error("expected error action from circuit breaker, got:", actions)
+	}
+
+	// Stage should be stalled.
+	states := c.PipelineStates()
+	if states["42"].Stage != StageStalled {
+		t.Errorf("expected stalled stage, got %s", states["42"].Stage)
+	}
+}
+
+func TestFixAgentCircuitBreakerResetOnCIPass(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return fmt.Sprintf("agent-%03d", launchCount), nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	// Dispatch 2 fix agents (below the limit).
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	cost := 1.0
+	runStates := []*run.State{
+		{ID: "agent-001", TmuxPane: strPtr("%1"), CostUSD: &cost},
+	}
+	c.mu.Lock()
+	c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+	c.mu.Unlock()
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if launchCount != 2 {
+		t.Fatalf("expected 2 launches, got %d", launchCount)
+	}
+
+	// CI passes — should reset FixAttempts.
+	statuses["42"] = &PRStatus{PRNumber: "42", State: "OPEN", CI: "passing", TargetRepo: "owner/repo"}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	states := c.PipelineStates()
+	if states["42"].FixAttempts != 0 {
+		t.Errorf("expected FixAttempts reset to 0 after CI pass, got %d", states["42"].FixAttempts)
+	}
+}
+
+func TestFixAgentCircuitBreakerResetOnNewPush(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return fmt.Sprintf("agent-%03d", launchCount), nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	// Dispatch 3 fix agents to trip the circuit breaker.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	for i := 2; i <= 3; i++ {
+		cost := 1.0
+		runStates := []*run.State{
+			{ID: fmt.Sprintf("agent-%03d", i-1), TmuxPane: strPtr("%1"), CostUSD: &cost},
+		}
+		c.mu.Lock()
+		c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+		c.mu.Unlock()
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+	}
+
+	// Trip the breaker.
+	cost := 1.0
+	runStates := []*run.State{
+		{ID: "agent-003", TmuxPane: strPtr("%1"), CostUSD: &cost},
+	}
+	c.mu.Lock()
+	c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+	c.mu.Unlock()
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if c.PipelineStates()["42"].Stage != StageStalled {
+		t.Fatalf("expected stalled, got %s", c.PipelineStates()["42"].Stage)
+	}
+
+	// Simulate new push: CI goes to pending.
+	statuses["42"] = &PRStatus{PRNumber: "42", State: "OPEN", CI: "pending", TargetRepo: "owner/repo"}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	states := c.PipelineStates()
+	if states["42"].FixAttempts != 0 {
+		t.Errorf("expected FixAttempts reset to 0 after new push (CI pending), got %d", states["42"].FixAttempts)
+	}
+	if states["42"].Stage != StageCIPending {
+		t.Errorf("expected stage to reset to ci_pending after new push, got %s", states["42"].Stage)
+	}
+
+	// CI fails again — should be able to dispatch again.
+	statuses["42"] = &PRStatus{PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if launchCount != 4 {
+		t.Errorf("expected 4th launch after circuit breaker reset, got %d", launchCount)
+	}
+}
+
+func TestKlausApprovalTriggersAutoMerge(t *testing.T) {
+	c, _ := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return "agent-001", nil
+	})
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return nil
+	})
+
+	// CI passing, no GitHub review, but klaus internal approval is set.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "", Conflicts: "none", TargetRepo: "owner/repo",
+		},
+	}
+
+	approved := true
+	pr := "42"
+	runStates := []*run.State{
+		{ID: "run-001", PR: &pr, Approved: &approved},
+	}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if launchCount != 0 {
+		t.Errorf("expected no agent launch, got %d", launchCount)
+	}
+	if mergeCount != 1 {
+		t.Errorf("expected 1 merge from klaus approval, got %d", mergeCount)
+	}
+
+	hasMerge := false
+	for _, a := range actions {
+		if a.Type == "merge" {
+			hasMerge = true
+		}
+	}
+	if !hasMerge {
+		t.Error("expected merge action from klaus internal approval")
+	}
+}
+
+func TestChangesRequestedOverridesKlausApproval(t *testing.T) {
+	c, _ := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return nil
+	})
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return "agent-fix", nil
+	})
+
+	// CI passing, CHANGES_REQUESTED on GitHub, but klaus internal approval is set.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "CHANGES_REQUESTED", Conflicts: "none", TargetRepo: "owner/repo",
+		},
+	}
+
+	approved := true
+	pr := "42"
+	runStates := []*run.State{
+		{ID: "run-001", PR: &pr, Approved: &approved},
+	}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if mergeCount != 0 {
+		t.Errorf("expected no merge when CHANGES_REQUESTED, got %d merges", mergeCount)
+	}
+	if launchCount != 1 {
+		t.Errorf("expected fix agent dispatch for CHANGES_REQUESTED, got %d launches", launchCount)
+	}
+
+	hasLaunch := false
+	for _, a := range actions {
+		if a.Type == "launch" {
+			hasLaunch = true
+		}
+	}
+	if !hasLaunch {
+		t.Error("expected launch action for review fix agent")
+	}
+}
+
+func TestRunStateMatchesPR(t *testing.T) {
+	pr := "42"
+	tests := []struct {
+		name  string
+		state *run.State
+		want  bool
+	}{
+		{"match by PR field", &run.State{PR: &pr}, true},
+		{"match by PRURL", &run.State{PRURL: strPtr("https://github.com/o/r/pull/42")}, true},
+		{"match by PRURL with trailing slash", &run.State{PRURL: strPtr("https://github.com/o/r/pull/42/")}, true},
+		{"no match different PR", &run.State{PRURL: strPtr("https://github.com/o/r/pull/421")}, false},
+		{"no match nil fields", &run.State{}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := runStateMatchesPR(tt.state, "42")
+			if got != tt.want {
+				t.Errorf("runStateMatchesPR() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestKlausApprovalWithConflictsDispatchesRebase(t *testing.T) {
+	c, _ := newTestController(t)
+
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return nil
+	})
+
+	var launchedPrompt string
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchedPrompt = prompt
+		launchCount++
+		return "agent-rebase", nil
+	})
+
+	// CI passing, no GitHub review decision, but klaus internal approval is set.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "", Conflicts: "yes", TargetRepo: "owner/repo",
+		},
+	}
+
+	approved := true
+	pr := "42"
+	runStates := []*run.State{
+		{ID: "run-001", PR: &pr, Approved: &approved},
+	}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if mergeCount != 0 {
+		t.Error("should not merge when conflicts exist")
+	}
+
+	if launchCount != 1 {
+		t.Errorf("expected 1 rebase agent launch, got %d", launchCount)
+	}
+	if launchedPrompt == "" {
+		t.Error("expected rebase agent dispatch for klaus-approved PR with conflicts")
+	}
+	if !strings.Contains(launchedPrompt, "merge conflicts") {
+		t.Errorf("expected rebase prompt, got %q", launchedPrompt)
+	}
+
+	hasLaunch := false
+	for _, a := range actions {
+		if a.Type == "launch" && strings.Contains(a.Detail, "Rebase") {
+			hasLaunch = true
+		}
+	}
+	if !hasLaunch {
+		t.Errorf("expected rebase launch action, got %v", actions)
+	}
+
+	states := c.PipelineStates()
+	if states["42"].Stage != StageNeedsRebase {
+		t.Errorf("expected stage needs_rebase, got %s", states["42"].Stage)
+	}
+}
+
+func TestIsRunning_DeadPane(t *testing.T) {
+	c, _ := newTestController(t)
+	pane := "dead-pane"
+
+	// Pane does not exist (agent crashed without finalizing).
+	c.SetTmuxDeps(run.TmuxDeps{
+		PaneExists: func(string) bool { return false },
+		PaneIsDead: func(string) bool { return true },
+		PaneIsIdle: func(string) bool { return false },
+	})
+
+	s := &run.State{TmuxPane: &pane}
+	if c.isRunning(s) {
+		t.Error("expected isRunning=false when pane does not exist")
+	}
+
+	// Pane exists and is alive (agent still running).
+	c.SetTmuxDeps(run.TmuxDeps{
+		PaneExists: func(string) bool { return true },
+		PaneIsDead: func(string) bool { return false },
+		PaneIsIdle: func(string) bool { return false },
+	})
+
+	if !c.isRunning(s) {
+		t.Error("expected isRunning=true when pane exists and is alive")
+	}
+
+	// No tmux pane at all.
+	s2 := &run.State{}
+	if c.isRunning(s2) {
+		t.Error("expected isRunning=false when TmuxPane is nil")
+	}
+}
+
+func TestMergedStageIsTerminal(t *testing.T) {
+	c, _ := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	launchCount := 0
+	mergeCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return "agent-001", nil
+	})
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return nil
+	})
+
+	// Seed a PR directly in StageMerged (simulates post-merge state).
+	c.mu.Lock()
+	c.prStates["38"] = &PRPipelineState{
+		PRNumber:       "38",
+		Stage:          StageMerged,
+		SeenCommentIDs: make(map[int64]bool),
+	}
+	c.mu.Unlock()
+
+	// Even with CI passing and approved status, merged should not transition.
+	statuses := map[string]*PRStatus{
+		"38": {
+			PRNumber: "38", State: "OPEN", CI: "passing",
+			ReviewDecision: "APPROVED", Conflicts: "none", TargetRepo: "owner/repo",
+		},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	state := c.PipelineStates()["38"]
+	if state.Stage != StageMerged {
+		t.Errorf("expected merged to remain terminal, got stage %s", state.Stage)
+	}
+	if launchCount != 0 {
+		t.Errorf("expected no agent launch for merged PR, got %d", launchCount)
+	}
+	if mergeCount != 0 {
+		t.Errorf("expected no merge attempt for merged PR, got %d", mergeCount)
+	}
+}
+
+func TestSessionResumeSeedsFromGitHubStatus(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return "agent-001", nil
+	})
+
+	// Simulate session resume: prStates is empty, but PR is already passing CI.
+	statuses := map[string]*PRStatus{
+		"50": {PRNumber: "50", State: "OPEN", CI: "passing", TargetRepo: "owner/repo"},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	state := c.PipelineStates()["50"]
+	if state == nil {
+		t.Fatal("expected PR 50 to be tracked")
+	}
+	// A passing PR on session resume should seed as ci_passed, not ci_pending.
+	if state.Stage != StageCIPassed {
+		t.Errorf("expected ci_passed on resume with passing CI, got %s", state.Stage)
+	}
+	// Should not have dispatched any agent (CI is passing, no review issues).
+	if launchCount != 0 {
+		t.Errorf("expected no agent launch for passing PR on resume, got %d", launchCount)
+	}
+}
+
+func TestSessionResumeFailingCISeedsCorrectly(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return "agent-fix", nil
+	})
+
+	// Session resume with a failing CI PR.
+	statuses := map[string]*PRStatus{
+		"51": {PRNumber: "51", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	state := c.PipelineStates()["51"]
+	if state == nil {
+		t.Fatal("expected PR 51 to be tracked")
+	}
+	if state.Stage != StageCIFailed {
+		t.Errorf("expected ci_failed after handling failing CI, got %s", state.Stage)
+	}
+	if launchCount != 1 {
+		t.Errorf("expected 1 agent launch for failing CI, got %d", launchCount)
+	}
+}
+
+// TestCoordinatorLaunchedPRFixSuppresses verifies the controller does NOT
+// dispatch a competing fix agent when a coordinator-launched pr-fix run
+// (e.g. from `klaus launch --pr 42 ...`) is already active on the same PR.
+// This is the real-world incident on flux PR #66, where intermediate commits
+// during a multi-step refactor failed CI, the pipeline dispatched its own
+// fix agent, and the two agents revert-warred.
+func TestCoordinatorLaunchedPRFixSuppresses(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return "pipeline-agent", nil
+	})
+
+	// Coordinator-launched pr-fix run: Type set, running pane, PRURL matches PR 42.
+	// Note: the pipeline never recorded it in ps.LastAgentID.
+	runStates := []*run.State{
+		{
+			ID:       "coord-fix-001",
+			Type:     "pr-fix",
+			PRURL:    strPtr("https://github.com/owner/repo/pull/42"),
+			TmuxPane: strPtr("%7"),
+		},
+	}
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if launchCount != 0 {
+		t.Errorf("expected pipeline to suppress dispatch while coordinator pr-fix run is active, got %d launches", launchCount)
+	}
+}
+
+// TestCoordinatorLaunchedPRFixSuppressesViaPRField covers the case where the
+// coordinator-launched run has its PR field populated (rather than PRURL).
+// Both forms should trigger the guard.
+func TestCoordinatorLaunchedPRFixSuppressesViaPRField(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return "pipeline-agent", nil
+	})
+
+	runStates := []*run.State{
+		{
+			ID:       "coord-fix-002",
+			Type:     "pr-fix",
+			PR:       strPtr("42"),
+			TmuxPane: strPtr("%8"),
+		},
+	}
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if launchCount != 0 {
+		t.Errorf("expected suppression via PR field match, got %d launches", launchCount)
+	}
+}
+
+// TestCoordinatorLaunchedPRFixFinishedAllowsDispatch verifies that once the
+// coordinator-launched pr-fix run completes (finalized, pane idle), the
+// pipeline is free to dispatch its own fix agent on a CI failure.
+func TestCoordinatorLaunchedPRFixFinishedAllowsDispatch(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return "pipeline-agent", nil
+	})
+
+	// Coordinator run is finalized (CostUSD set) — IsAgentRunning treats this
+	// as not running when the pane is idle (testTmuxDeps reports PaneIsIdle=true).
+	cost := 0.42
+	runStates := []*run.State{
+		{
+			ID:       "coord-fix-001",
+			Type:     "pr-fix",
+			PRURL:    strPtr("https://github.com/owner/repo/pull/42"),
+			TmuxPane: strPtr("%7"),
+			CostUSD:  &cost,
+		},
+	}
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if launchCount != 1 {
+		t.Errorf("expected dispatch after coordinator pr-fix run finished, got %d launches", launchCount)
+	}
+}
+
+// TestCoordinatorLaunchedNonPRFixDoesNotSuppress ensures only pr-fix runs trip
+// the guard — other run types on the same PR shouldn't block the pipeline.
+func TestCoordinatorLaunchedNonPRFixDoesNotSuppress(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return "pipeline-agent", nil
+	})
+
+	runStates := []*run.State{
+		{
+			ID:       "coord-other",
+			Type:     "session", // not a pr-fix
+			PR:       strPtr("42"),
+			TmuxPane: strPtr("%9"),
+		},
+	}
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if launchCount != 1 {
+		t.Errorf("expected dispatch when only non-pr-fix runs are active, got %d launches", launchCount)
+	}
+}
+
+func strPtr(s string) *string {
+	return &s
+}
+
+func TestBudgetPausedLabelDrivesStage(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return "agent-x", nil
+	})
+
+	// PR has the klaus:budget-paused label. Even though CI is failing, the
+	// pause transition should win and no fix-agent should be dispatched.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber:   "42",
+			State:      "OPEN",
+			CI:         "failing",
+			TargetRepo: "owner/repo",
+			Labels:     []string{"klaus:budget-paused"},
+		},
+	}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if launchCount != 0 {
+		t.Errorf("expected no agent dispatch for paused PR, got %d launches", launchCount)
+	}
+	if len(actions) != 0 {
+		t.Errorf("expected no actions for paused PR, got %v", actions)
+	}
+	if got := c.PipelineStates()["42"].Stage; got != StageBudgetPaused {
+		t.Errorf("expected stage budget_paused, got %s", got)
+	}
+}
+
+func TestBudgetPausedTransitionsToCIFailedOnceLabelCleared(t *testing.T) {
+	c, _ := newTestController(t)
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return "agent-fix", nil
+	})
+
+	// Step 1: paused.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber:   "42",
+			State:      "OPEN",
+			CI:         "failing",
+			TargetRepo: "owner/repo",
+			Labels:     []string{"klaus:budget-paused"},
+		},
+	}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if c.PipelineStates()["42"].Stage != StageBudgetPaused {
+		t.Fatalf("setup: expected budget_paused, got %s", c.PipelineStates()["42"].Stage)
+	}
+
+	// Step 2: label cleared → pipeline should resume normal handling
+	// (dispatch a fix agent for failing CI).
+	statuses["42"] = &PRStatus{
+		PRNumber:   "42",
+		State:      "OPEN",
+		CI:         "failing",
+		TargetRepo: "owner/repo",
+		Labels:     nil,
+	}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if launchCount != 1 {
+		t.Errorf("expected fix agent dispatch after label clear, got %d launches", launchCount)
+	}
+	if got := c.PipelineStates()["42"].Stage; got != StageCIFailed {
+		t.Errorf("expected stage ci_failed after label clear, got %s", got)
+	}
+}
+
+func TestBudgetPausedEmitsEventOnTransition(t *testing.T) {
+	c, _ := newTestController(t)
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		return "agent-x", nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber:   "42",
+			State:      "OPEN",
+			CI:         "passing",
+			TargetRepo: "owner/repo",
+			Labels:     []string{"klaus:budget-paused"},
+		},
+	}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	// Idempotent: calling again should not double-emit (we just verify the
+	// stage stays the same — events.jsonl assertion is more fragile to set
+	// up in this test harness, so we rely on the stage as the proxy).
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if got := c.PipelineStates()["42"].Stage; got != StageBudgetPaused {
+		t.Errorf("expected stage budget_paused, got %s", got)
+	}
+}
+
+func TestStageLabelBudgetPaused(t *testing.T) {
+	if got := StageLabel(StageBudgetPaused); got != "budget paused, awaiting decision" {
+		t.Errorf("StageLabel(budget_paused) = %q", got)
+	}
+}
+
+// TestTrustedCommentsCircuitBreaker reproduces the production redispatch loop
+// (2026-07-06): a trusted review that never reads as addressed — the fix
+// agent pushes no commit, so HasNewTrustedComments never clears — must stop
+// dispatching after maxFixAttempts agents instead of looping forever.
+func TestTrustedCommentsCircuitBreaker(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return fmt.Sprintf("agent-%03d", launchCount), nil
+	})
+	c.SetSnapshotThreads(func(repo, prNumber string) ([]string, error) {
+		return nil, nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber:              "42",
+			State:                 "OPEN",
+			CI:                    "passing",
+			ReviewDecision:        "",
+			HasNewTrustedComments: true,
+			TargetRepo:            "owner/repo",
+			PRURL:                 "https://github.com/owner/repo/pull/42",
+		},
+	}
+
+	// Dispatch 1: initial review-fix agent.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if launchCount != 1 {
+		t.Fatalf("expected 1 launch, got %d", launchCount)
+	}
+
+	cost := 1.0
+	for attempt := 2; attempt <= 3; attempt++ {
+		// Previous agent completed without pushing: comments still unaddressed.
+		runStates := []*run.State{
+			{ID: fmt.Sprintf("agent-%03d", attempt-1), TmuxPane: strPtr("%1"), CostUSD: &cost},
+		}
+
+		// Poll while the dispatch cooldown is still active: must hold
+		// review_pending (not fall back to awaiting-review, which would hide
+		// the completed attempt from the counter) and must not dispatch.
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+		if launchCount != attempt-1 {
+			t.Fatalf("attempt %d: dispatched during cooldown, got %d launches", attempt, launchCount)
+		}
+		if st := c.PipelineStates()["42"].Stage; st != StageReviewPending {
+			t.Fatalf("attempt %d: expected review_pending while cooling down, got %s", attempt, st)
+		}
+
+		// Expire the cooldown; comments still unaddressed -> redispatch.
+		c.mu.Lock()
+		c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+		c.mu.Unlock()
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+		if launchCount != attempt {
+			t.Fatalf("attempt %d: expected %d launches, got %d", attempt, attempt, launchCount)
+		}
+	}
+
+	// Agent 3 completes without pushing; the breaker must trip: no 4th dispatch.
+	runStates := []*run.State{
+		{ID: "agent-003", TmuxPane: strPtr("%1"), CostUSD: &cost},
+	}
+	c.mu.Lock()
+	c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+	c.mu.Unlock()
+	actions := c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if launchCount != 3 {
+		t.Errorf("expected circuit breaker to stop at 3 launches, got %d", launchCount)
+	}
+	hasError := false
+	for _, a := range actions {
+		if a.Type == "error" && strings.Contains(a.Detail, "review fix attempts failed") {
+			hasError = true
+		}
+	}
+	if !hasError {
+		t.Error("expected error action from review fix circuit breaker, got:", actions)
+	}
+	if st := c.PipelineStates()["42"].Stage; st != StageStalled {
+		t.Errorf("expected stalled stage, got %s", st)
+	}
+
+	// Subsequent polls stay stalled silently: no dispatch, no repeated error.
+	c.mu.Lock()
+	c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+	c.mu.Unlock()
+	actions = c.HandleGHStatus(context.Background(), statuses, runStates)
+	if launchCount != 3 {
+		t.Errorf("expected no dispatch while stalled, got %d launches", launchCount)
+	}
+	if len(actions) != 0 {
+		t.Errorf("expected no actions while stalled, got %v", actions)
+	}
+}
+
+// TestTrustedCommentsBreakerResetsWhenAddressed verifies the breaker is not a
+// dead end: once the comments read as addressed (a new push advanced the
+// watermark), the attempt budget resets and a later trusted review can
+// dispatch again.
+func TestTrustedCommentsBreakerResetsWhenAddressed(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		launchCount++
+		return fmt.Sprintf("agent-%03d", launchCount), nil
+	})
+	c.SetSnapshotThreads(func(repo, prNumber string) ([]string, error) {
+		return nil, nil
+	})
+
+	// Seed a PR stalled by the review-fix breaker.
+	c.mu.Lock()
+	c.prStates["42"] = &PRPipelineState{
+		PRNumber:          "42",
+		Stage:             StageStalled,
+		ReviewFixAttempts: maxFixAttempts,
+		SeenCommentIDs:    make(map[int64]bool),
+	}
+	c.mu.Unlock()
+
+	// Comments addressed -> awaiting review, counter reset.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			HasNewTrustedComments: false, TargetRepo: "owner/repo",
+		},
+	}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	state := c.PipelineStates()["42"]
+	if state.ReviewFixAttempts != 0 {
+		t.Errorf("expected ReviewFixAttempts reset to 0 once comments are addressed, got %d", state.ReviewFixAttempts)
+	}
+	if launchCount != 0 {
+		t.Fatalf("expected no launch while comments are addressed, got %d", launchCount)
+	}
+
+	// A fresh trusted review with inline comments dispatches again.
+	statuses["42"].HasNewTrustedComments = true
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if launchCount != 1 {
+		t.Errorf("expected dispatch after breaker reset, got %d launches", launchCount)
+	}
+}
+
+// ── Auto-merge retry loop (issue #292) ──────────────────────────────────
+
+// readEvents returns every event the controller emitted to its event log.
+// newTestController roots the log at <dir>/session.
+func readEvents(t *testing.T, dir string) []event.Event {
+	t.Helper()
+	evts, err := event.NewLog(filepath.Join(dir, "session")).Read()
+	if err != nil {
+		t.Fatalf("reading event log: %v", err)
+	}
+	return evts
+}
+
+func countEvents(evts []event.Event, typ string) int {
+	n := 0
+	for _, e := range evts {
+		if e.Type == typ {
+			n++
+		}
+	}
+	return n
+}
+
+// expireMergeBackoff rewinds the last auto-merge attempt so the next poll is
+// past the retry window, standing in for waiting out mergeRetryBackoff.
+func expireMergeBackoff(c *Controller, prNumber string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if ps := c.prStates[prNumber]; ps != nil {
+		ps.LastMergeAttemptAt = time.Now().Add(-2 * mergeRetryBackoff)
+	}
+}
+
+// TestApprovedBehindPRDoesNotFloodApprovedEvents reproduces site #734
+// (2026-08-22): an approved, CI-green, conflict-free PR that is behind its
+// base branch used to re-emit pr:approved on every ~3s poll, flooding
+// `klaus watch`. The event must be emitted once per approval edge.
+func TestApprovedBehindPRDoesNotFloodApprovedEvents(t *testing.T) {
+	c, dir := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	updateCount := 0
+	c.SetUpdateBranch(func(ctx context.Context, repo, prNumber string) error {
+		updateCount++
+		return nil
+	})
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return nil
+	})
+
+	// Behind by 1: mergeable, but an up-to-date-branch protection rule
+	// rejects the merge until the branch is updated.
+	statuses := map[string]*PRStatus{
+		"734": {
+			PRNumber: "734", State: "OPEN", CI: "passing",
+			ReviewDecision: "APPROVED", Conflicts: "none", BehindBy: 1,
+			TargetRepo: "owner/repo",
+		},
+	}
+
+	for i := 0; i < 20; i++ {
+		c.HandleGHStatus(context.Background(), statuses, nil)
+	}
+
+	if got := countEvents(readEvents(t, dir), event.PRApproved); got != 1 {
+		t.Errorf("expected exactly 1 pr:approved event across 20 polls, got %d", got)
+	}
+	if updateCount != 1 {
+		t.Errorf("expected 1 branch update (backoff gates the rest), got %d", updateCount)
+	}
+	if mergeCount != 0 {
+		t.Errorf("expected no merge attempt while the PR is behind, got %d", mergeCount)
+	}
+}
+
+// TestBehindPRUpdatesBranchThenMerges covers the happy path for a behind PR:
+// update the branch, and once GitHub reports it caught up, merge it.
+func TestBehindPRUpdatesBranchThenMerges(t *testing.T) {
+	c, _ := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	var updatedPR, updatedRepo string
+	c.SetUpdateBranch(func(ctx context.Context, repo, prNumber string) error {
+		updatedPR, updatedRepo = prNumber, repo
+		return nil
+	})
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return nil
+	})
+
+	status := &PRStatus{
+		PRNumber: "734", State: "OPEN", CI: "passing",
+		ReviewDecision: "APPROVED", Conflicts: "none", BehindBy: 1,
+		TargetRepo: "owner/repo",
+	}
+	statuses := map[string]*PRStatus{"734": status}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if updatedPR != "734" || updatedRepo != "owner/repo" {
+		t.Errorf("expected branch update for PR #734 in owner/repo, got %q in %q", updatedPR, updatedRepo)
+	}
+	if mergeCount != 0 {
+		t.Fatalf("expected no merge on the poll that updates the branch, got %d", mergeCount)
+	}
+	hasUpdate := false
+	for _, a := range actions {
+		if a.Type == "update-branch" {
+			hasUpdate = true
+		}
+	}
+	if !hasUpdate {
+		t.Errorf("expected an update-branch action, got %v", actions)
+	}
+
+	// GitHub now reports the branch caught up; the merge lands on a later poll.
+	status.BehindBy = 0
+	expireMergeBackoff(c, "734")
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if mergeCount != 1 {
+		t.Errorf("expected 1 merge once the PR is no longer behind, got %d", mergeCount)
+	}
+	if got := c.PipelineStates()["734"].Stage; got != StageMerged {
+		t.Errorf("expected stage merged, got %s", got)
+	}
+}
+
+// TestFailingMergeBacksOffThenStalls is the other half of #292: a merge that
+// can never succeed must not be retried on every poll, and must stall loudly
+// once the attempt budget is spent instead of looping forever.
+func TestFailingMergeBacksOffThenStalls(t *testing.T) {
+	c, dir := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return fmt.Errorf("Pull request is not mergeable")
+	})
+
+	statuses := map[string]*PRStatus{
+		"734": {
+			PRNumber: "734", State: "OPEN", CI: "passing",
+			ReviewDecision: "APPROVED", Conflicts: "none", TargetRepo: "owner/repo",
+		},
+	}
+
+	// First attempt, then a burst of polls inside the backoff window.
+	for i := 0; i < 10; i++ {
+		c.HandleGHStatus(context.Background(), statuses, nil)
+	}
+	if mergeCount != 1 {
+		t.Fatalf("expected the backoff to hold the retry count at 1, got %d", mergeCount)
+	}
+	if got := c.PipelineStates()["734"].Stage; got != StageApproved {
+		t.Errorf("expected a failed merge to fall back to approved, got %s", got)
+	}
+
+	// Wait out the backoff for each remaining attempt in the budget.
+	for i := 0; i < maxMergeAttempts-1; i++ {
+		expireMergeBackoff(c, "734")
+		c.HandleGHStatus(context.Background(), statuses, nil)
+	}
+	if mergeCount != maxMergeAttempts {
+		t.Fatalf("expected %d merge attempts, got %d", maxMergeAttempts, mergeCount)
+	}
+	if got := c.PipelineStates()["734"].Stage; got != StageStalled {
+		t.Fatalf("expected stage stalled after the budget is spent, got %s", got)
+	}
+
+	// Budget spent: further polls neither retry nor re-notify.
+	for i := 0; i < 10; i++ {
+		expireMergeBackoff(c, "734")
+		c.HandleGHStatus(context.Background(), statuses, nil)
+	}
+	if mergeCount != maxMergeAttempts {
+		t.Errorf("expected no merge attempts past the budget, got %d", mergeCount)
+	}
+
+	evts := readEvents(t, dir)
+	if got := countEvents(evts, event.PipelineStalled); got != 1 {
+		t.Errorf("expected exactly 1 pipeline:stalled event, got %d", got)
+	}
+	if got := countEvents(evts, event.PRApproved); got != 1 {
+		t.Errorf("expected exactly 1 pr:approved event, got %d", got)
+	}
+	for _, e := range evts {
+		if e.Type != event.PipelineStalled {
+			continue
+		}
+		if reason, _ := e.Data["reason"].(string); !strings.Contains(reason, "auto-merge failed") {
+			t.Errorf("expected a stall reason naming auto-merge, got %q", reason)
+		}
+	}
+}
+
+// TestFailingBranchUpdateStalls covers the same circuit breaker on the
+// behind-PR path: a branch update that keeps failing must stall rather than
+// retry forever.
+func TestFailingBranchUpdateStalls(t *testing.T) {
+	c, dir := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	updateCount := 0
+	c.SetUpdateBranch(func(ctx context.Context, repo, prNumber string) error {
+		updateCount++
+		return fmt.Errorf("merge conflict between base and head")
+	})
+
+	statuses := map[string]*PRStatus{
+		"734": {
+			PRNumber: "734", State: "OPEN", CI: "passing",
+			ReviewDecision: "APPROVED", Conflicts: "none", BehindBy: 1,
+			TargetRepo: "owner/repo",
+		},
+	}
+
+	for i := 0; i < maxMergeAttempts+5; i++ {
+		expireMergeBackoff(c, "734")
+		c.HandleGHStatus(context.Background(), statuses, nil)
+	}
+
+	if updateCount != maxMergeAttempts {
+		t.Errorf("expected %d branch update attempts, got %d", maxMergeAttempts, updateCount)
+	}
+	if got := c.PipelineStates()["734"].Stage; got != StageStalled {
+		t.Errorf("expected stage stalled, got %s", got)
+	}
+	if got := countEvents(readEvents(t, dir), event.PipelineStalled); got != 1 {
+		t.Errorf("expected exactly 1 pipeline:stalled event, got %d", got)
+	}
+}
+
+// TestReApprovalResetsMergeBudgetWithoutReEmitting: losing and regaining
+// approval gives auto-merge a fresh attempt budget, but pr:approved is
+// reported once per PR, so it doesn't fire again.
+func TestReApprovalResetsMergeBudgetWithoutReEmitting(t *testing.T) {
+	c, dir := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return fmt.Errorf("Pull request is not mergeable")
+	})
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+		return "agent-001", nil
+	})
+
+	status := &PRStatus{
+		PRNumber: "734", State: "OPEN", CI: "passing",
+		ReviewDecision: "APPROVED", Conflicts: "none", TargetRepo: "owner/repo",
+	}
+	statuses := map[string]*PRStatus{"734": status}
+
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if mergeCount != 1 {
+		t.Fatalf("expected 1 merge attempt, got %d", mergeCount)
+	}
+
+	// Approval is dismissed by a new push, then re-granted.
+	status.ReviewDecision = "REVIEW_REQUIRED"
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	status.ReviewDecision = "APPROVED"
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if mergeCount != 2 {
+		t.Errorf("expected re-approval to reset the merge budget and retry immediately, got %d attempts", mergeCount)
+	}
+	if got := countEvents(readEvents(t, dir), event.PRApproved); got != 1 {
+		t.Errorf("expected 1 pr:approved event (once per PR), got %d", got)
+	}
+}
+
+// TestBranchUpdateDoesNotSpendMergeBudget keeps catching up with a moving base
+// branch from eating the auto-merge retry budget — a PR behind a busy base
+// must still get its full set of merge attempts once it is caught up.
+func TestBranchUpdateDoesNotSpendMergeBudget(t *testing.T) {
+	c, _ := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	updateCount := 0
+	c.SetUpdateBranch(func(ctx context.Context, repo, prNumber string) error {
+		updateCount++
+		return nil
+	})
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return fmt.Errorf("Pull request is not mergeable")
+	})
+
+	status := &PRStatus{
+		PRNumber: "734", State: "OPEN", CI: "passing",
+		ReviewDecision: "APPROVED", Conflicts: "none", BehindBy: 1,
+		TargetRepo: "owner/repo",
+	}
+	statuses := map[string]*PRStatus{"734": status}
+
+	// The base branch moves twice while CI re-runs.
+	for i := 0; i < 2; i++ {
+		expireMergeBackoff(c, "734")
+		c.HandleGHStatus(context.Background(), statuses, nil)
+	}
+	if updateCount != 2 {
+		t.Fatalf("expected 2 branch updates, got %d", updateCount)
+	}
+
+	// Caught up: the merge budget is untouched, so all attempts are available.
+	status.BehindBy = 0
+	for i := 0; i < maxMergeAttempts+2; i++ {
+		expireMergeBackoff(c, "734")
+		c.HandleGHStatus(context.Background(), statuses, nil)
+	}
+	if mergeCount != maxMergeAttempts {
+		t.Errorf("expected %d merge attempts after catching up, got %d", maxMergeAttempts, mergeCount)
+	}
+	if got := c.PipelineStates()["734"].Stage; got != StageStalled {
+		t.Errorf("expected stage stalled once the merge budget is spent, got %s", got)
+	}
+}

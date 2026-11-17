@@ -1170,4 +1170,46 @@ rec {
           --set-default VALLEY_VERIFICATION_SCHEMA ${../schema/verification.cue} \
           --set-default VALLEY_EVENT_SCHEMA ${../schema/events.cue}
       '';
+
+  # klaus (flow/), the client that launches and follows agent runs: the one
+  # module of this repository that imports third-party modules (AGENTS.md,
+  # "Go dependencies"), so it is built here rather than by goModule, which
+  # gives every package version "0" and no vendored modules. Its version is
+  # the CLI's, stamped into the binary, and its vendored modules are one
+  # fixed-output derivation, klaus-go-modules, resolved from the whole module
+  # with its tests, so the checks in nix/checks/flow.nix build over the
+  # same modules as the package. The package's source holds no test and no
+  # prose, and it runs no tests: the checks do. It runs git, tmux, nix and
+  # the agent CLIs it launches from the user's PATH; none of them is a
+  # dependency of the package.
+  flowComplete = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.difference ../flow unread;
+  };
+  klaus = pkgs.buildGoModule {
+    pname = "klaus";
+    inherit version;
+    src = lib.fileset.toSource {
+      root = ../.;
+      fileset = lib.fileset.difference ../flow (
+        lib.fileset.unions [
+          unread
+          goTests
+          ../flow/e2e
+        ]
+      );
+    };
+    modRoot = "flow";
+    subPackages = [ "cmd/klaus" ];
+    vendorHash = "sha256-vh51S12HVVFjHr0DSLZlvBFLWarOlFN7vxXApVb69Dk=";
+    # Named without the version, which changes with every commit, and read
+    # from the whole module, so test-only imports are vendored too.
+    overrideModAttrs = _: _: {
+      name = "klaus-go-modules";
+      src = flowComplete;
+    };
+    ldflags = [ "-X the-valley/flow/internal/cmd.version=${version}" ];
+    doCheck = false;
+    meta.mainProgram = "klaus";
+  };
 }

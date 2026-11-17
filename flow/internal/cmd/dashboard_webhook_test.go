@@ -1,0 +1,124 @@
+package cmd
+
+import (
+	"fmt"
+	"the-valley/flow/internal/config"
+	"net"
+	"strings"
+	"testing"
+	"time"
+
+	"the-valley/flow/internal/run"
+)
+
+func TestWebhookFreshnessText(t *testing.T) {
+	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name     string
+		last     time.Time
+		wantText string
+		wantSev  webhookSeverity
+	}{
+		{"zero", time.Time{}, "no events yet", webhookFresh},
+		{"10s fresh", now.Add(-10 * time.Second), "last event 10s", webhookFresh},
+		{"just under stale", now.Add(-(webhookStaleAfter - time.Second)), "last event 29m", webhookFresh},
+		{"at stale boundary", now.Add(-webhookStaleAfter), "last event 30m", webhookStale},
+		{"45m stale", now.Add(-45 * time.Minute), "last event 45m", webhookStale},
+		{"just under dead", now.Add(-(webhookDeadAfter - time.Second)), "last event 1h", webhookStale},
+		{"at dead boundary", now.Add(-webhookDeadAfter), "last event 2h", webhookDead},
+		{"5h dead", now.Add(-5 * time.Hour), "last event 5h", webhookDead},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			text, sev := webhookFreshnessText(c.last, now)
+			if text != c.wantText {
+				t.Errorf("text = %q, want %q", text, c.wantText)
+			}
+			if sev != c.wantSev {
+				t.Errorf("severity = %d, want %d", sev, c.wantSev)
+			}
+		})
+	}
+}
+
+func TestHumanizeDuration(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{-5 * time.Second, "0s"},
+		{0, "0s"},
+		{12 * time.Second, "12s"},
+		{59 * time.Second, "59s"},
+		{time.Minute, "1m"},
+		{5 * time.Minute, "5m"},
+		{59 * time.Minute, "59m"},
+		{time.Hour, "1h"},
+		{3 * time.Hour, "3h"},
+		{23 * time.Hour, "23h"},
+		{24 * time.Hour, "1d"},
+		{50 * time.Hour, "2d"},
+	}
+	for _, c := range cases {
+		if got := humanizeDuration(c.d); got != c.want {
+			t.Errorf("humanizeDuration(%v) = %q, want %q", c.d, got, c.want)
+		}
+	}
+}
+
+// TestSelectedPRURLForOpenHandler verifies the path the 'o' key uses:
+// selectedPR yields the row whose state carries the URL to open in the
+// browser.
+func TestSelectedPRURLForOpenHandler(t *testing.T) {
+	states := []*run.State{
+		{ID: "a", Prompt: "p", TargetRepo: strPtr("r"), PRURL: strPtr("https://github.com/o/r/pull/1"), CreatedAt: "2026-01-01T00:00:00Z"},
+		{ID: "b", Prompt: "p", TargetRepo: strPtr("r"), PRURL: strPtr("https://github.com/o/r/pull/2"), CreatedAt: "2026-01-01T00:01:00Z"},
+	}
+	// Rows are most recent first, so cursor 1 is the older PR, #1.
+	m := dashboardModel{states: states, tmuxDeps: testDashboardTmuxDeps(), cursor: 1}
+
+	r, ok := m.selectedPR("open")
+	if !ok || r.state().PRURL == nil {
+		t.Fatal("selected row has no PRURL")
+	}
+	if got := *r.state().PRURL; got != "https://github.com/o/r/pull/1" {
+		t.Errorf("selected PR URL = %q, want pull/1", got)
+	}
+
+	// A bare agent has no PR to open: a hint is noted instead.
+	m = dashboardModel{states: []*run.State{{ID: "20260101-0000-beef", Prompt: "p", CreatedAt: "2026-01-01T00:00:00Z"}}, tmuxDeps: testDashboardTmuxDeps()}
+	if _, ok := m.selectedPR("open"); ok {
+		t.Error("selectedPR on a bare agent row should report no PR")
+	}
+	if len(m.recentErrors) != 1 || !strings.Contains(m.recentErrors[0].Message, "agent:beef has no PR") {
+		t.Errorf("recentErrors = %v, want a no-PR hint", m.recentErrors)
+	}
+}
+
+func TestSetupWebhookPortHeldFallsBackToPolling(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	m := newDashboardModel(nil, config.Config{}, nil)
+	srv, err := setupWebhook(&m, config.Config{Webhook: &config.WebhookConfig{Port: port}})
+	if err != nil {
+		t.Fatalf("setupWebhook: %v", err)
+	}
+	if srv != nil || m.useWebhook || !m.pollEnabled {
+		t.Errorf("srv=%v useWebhook=%v pollEnabled=%v, want polling only", srv, m.useWebhook, m.pollEnabled)
+	}
+	if line := m.renderSourceLine(); !strings.Contains(line, "polling: 30s") || !strings.Contains(line, fmt.Sprintf("port %d", port)) {
+		t.Errorf("source line = %q", line)
+	}
+}
+
+func TestSetupWebhookOtherListenErrorFails(t *testing.T) {
+	m := newDashboardModel(nil, config.Config{}, nil)
+	if _, err := setupWebhook(&m, config.Config{Webhook: &config.WebhookConfig{Port: -1}}); err == nil {
+		t.Fatal("want an error for an unusable port")
+	}
+}

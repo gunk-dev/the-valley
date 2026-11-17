@@ -1,0 +1,1232 @@
+package cmd
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"the-valley/flow/internal/config"
+	"the-valley/flow/internal/event"
+	gh "the-valley/flow/internal/github"
+	"the-valley/flow/internal/integration"
+	"the-valley/flow/internal/pipeline"
+	"the-valley/flow/internal/project"
+	"the-valley/flow/internal/run"
+	"the-valley/flow/internal/webhook"
+)
+
+// testDashboardTmuxDeps returns TmuxDeps for dashboard tests:
+// panes starting with "%" exist, all are idle (finalized), none dead.
+func testDashboardTmuxDeps() run.TmuxDeps {
+	return run.TmuxDeps{
+		PaneExists: func(paneID string) bool {
+			return strings.HasPrefix(paneID, "%")
+		},
+		PaneIsIdle: func(string) bool { return true },
+		PaneIsDead: func(string) bool { return false },
+	}
+}
+
+func TestGroupByRepo(t *testing.T) {
+	states := []*run.State{
+		{ID: "1", TargetRepo: strPtr("owner/repoA"), Type: "launch"},
+		{ID: "2", TargetRepo: strPtr("owner/repoB"), Type: "launch"},
+		{ID: "3", TargetRepo: strPtr("owner/repoA"), Type: "launch"},
+		{ID: "4", Type: "session"}, // sessions should be excluded
+	}
+
+	groups := groupByRepo(states)
+	if len(groups) != 2 {
+		t.Fatalf("expected 2 groups, got %d", len(groups))
+	}
+	if groups[0].Repo != "owner/repoA" {
+		t.Errorf("first group repo = %q, want %q", groups[0].Repo, "owner/repoA")
+	}
+	if len(groups[0].Runs) != 2 {
+		t.Errorf("repoA runs = %d, want 2", len(groups[0].Runs))
+	}
+	if groups[1].Repo != "owner/repoB" {
+		t.Errorf("second group repo = %q, want %q", groups[1].Repo, "owner/repoB")
+	}
+	if len(groups[1].Runs) != 1 {
+		t.Errorf("repoB runs = %d, want 1", len(groups[1].Runs))
+	}
+}
+
+func TestGroupByRepo_SessionsExcluded(t *testing.T) {
+	states := []*run.State{
+		{ID: "1", Type: "session"},
+		{ID: "2", Type: "session"},
+	}
+	groups := groupByRepo(states)
+	if len(groups) != 0 {
+		t.Fatalf("expected 0 groups for session-only states, got %d", len(groups))
+	}
+}
+
+func TestGroupByRepo_Empty(t *testing.T) {
+	groups := groupByRepo(nil)
+	if len(groups) != 0 {
+		t.Fatalf("expected 0 groups for nil states, got %d", len(groups))
+	}
+}
+
+func TestGroupByRepo_PRURLFallback(t *testing.T) {
+	states := []*run.State{
+		{ID: "1", Type: "launch", PRURL: strPtr("https://github.com/owner/repo/pull/42")},
+	}
+	groups := groupByRepo(states)
+	if len(groups) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(groups))
+	}
+	if groups[0].Repo != "owner/repo" {
+		t.Errorf("repo = %q, want %q", groups[0].Repo, "owner/repo")
+	}
+}
+
+func TestRepoFromPRURL(t *testing.T) {
+	tests := []struct {
+		url  string
+		want string
+	}{
+		{"https://github.com/owner/repo/pull/42", "owner/repo"},
+		{"https://github.com/maintainer/klaus/pull/1", "maintainer/klaus"},
+		{"http://github.com/a/b/pull/99", "a/b"},
+		{"notaurl", "(unknown)"},
+		{"https://github.com/solo", "(unknown)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.url, func(t *testing.T) {
+			got := repoFromPRURL(tt.url)
+			if got != tt.want {
+				t.Errorf("repoFromPRURL(%q) = %q, want %q", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRepoFromState(t *testing.T) {
+	tests := []struct {
+		name string
+		s    *run.State
+		want string
+	}{
+		{
+			name: "uses TargetRepo when set",
+			s:    &run.State{TargetRepo: strPtr("owner/repo")},
+			want: "owner/repo",
+		},
+		{
+			name: "falls back to PR URL",
+			s:    &run.State{PRURL: strPtr("https://github.com/owner/repo2/pull/1")},
+			want: "owner/repo2",
+		},
+		{
+			name: "local when nothing set",
+			s:    &run.State{},
+			want: "(local)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := repoFromState(tt.s, nil)
+			if got != tt.want {
+				t.Errorf("repoFromState() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRepoFromState_WithRegistry(t *testing.T) {
+	reg := &project.Registry{
+		Projects: map[string]string{
+			"site": "/home/user/src/site",
+		},
+	}
+
+	tests := []struct {
+		name string
+		s    *run.State
+		want string
+	}{
+		{
+			name: "owner/repo normalizes to project name",
+			s:    &run.State{TargetRepo: strPtr("maintainer/site")},
+			want: "site",
+		},
+		{
+			name: "project name stays as-is",
+			s:    &run.State{TargetRepo: strPtr("site")},
+			want: "site",
+		},
+		{
+			name: "unregistered owner/repo stays as-is",
+			s:    &run.State{TargetRepo: strPtr("maintainer/other")},
+			want: "maintainer/other",
+		},
+		{
+			name: "PRURL fallback normalizes to project name",
+			s:    &run.State{PRURL: strPtr("https://github.com/maintainer/site/pull/42")},
+			want: "site",
+		},
+		{
+			name: "local when nothing set",
+			s:    &run.State{},
+			want: "(local)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := repoFromState(tt.s, reg)
+			if got != tt.want {
+				t.Errorf("repoFromState() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestComputeTotalCost(t *testing.T) {
+	c1, c2 := 1.50, 3.25
+	states := []*run.State{
+		{CostUSD: &c1},
+		{CostUSD: &c2},
+		{}, // no cost
+	}
+	got := computeTotalCost(states)
+	if got != 4.75 {
+		t.Errorf("computeTotalCost() = %f, want 4.75", got)
+	}
+}
+
+func TestComputeTotalCost_Empty(t *testing.T) {
+	got := computeTotalCost(nil)
+	if got != 0 {
+		t.Errorf("computeTotalCost(nil) = %f, want 0", got)
+	}
+}
+
+func TestFooterCountsRunningAgents(t *testing.T) {
+	m := dashboardModel{tmuxDeps: testDashboardTmuxDeps()}
+	states := []*run.State{
+		{ID: "1", Type: "launch"}, // not running (no pane)
+		{ID: "2", Type: "launch", TmuxPane: strPtr("%2"), CostUSD: float64Ptr(1.0)},   // finished
+		{ID: "3", Type: "pr-fix", TmuxPane: strPtr("%3")},                             // running
+		{ID: "4", Type: "session"},                                                    // excluded
+		{ID: "5", Type: "launch", TmuxPane: strPtr("%5"), DurationMS: int64Ptr(5000)}, // finished
+		{ID: "6", Type: "launch", TmuxPane: strPtr("%6")},                             // running
+	}
+	m.states = states
+	if footer := m.renderFooter(m.resolve(time.Now()), 200); !strings.Contains(footer, "2/5 agents running") {
+		t.Errorf("footer = %q, want 2/5 agents running", footer)
+	}
+}
+
+func TestIsAgentRunning(t *testing.T) {
+	m := &dashboardModel{tmuxDeps: testDashboardTmuxDeps()}
+	tests := []struct {
+		name string
+		s    *run.State
+		want bool
+	}{
+		{"no pane", &run.State{}, false},
+		{"pane but finalized with cost", &run.State{TmuxPane: strPtr("%1"), CostUSD: float64Ptr(1.0)}, false},
+		{"pane but finalized with duration", &run.State{TmuxPane: strPtr("%1"), DurationMS: int64Ptr(1000)}, false},
+		{"pane and not finalized", &run.State{TmuxPane: strPtr("%1")}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := m.isAgentRunning(tt.s)
+			if got != tt.want {
+				t.Errorf("isAgentRunning() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestComputeSessionDuration(t *testing.T) {
+	now := time.Now()
+	past := now.Add(-2 * time.Hour)
+	states := []*run.State{
+		{CreatedAt: now.Format(time.RFC3339)},
+		{CreatedAt: past.Format(time.RFC3339)},
+	}
+	dur := computeSessionDuration(states)
+	if dur < 1*time.Hour {
+		t.Errorf("duration = %v, want >= 1h", dur)
+	}
+}
+
+func TestComputeSessionDuration_Empty(t *testing.T) {
+	dur := computeSessionDuration(nil)
+	if dur != 0 {
+		t.Errorf("duration = %v, want 0", dur)
+	}
+}
+
+func TestShortRunID(t *testing.T) {
+	tests := []struct {
+		id   string
+		want string
+	}{
+		{"20260307-0913-3db3", "3db3"},
+		{"ab", "ab"},
+		{"abcd", "abcd"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			got := shortRunID(tt.id)
+			if got != tt.want {
+				t.Errorf("shortRunID(%q) = %q, want %q", tt.id, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatDuration(t *testing.T) {
+	tests := []struct {
+		dur  time.Duration
+		want string
+	}{
+		{0, "0m"},
+		{5 * time.Minute, "5m"},
+		{90 * time.Minute, "1h 30m"},
+		{2*time.Hour + 5*time.Minute, "2h 05m"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			got := formatDuration(tt.dur)
+			if got != tt.want {
+				t.Errorf("formatDuration(%v) = %q, want %q", tt.dur, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPluralS(t *testing.T) {
+	if pluralS(1) != "" {
+		t.Error("pluralS(1) should be empty")
+	}
+	if pluralS(0) != "s" {
+		t.Error("pluralS(0) should be 's'")
+	}
+	if pluralS(5) != "s" {
+		t.Error("pluralS(5) should be 's'")
+	}
+}
+
+func TestAgentStatusLabel(t *testing.T) {
+	pushed := &run.State{PushedBranch: strPtr("agent/x"), PushedSHA: strPtr("0123456789abcdef0123456789abcdef01234567")}
+	tests := []struct {
+		name string
+		s    *run.State
+		want string
+	}{
+		{"with PR", &run.State{PRURL: strPtr("https://github.com/o/r/pull/1")}, "PR"},
+		{"no PR", &run.State{}, "EXITED"},
+		{"needs attention", &run.State{NeedsAttention: strPtr("no_pr"), PRURL: strPtr("https://github.com/o/r/pull/1")}, "ATTN"},
+		{"pushed, not yet checked", pushed, "SUBMIT"},
+		{"pushed, awaiting", pushed, "SUBMIT"},
+		{"pushed, landed by ancestry", pushed, "INTEGRATED"},
+		{"pushed, landed by content", pushed, "INTEGRATED~"},
+		{"pushed, branch deleted", pushed, "GONE"},
+		{"valley, not yet checked", pushed, "READY"},
+		{"valley, check fell back to git", pushed, "READY"},
+		{"valley, ready", pushed, "READY"},
+		{"valley, landed", pushed, "INTEGRATED"},
+		{"valley, superseded", pushed, "OLDER VERSION"},
+	}
+	verdicts := map[string]integration.Verdict{
+		"pushed, awaiting":               integration.Awaiting,
+		"pushed, landed by ancestry":     integration.Integrated,
+		"pushed, landed by content":      integration.IntegratedContent,
+		"pushed, branch deleted":         integration.Gone,
+		"valley, check fell back to git": integration.Awaiting,
+		"valley, ready":                  integration.Ready,
+		"valley, landed":                 integration.Integrated,
+		"valley, superseded":             integration.Superseded,
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := agentStatusLabel(tt.s, verdicts[tt.name], strings.HasPrefix(tt.name, "valley"))
+			if got != tt.want {
+				t.Errorf("agentStatusLabel() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClamp(t *testing.T) {
+	tests := []struct {
+		v, lo, hi, want int
+	}{
+		{5, 0, 10, 5},
+		{-1, 0, 10, 0},
+		{15, 0, 10, 10},
+	}
+	for _, tt := range tests {
+		got := clamp(tt.v, tt.lo, tt.hi)
+		if got != tt.want {
+			t.Errorf("clamp(%d, %d, %d) = %d, want %d", tt.v, tt.lo, tt.hi, got, tt.want)
+		}
+	}
+}
+
+func TestLoadStatesFromDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, "klaus", "runs")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write sample state files
+	states := []run.State{
+		{
+			ID:        "20260307-0900-aaaa",
+			Prompt:    "fix tests",
+			Branch:    "fix-tests",
+			Worktree:  "/tmp/worktree1",
+			CreatedAt: "2026-03-07T09:00:00Z",
+			Type:      "launch",
+			PRURL:     strPtr("https://github.com/owner/repo/pull/30"),
+		},
+		{
+			ID:        "20260307-0901-bbbb",
+			Prompt:    "add feature",
+			Branch:    "add-feature",
+			Worktree:  "/tmp/worktree2",
+			CreatedAt: "2026-03-07T09:01:00Z",
+			Type:      "launch",
+		},
+	}
+
+	for _, s := range states {
+		data, err := json.MarshalIndent(s, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(stateDir, s.ID+".json"), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	store := run.NewGitDirStore(tmpDir)
+	loaded, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 2 {
+		t.Fatalf("loaded %d states, want 2", len(loaded))
+	}
+
+	// Verify newest first ordering
+	if loaded[0].ID != "20260307-0901-bbbb" {
+		t.Errorf("first state ID = %q, want newest first", loaded[0].ID)
+	}
+}
+
+func TestDashboardViewRender(t *testing.T) {
+	cost := 5.50
+	// Use a repo name unlikely to be in any real registry to keep the test
+	// independent of the user's ~/.klaus/projects.json.
+	states := []*run.State{
+		{
+			ID:         "20260307-0900-aaaa",
+			Prompt:     "tests requirement",
+			Type:       "launch",
+			CreatedAt:  time.Now().Add(-1 * time.Hour).Format(time.RFC3339),
+			TargetRepo: strPtr("testowner/testrepo"),
+			PRURL:      strPtr("https://github.com/testowner/testrepo/pull/30"),
+			CostUSD:    &cost,
+		},
+		{
+			ID:         "20260307-0901-bbbb",
+			Prompt:     "add dashboard",
+			Type:       "launch",
+			CreatedAt:  time.Now().Format(time.RFC3339),
+			TargetRepo: strPtr("testowner/testrepo"),
+			TmuxPane:   strPtr("%5"),
+		},
+	}
+
+	m := dashboardModel{
+		states:   states,
+		tmuxDeps: testDashboardTmuxDeps(),
+		ghStatus: map[string]*prStatus{},
+		width:    80,
+		height:   24,
+	}
+
+	view := m.View()
+
+	// Verify key elements are present
+	if !strings.Contains(view, "klaus dashboard") {
+		t.Error("view should contain 'klaus dashboard' header")
+	}
+	if !strings.Contains(view, "testowner/testrepo") {
+		t.Error("view should contain repo name")
+	}
+	if !strings.Contains(view, "#30") {
+		t.Error("view should contain PR number")
+	}
+	if !strings.Contains(view, "bbbb") {
+		t.Error("view should contain short run ID for bare agent")
+	}
+}
+
+func TestDashboardViewNoRuns(t *testing.T) {
+	m := dashboardModel{
+		states:   []*run.State{},
+		tmuxDeps: testDashboardTmuxDeps(),
+		ghStatus: map[string]*prStatus{},
+		width:    80,
+		height:   24,
+	}
+	view := m.View()
+	if !strings.Contains(view, "No runs found") {
+		t.Error("empty state should show 'No runs found'")
+	}
+}
+
+func TestDashboardViewLoading(t *testing.T) {
+	m := dashboardModel{
+		tmuxDeps: testDashboardTmuxDeps(),
+		ghStatus: map[string]*prStatus{},
+		width:    80,
+		height:   24,
+	}
+	view := m.View()
+	if !strings.Contains(view, "Loading") {
+		t.Error("nil states should show 'Loading'")
+	}
+}
+
+func TestStateLabel(t *testing.T) {
+	tests := []struct {
+		state string
+		color string // just check the text content, not ANSI codes
+	}{
+		{"MERGED", "MERGED"},
+		{"CLOSED", "CLOSED"},
+		{"OPEN", "OPEN"},
+		{"", "OPEN"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.state, func(t *testing.T) {
+			got := stateLabel(tt.state)
+			if !strings.Contains(got, tt.color) {
+				t.Errorf("stateLabel(%q) = %q, should contain %q", tt.state, got, tt.color)
+			}
+		})
+	}
+}
+
+func TestCILabel(t *testing.T) {
+	tests := []struct {
+		ci   string
+		want string
+	}{
+		{"passing", "CI ✓"},
+		{"failing", "CI ✗"},
+		{"pending", "CI …"},
+		{"unknown", "CI ?"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.ci, func(t *testing.T) {
+			got := ciLabel(tt.ci)
+			if !strings.Contains(got, tt.want) {
+				t.Errorf("ciLabel(%q) = %q, should contain %q", tt.ci, got, tt.want)
+			}
+		})
+	}
+}
+
+// renderOnlyRow builds the dashboard rows for states (which must form exactly
+// one row) and renders that row.
+func renderOnlyRow(t *testing.T, m dashboardModel, states []*run.State, selected bool) string {
+	t.Helper()
+	m.states = states
+	rows := m.buildRows()
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	return m.renderRow(rows[0], selected, newRowLayout(rows, 80), time.Now())
+}
+
+func TestRenderPRLine(t *testing.T) {
+	m := dashboardModel{width: 80, tmuxDeps: testDashboardTmuxDeps(), ghStatus: map[string]*prStatus{}}
+	s := &run.State{
+		ID:     "20260307-0900-aaaa",
+		Prompt: "fix bug",
+		Type:   "launch",
+		PRURL:  strPtr("https://github.com/o/r/pull/42"),
+	}
+
+	// Without GitHub status
+	line := renderOnlyRow(t, m, []*run.State{s}, false)
+	if !strings.Contains(line, "#42") {
+		t.Error("should contain PR number")
+	}
+	if !strings.Contains(line, "fix bug") {
+		t.Error("should contain prompt")
+	}
+	if !strings.Contains(line, "OPEN") {
+		t.Error("should show OPEN by default")
+	}
+
+	// With GitHub status showing passing CI and conflicts
+	ps := &prStatus{
+		PRNumber:  "42",
+		State:     "OPEN",
+		CI:        "passing",
+		Conflicts: "yes",
+	}
+	m.ghStatus["https://github.com/o/r/pull/42"] = ps
+	line = renderOnlyRow(t, m, []*run.State{s}, false)
+	if !strings.Contains(line, "CI ✓") {
+		t.Error("should show passing CI")
+	}
+	if !strings.Contains(line, "conflicts") {
+		t.Error("should show conflicts")
+	}
+
+	// Merged PR
+	ps.State = "MERGED"
+	line = renderOnlyRow(t, m, []*run.State{s}, false)
+	if !strings.Contains(line, "MERGED") {
+		t.Error("should show MERGED")
+	}
+}
+
+func TestRenderPRLineHyperlink(t *testing.T) {
+	m := dashboardModel{width: 80, tmuxDeps: testDashboardTmuxDeps(), ghStatus: map[string]*prStatus{}}
+
+	// The PR number is wrapped in an OSC 8 hyperlink; the padding sits inside
+	// the link so the escape bytes don't throw off column alignment.
+	withURL := &run.State{
+		ID:     "20260307-0900-aaaa",
+		Prompt: "fix bug",
+		Type:   "launch",
+		PRURL:  strPtr("https://github.com/o/r/pull/42"),
+	}
+	line := renderOnlyRow(t, m, []*run.State{withURL}, false)
+	want := hyperlink("https://github.com/o/r/pull/42", "#42   ")
+	if !strings.Contains(line, want) {
+		t.Errorf("expected OSC 8 hyperlink %q in line %q", want, line)
+	}
+
+	// A run without a PR URL is a bare agent row: no escape sequence.
+	noURL := &run.State{ID: "id", Prompt: "fix bug", Type: "launch"}
+	line = renderOnlyRow(t, m, []*run.State{noURL}, false)
+	if strings.Contains(line, "\x1b]8;;") {
+		t.Errorf("expected no OSC 8 hyperlink when PRURL is nil, got %q", line)
+	}
+}
+
+func TestRenderPRLineSelectedWithHyperlink(t *testing.T) {
+	m := dashboardModel{width: 80, tmuxDeps: testDashboardTmuxDeps(), ghStatus: map[string]*prStatus{}}
+	s := &run.State{
+		ID:     "20260307-0900-aaaa",
+		Prompt: "fix bug",
+		Type:   "launch",
+		PRURL:  strPtr("https://github.com/o/r/pull/42"),
+	}
+
+	// A selected row must show BOTH the selection gutter marker and keep the
+	// OSC 8 hyperlink on the PR number intact (lipgloss styling must not strip
+	// the hyperlink escape).
+	line := renderOnlyRow(t, m, []*run.State{s}, true)
+	if !strings.Contains(line, "> ") {
+		t.Errorf("selected row should show the '> ' gutter marker, got %q", line)
+	}
+	if !strings.Contains(line, "\x1b]8;;https://github.com/o/r/pull/42\x1b\\") {
+		t.Errorf("selected row should preserve the OSC 8 hyperlink, got %q", line)
+	}
+}
+
+func TestHyperlinkSanitizesURL(t *testing.T) {
+	// A clean URL is wrapped in the OSC 8 escape sequence.
+	if got := hyperlink("https://example.com/pull/1", "#1"); !strings.Contains(got, "\x1b]8;;") {
+		t.Errorf("clean URL should be wrapped, got %q", got)
+	}
+
+	// URLs with control characters must not be embedded; the plain text is
+	// returned to prevent terminal escape sequence injection.
+	for _, bad := range []string{
+		"https://x\x1b]8;;evil\x1b\\.com",
+		"https://x\nfoo.com",
+		"https://x\rfoo.com",
+		"https://x\x07.com",
+		"", // empty URL
+	} {
+		if got := hyperlink(bad, "#1"); got != "#1" {
+			t.Errorf("hyperlink(%q) = %q, want plain text %q", bad, got, "#1")
+		}
+	}
+}
+
+func TestRenderPRLineApproval(t *testing.T) {
+	m := dashboardModel{
+		width:          80,
+		tmuxDeps:       testDashboardTmuxDeps(),
+		pipelineStates: map[string]*pipeline.PRPipelineState{},
+	}
+
+	approved := true
+	notApproved := false
+
+	base := &run.State{
+		ID:     "run-1",
+		Prompt: "fix bug",
+		Branch: "fix-bug",
+		Type:   "launch",
+		PRURL:  strPtr("https://github.com/o/r/pull/10"),
+	}
+
+	m.ghStatus = map[string]*prStatus{"https://github.com/o/r/pull/10": {State: "OPEN"}}
+
+	// No approval — should not show indicator
+	line := renderOnlyRow(t, m, []*run.State{base}, false)
+	if strings.Contains(line, "approved") {
+		t.Error("should not show approved when not approved")
+	}
+
+	// Single run approved
+	approvedRun := *base
+	approvedRun.Approved = &approved
+	line = renderOnlyRow(t, m, []*run.State{&approvedRun}, false)
+	if !strings.Contains(line, "approved") {
+		t.Error("should show approved indicator")
+	}
+
+	// Multiple runs, only second is approved
+	notApprovedRun := *base
+	notApprovedRun.Approved = &notApproved
+	line = renderOnlyRow(t, m, []*run.State{&notApprovedRun, &approvedRun}, false)
+	if !strings.Contains(line, "approved") {
+		t.Error("should show approved when any run is approved")
+	}
+
+	// Approved but MERGED — should not show indicator
+	m.ghStatus["https://github.com/o/r/pull/10"] = &prStatus{State: "MERGED"}
+	line = renderOnlyRow(t, m, []*run.State{&approvedRun}, false)
+	if strings.Contains(line, "approved") {
+		t.Error("should not show approved for merged PRs")
+	}
+}
+
+func TestHostFieldRoundTrip(t *testing.T) {
+	host := "klaus-worker-0"
+	s := run.State{
+		ID:        "20260328-1915-e4b3",
+		Prompt:    "test",
+		Branch:    "agent/test",
+		Worktree:  "/tmp/worktree",
+		CreatedAt: "2026-03-28T19:15:00Z",
+		Host:      &host,
+	}
+
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var loaded run.State
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if loaded.Host == nil {
+		t.Fatal("Host should not be nil after round-trip")
+	}
+	if *loaded.Host != "klaus-worker-0" {
+		t.Errorf("Host = %q, want %q", *loaded.Host, "klaus-worker-0")
+	}
+}
+
+func TestHostFieldOmittedWhenNil(t *testing.T) {
+	s := run.State{
+		ID:        "20260328-1915-e4b3",
+		Prompt:    "test",
+		Branch:    "agent/test",
+		Worktree:  "/tmp/worktree",
+		CreatedAt: "2026-03-28T19:15:00Z",
+	}
+
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	if strings.Contains(string(data), `"host"`) {
+		t.Error("host field should be omitted when nil")
+	}
+}
+
+func TestRenderBareAgentLineWithHost(t *testing.T) {
+	m := dashboardModel{tmuxDeps: testDashboardTmuxDeps()}
+	host := "klaus-worker-0"
+	s := &run.State{
+		ID:       "20260328-1915-e4b3",
+		Prompt:   "fix tests",
+		TmuxPane: strPtr("%5"),
+		Host:     &host,
+	}
+
+	line := renderOnlyRow(t, m, []*run.State{s}, false)
+	if !strings.Contains(line, "[sandbox]") {
+		t.Error("bare agent with Host set should show [sandbox], got:", line)
+	}
+}
+
+func TestRenderBareAgentLineWithoutHost(t *testing.T) {
+	m := dashboardModel{tmuxDeps: testDashboardTmuxDeps()}
+	s := &run.State{
+		ID:       "20260328-1915-e4b3",
+		Prompt:   "fix tests",
+		TmuxPane: strPtr("%5"),
+	}
+
+	line := renderOnlyRow(t, m, []*run.State{s}, false)
+	if strings.Contains(line, "[sandbox]") {
+		t.Error("bare agent without Host should not show [sandbox], got:", line)
+	}
+}
+
+func TestRenderPRLineRunningAgentWithHost(t *testing.T) {
+	// An agent running on a PR (e.g. a dispatched CI fix) is named on the PR
+	// row, with its sandbox tag.
+	m := dashboardModel{tmuxDeps: testDashboardTmuxDeps()}
+	host := "klaus-worker-0"
+	s := &run.State{
+		ID:       "20260328-1915-e4b3",
+		Prompt:   "fix tests",
+		TmuxPane: strPtr("%5"),
+		Host:     &host,
+		PRURL:    strPtr("https://github.com/o/r/pull/9"),
+	}
+
+	line := renderOnlyRow(t, m, []*run.State{s}, false)
+	if !strings.Contains(line, "agent:e4b3 running") {
+		t.Error("PR row should name the running agent, got:", line)
+	}
+	if !strings.Contains(line, "[sandbox]") {
+		t.Error("running agent with Host set should show [sandbox], got:", line)
+	}
+}
+
+func TestSandboxTag(t *testing.T) {
+	t.Run("with host", func(t *testing.T) {
+		host := "klaus-worker-0"
+		s := &run.State{Host: &host}
+		tag := sandboxTag(s)
+		if !strings.Contains(tag, "[sandbox]") {
+			t.Errorf("sandboxTag with host should contain [sandbox], got %q", tag)
+		}
+	})
+
+	t.Run("without host", func(t *testing.T) {
+		s := &run.State{}
+		tag := sandboxTag(s)
+		if tag != "" {
+			t.Errorf("sandboxTag without host should be empty, got %q", tag)
+		}
+	})
+}
+
+func TestRenderSandboxStatus(t *testing.T) {
+	t.Run("empty hosts returns empty", func(t *testing.T) {
+		got := renderSandboxStatus(map[string]bool{})
+		if got != "" {
+			t.Errorf("expected empty string, got %q", got)
+		}
+	})
+
+	t.Run("reachable host shows checkmark", func(t *testing.T) {
+		got := renderSandboxStatus(map[string]bool{"myhost": true})
+		if !strings.Contains(got, "sandbox myhost: ✓") {
+			t.Errorf("expected checkmark for reachable host, got %q", got)
+		}
+	})
+
+	t.Run("unreachable host shows X", func(t *testing.T) {
+		got := renderSandboxStatus(map[string]bool{"myhost": false})
+		if !strings.Contains(got, "sandbox myhost: ✗") {
+			t.Errorf("expected X for unreachable host, got %q", got)
+		}
+	})
+}
+
+func TestDashboardViewWithSandboxAgent(t *testing.T) {
+	host := "klaus-worker-0"
+	states := []*run.State{
+		{
+			ID:         "20260328-1915-e4b3",
+			Prompt:     "sandbox test",
+			Type:       "launch",
+			CreatedAt:  time.Now().Format(time.RFC3339),
+			TargetRepo: strPtr("testowner/testrepo"),
+			TmuxPane:   strPtr("%5"),
+			Host:       &host,
+		},
+	}
+
+	m := dashboardModel{
+		states:       states,
+		tmuxDeps:     testDashboardTmuxDeps(),
+		ghStatus:     map[string]*prStatus{},
+		sandboxHosts: map[string]bool{"klaus-worker-0": true},
+		width:        80,
+		height:       24,
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "[sandbox]") {
+		t.Error("view should show [sandbox] for agent with Host set")
+	}
+	if !strings.Contains(view, "sandbox klaus-worker-0: ✓") {
+		t.Error("view should show sandbox reachability in header")
+	}
+}
+
+func TestWebhookMsgTriggersRefetchForMatchedPR(t *testing.T) {
+	// When a webhook arrives for a PR that has a matching run state,
+	// the dashboard should return a tea.Cmd (the re-fetch). This verifies
+	// webhooks act as invalidation signals, not data sources.
+	prURL := "https://github.com/owner/repo/pull/42"
+	states := []*run.State{
+		{
+			ID:         "20260407-0900-aaaa",
+			Prompt:     "fix bug",
+			Type:       "launch",
+			CreatedAt:  time.Now().Format(time.RFC3339),
+			TargetRepo: strPtr("owner/repo"),
+			PRURL:      &prURL,
+		},
+	}
+
+	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{}, gh.NewGHCLIClient(""))
+	m.states = states
+	// Set webhookCh so waitForWebhookCmd returns a non-nil cmd,
+	// ensuring tea.Batch produces a BatchMsg (not a single cmd).
+	ch := make(chan webhook.Event, 1)
+	m.webhookCh = ch
+
+	msg := webhookMsg{
+		event: webhook.Event{
+			PRNumber:  "42",
+			Repo:      "owner/repo",
+			EventType: "pull_request_review",
+		},
+	}
+
+	_, cmd := m.Update(msg)
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd from webhook with matching PR")
+	}
+
+	// The returned cmd is tea.Batch(fetchGHStatusCmd, waitForWebhookCmd).
+	// Execute the batch to get the sub-commands, then run only the
+	// non-blocking ones (skip waitForWebhookCmd which blocks on channel).
+	result := cmd()
+	bm, ok := result.(tea.BatchMsg)
+	if !ok {
+		t.Fatal("expected tea.BatchMsg from webhook handler")
+	}
+
+	// Run all sub-commands concurrently; one is waitForWebhookCmd which
+	// blocks forever (the channel is empty), so we wait on a shared result
+	// channel with a generous timeout rather than per-iteration. A tight
+	// timeout per sub-command races the real gh CLI on slow CI runners.
+	if !awaitGHStatusMsg(bm, 15*time.Second) {
+		t.Error("expected ghStatusMsg from webhook-triggered fetch")
+	}
+}
+
+func TestWebhookMsgNoMatchReturnsCmd(t *testing.T) {
+	// When a webhook arrives for a PR with no matching run state,
+	// the dashboard should still return a cmd (to keep listening).
+	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{}, gh.NewGHCLIClient(""))
+	m.states = []*run.State{} // no states
+
+	ch := make(chan webhook.Event, 1)
+	m.webhookCh = ch
+
+	msg := webhookMsg{
+		event: webhook.Event{
+			PRNumber:  "999",
+			Repo:      "owner/repo",
+			EventType: "check_run",
+		},
+	}
+
+	_, cmd := m.Update(msg)
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd even when no PR matches (to keep listening)")
+	}
+}
+
+func TestWebhookPushTriggersFullRefetch(t *testing.T) {
+	// A push to the default branch should trigger a full re-fetch of all
+	// PR statuses, since any PR's conflict status could have changed.
+	prURL := "https://github.com/owner/repo/pull/42"
+	states := []*run.State{
+		{
+			ID:         "20260407-0900-aaaa",
+			Prompt:     "fix bug",
+			Type:       "launch",
+			CreatedAt:  time.Now().Format(time.RFC3339),
+			TargetRepo: strPtr("owner/repo"),
+			PRURL:      &prURL,
+		},
+	}
+
+	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{}, gh.NewGHCLIClient(""))
+	m.states = states
+	ch := make(chan webhook.Event, 1)
+	m.webhookCh = ch
+
+	msg := webhookMsg{
+		event: webhook.Event{
+			Repo:      "owner/repo",
+			EventType: "push",
+		},
+	}
+
+	_, cmd := m.Update(msg)
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd from push webhook")
+	}
+
+	// The returned cmd is tea.Batch(fetchGHStatusCmd, waitForWebhookCmd).
+	result := cmd()
+	bm, ok := result.(tea.BatchMsg)
+	if !ok {
+		t.Fatal("expected tea.BatchMsg from push webhook handler")
+	}
+
+	if !awaitGHStatusMsg(bm, 15*time.Second) {
+		t.Error("expected ghStatusMsg from push-triggered fetch")
+	}
+}
+
+// awaitGHStatusMsg runs all sub-commands in bm concurrently and reports
+// whether any produced a ghStatusMsg within the given timeout. Sub-commands
+// that block (e.g. waitForWebhookCmd with an empty channel) are ignored.
+func awaitGHStatusMsg(bm tea.BatchMsg, timeout time.Duration) bool {
+	results := make(chan tea.Msg, len(bm))
+	for _, sub := range bm {
+		if sub == nil {
+			continue
+		}
+		go func(c tea.Cmd) { results <- c() }(sub)
+	}
+	deadline := time.After(timeout)
+	for {
+		select {
+		case r := <-results:
+			if _, ok := r.(ghStatusMsg); ok {
+				return true
+			}
+		case <-deadline:
+			return false
+		}
+	}
+}
+
+// TestInternalEventMsgTriggersRefetchForMatchedPR is the dashboard-side
+// counterpart to the webhook test above. When `klaus approve` emits a
+// PRApprovalChanged event and the dashboard receives it via the internal
+// event channel, the dashboard must kick a targeted GH refetch so the
+// pipeline FSM gets a fresh evaluation. Without this, an approved PR with
+// already-passing CI sits at StageCIPassed until an unrelated webhook
+// arrives (or polling tick, when poll_fallback is enabled).
+func TestInternalEventMsgTriggersRefetchForMatchedPR(t *testing.T) {
+	prURL := "https://github.com/owner/repo/pull/42"
+	states := []*run.State{
+		{
+			ID:         "20260407-0900-aaaa",
+			Prompt:     "fix bug",
+			Type:       "launch",
+			CreatedAt:  time.Now().Format(time.RFC3339),
+			TargetRepo: strPtr("owner/repo"),
+			PRURL:      &prURL,
+		},
+	}
+
+	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{}, gh.NewGHCLIClient(""))
+	m.states = states
+	ch := make(chan event.Event, 1)
+	m.internalEventCh = ch
+
+	msg := internalEventMsg{
+		event: event.New("20260407-0900-aaaa", event.PRApprovalChanged, map[string]interface{}{
+			"pr_number": "42",
+			"pr_url":    prURL,
+			"approved":  true,
+		}),
+	}
+
+	_, cmd := m.Update(msg)
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd from internal event with matching PR")
+	}
+	result := cmd()
+	bm, ok := result.(tea.BatchMsg)
+	if !ok {
+		t.Fatal("expected tea.BatchMsg from internal event handler")
+	}
+	if !awaitGHStatusMsg(bm, 15*time.Second) {
+		t.Error("expected ghStatusMsg from internal-event-triggered fetch")
+	}
+}
+
+// TestInternalEventMsgNoMatchKeepsListening ensures the handler returns a
+// new wait command even when no PR matches, so the dashboard keeps reading
+// from the channel. (Otherwise a stray event would silently kill the
+// subscription.)
+func TestInternalEventMsgNoMatchKeepsListening(t *testing.T) {
+	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{}, gh.NewGHCLIClient(""))
+	m.states = []*run.State{}
+	ch := make(chan event.Event, 1)
+	m.internalEventCh = ch
+
+	msg := internalEventMsg{
+		event: event.New("run-x", event.PRApprovalChanged, map[string]interface{}{
+			"pr_number": "999",
+		}),
+	}
+
+	_, cmd := m.Update(msg)
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd even when no PR matches (to keep listening)")
+	}
+}
+
+// TestInternalEventMsgIgnoresUnknownEventType verifies the handler only
+// reacts to invalidation-class events. A pr:merged or agent:completed event
+// arriving on the internal channel should not trigger a GH refetch (those
+// reflect state the dashboard already learned from the FSM).
+func TestInternalEventMsgIgnoresUnknownEventType(t *testing.T) {
+	prURL := "https://github.com/owner/repo/pull/42"
+	states := []*run.State{
+		{
+			ID:         "20260407-0900-aaaa",
+			Type:       "launch",
+			CreatedAt:  time.Now().Format(time.RFC3339),
+			TargetRepo: strPtr("owner/repo"),
+			PRURL:      &prURL,
+		},
+	}
+
+	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{}, gh.NewGHCLIClient(""))
+	m.states = states
+	ch := make(chan event.Event, 1)
+	m.internalEventCh = ch
+
+	msg := internalEventMsg{
+		event: event.New("20260407-0900-aaaa", event.PRMerged, map[string]interface{}{
+			"pr_number": "42",
+		}),
+	}
+
+	_, cmd := m.Update(msg)
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd (waitForInternalEventCmd) to keep listening")
+	}
+	// The returned cmd should be the single wait command, not a batch with
+	// a fetch. Block on the channel with a short timeout to confirm it is
+	// the wait command (returns no ghStatusMsg even if drained).
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	select {
+	case msg := <-done:
+		// Only happens if cmd() returned (e.g. channel closed); ensure it
+		// is NOT a ghStatusMsg or BatchMsg containing a fetch.
+		if _, ok := msg.(ghStatusMsg); ok {
+			t.Errorf("non-invalidation event should not trigger a GH fetch")
+		}
+		if bm, ok := msg.(tea.BatchMsg); ok {
+			if awaitGHStatusMsg(bm, 100*time.Millisecond) {
+				t.Errorf("non-invalidation event should not trigger a GH fetch")
+			}
+		}
+	case <-time.After(200 * time.Millisecond):
+		// Expected: waitForInternalEventCmd blocks on the empty channel.
+	}
+}
+
+// TestInternalEventMsgIdempotentWithExistingFlow checks that an approval
+// event for a PR can be safely delivered after the controller has already
+// transitioned past approval — the handler does not crash, does not double
+// dispatch, and continues to listen. We exercise this by feeding the same
+// event twice and asserting both calls return non-nil commands.
+func TestInternalEventMsgIdempotent(t *testing.T) {
+	prURL := "https://github.com/owner/repo/pull/42"
+	states := []*run.State{
+		{
+			ID:         "20260407-0900-aaaa",
+			Type:       "launch",
+			CreatedAt:  time.Now().Format(time.RFC3339),
+			TargetRepo: strPtr("owner/repo"),
+			PRURL:      &prURL,
+		},
+	}
+
+	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{}, gh.NewGHCLIClient(""))
+	m.states = states
+	ch := make(chan event.Event, 1)
+	m.internalEventCh = ch
+
+	msg := internalEventMsg{
+		event: event.New("20260407-0900-aaaa", event.PRApprovalChanged, map[string]interface{}{
+			"pr_number": "42",
+		}),
+	}
+
+	_, cmd1 := m.Update(msg)
+	if cmd1 == nil {
+		t.Fatal("first delivery: expected a tea.Cmd")
+	}
+	_, cmd2 := m.Update(msg)
+	if cmd2 == nil {
+		t.Fatal("second delivery: expected a tea.Cmd")
+	}
+}
+
+func TestQuitCancelsShutdownContext(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := run.NewGitDirStore(tmpDir)
+	cfg := config.Config{}
+	ghClient := gh.NewGHCLIClient("")
+	model := newDashboardModel(store, cfg, ghClient)
+	model.tmuxDeps = testDashboardTmuxDeps()
+
+	cancelled := false
+	model.shutdownCancel = func() { cancelled = true }
+
+	// Simulate pressing 'q'.
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	_ = updated
+
+	if !cancelled {
+		t.Error("expected shutdownCancel to be called on quit")
+	}
+	if cmd == nil {
+		t.Error("expected tea.Quit command")
+	}
+}
+
+// Helper functions for tests.
+
+func float64Ptr(f float64) *float64 {
+	return &f
+}
+
+func int64Ptr(i int64) *int64 {
+	return &i
+}

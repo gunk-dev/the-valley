@@ -91,6 +91,11 @@ project: {
 		"web-publisher-e2e",
 		"web-image",
 		"web-push-e2e",
+		"flow-build",
+		"flow-unit",
+		"flow-vet",
+		"flow-e2e",
+		"flow-policy",
 	]
 	for n in ownChecks {
 		checks: (n): {
@@ -104,6 +109,8 @@ project: {
 	// web-publisher-e2e boot
 	// NixOS machines. web-reader-browser-e2e boots no machine, but its
 	// closure holds Chromium, and it runs a browser in about 2 GiB.
+	// flow-e2e runs over a hundred scenarios, each on its own tmux server,
+	// in about a minute.
 	// Every other check here takes seconds once its packages are built.
 	checks: "integrator-e2e": cost:         "slow"
 	checks: "ssh-e2e": cost:                "slow"
@@ -113,6 +120,7 @@ project: {
 	checks: "restack-host-e2e": cost:       "slow"
 	checks: "web-publisher-e2e": cost:      "slow"
 	checks: "web-reader-browser-e2e": cost: "slow"
+	checks: "flow-e2e": cost:               "slow"
 
 	// Each class below is one part of the tree and the checks that read it.
 	// A path in two classes requires both sets. A Go module's unit check is
@@ -646,6 +654,103 @@ project: {
 	// check. A class can only require here, so a change to the script or
 	// definition of worker-e2e or telemetry-e2e still builds it before
 	// landing, though a change to the subject it tests only follows.
+	// klaus (flow/), the one module that imports third-party modules. Its
+	// four checks build it as it ships, run its unit tests, go vet, and its
+	// end-to-end suite, over the module's Go source, go.mod, go.sum and test
+	// fixtures; its prose is read by none of them. A new kind of file under
+	// flow/ that the checks read takes a path here.
+	classes: flow: {
+		paths: "flow/**/*.go":        true
+		paths: "flow/go.mod":         true
+		paths: "flow/go.sum":         true
+		paths: "flow/**/testdata/**": true
+		requires: "flow-build":       true
+		requires: "flow-unit":        true
+		requires: "flow-vet":         true
+		requires: "flow-e2e":         true
+	}
+
+	// What klaus's package and checks are built from besides flow/: the
+	// package definition, the check index, the flake and its nixpkgs pin.
+	// flow-policy reads them too, through its definition, its program's
+	// build and the valley command it runs.
+	classes: "flow-packaging": {
+		paths: "nix/packages.nix": true
+		paths: "nix/checks.nix":   true
+		paths: "flake.nix":        true
+		paths: "flake.lock":       true
+		requires: "flow-build":    true
+		requires: "flow-unit":     true
+		requires: "flow-vet":      true
+		requires: "flow-e2e":      true
+		requires: "flow-policy":   true
+	}
+
+	// The flow checks' helper: flow-build builds it with its tests and
+	// checks the version with it, and flow-unit and flow-e2e audit tmux
+	// sockets with it.
+	classes: "flow-checker": {
+		paths: "nix/checks/flow-checker/**": true
+		requires: "flow-build":              true
+		requires: "flow-unit":               true
+		requires: "flow-e2e":                true
+	}
+
+	// The valley command flow-e2e runs and flow-policy derives with, as
+	// packages.valley-unstamped builds it: the Go source and go.mod of
+	// status and the modules it builds with, its help texts, the PIV
+	// signer's source, the delta vectors in the delta module, the
+	// attestation helper on its PATH, and the schemas they carry. A path
+	// cannot leave out a test file, so a module's tests match too; its
+	// prose, the approval command, its fixtures, the plan's golden files and
+	// the attestation vectors do not.
+	classes: "flow-valley": {
+		paths: "status/*.go":                   true
+		paths: "status/go.mod":                 true
+		paths: "status/help/**":                true
+		paths: "approval/*.go":                 true
+		paths: "approval/go.mod":               true
+		paths: "approval/piv/**":               true
+		paths: "attest/*.go":                   true
+		paths: "attest/go.mod":                 true
+		paths: "change/*.go":                   true
+		paths: "change/go.mod":                 true
+		paths: "composed/*.go":                 true
+		paths: "composed/go.mod":               true
+		paths: "delta/*.go":                    true
+		paths: "delta/go.mod":                  true
+		paths: "delta/testdata/.gitattributes": true
+		paths: "delta/testdata/vectors.py":     true
+		paths: "delta/testdata/valid/**":       true
+		paths: "delta/testdata/malformed/**":   true
+		paths: "derive/*.go":                   true
+		paths: "derive/go.mod":                 true
+		paths: "knot/**/*.go":                  true
+		paths: "knot/go.mod":                   true
+		paths: "note/**/*.go":                  true
+		paths: "note/go.mod":                   true
+		paths: "rebase/*.go":                   true
+		paths: "rebase/go.mod":                 true
+		paths: "selfupdate/*.go":               true
+		paths: "selfupdate/go.mod":             true
+		paths: "telemetry/**/*.go":             true
+		paths: "telemetry/go.mod":              true
+		paths: "schema/verification.cue":       true
+		paths: "schema/attestation.cue":        true
+		requires: "flow-e2e":                   true
+		requires: "flow-policy":                true
+	}
+
+	// flow-policy derives what changes around klaus require, from this
+	// layer over the example floor and the docs template.
+	classes: "flow-policy": {
+		paths: "nix/checks/flow-policy-checker/**":          true
+		paths: "policy/project/**":                          true
+		paths: "examples/policy/instance/floor-format.cue":  true
+		paths: "examples/policy/instance/template-docs.cue": true
+		requires: "flow-policy":                             true
+	}
+
 	for n in list.Concat([ownChecks, ["prose-format"]]) {
 		classes: ("check-\(n)"): {
 			paths: ("nix/checks/\(n).sh"):  true
@@ -676,6 +781,7 @@ project: {
 		"knowledge.nix": ["knowledge-lint-consumer", "knowledge-lint-rejects", "prose-format"]
 		"hooks.nix": ["valleyhook-unit", "change-unit", "pushpolicy-unit", "mirror-e2e", "protect-e2e", "init-e2e", "bus-e2e"]
 		"host-module.nix": ["module-eval"]
+		"flow.nix": ["flow-build", "flow-unit", "flow-vet", "flow-e2e"]
 		"fail-nth.sh": ["policy-deriver", "valley-request"]
 		"review-notes-editor.sh": ["review-notes"]
 		"cue-vet-rejected.txt": ["cue-vet"]

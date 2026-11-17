@@ -1,0 +1,571 @@
+package cmd
+
+import (
+	"context"
+	"crypto/rand"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+	"time"
+
+	"the-valley/flow/internal/backend"
+	"the-valley/flow/internal/config"
+	"the-valley/flow/internal/event"
+	"the-valley/flow/internal/git"
+	"the-valley/flow/internal/nix"
+	"the-valley/flow/internal/project"
+	"the-valley/flow/internal/projectsync"
+	"the-valley/flow/internal/run"
+	"the-valley/flow/internal/tmux"
+	"github.com/spf13/cobra"
+)
+
+var sessionCmd = &cobra.Command{
+	Use:   "session",
+	Short: "Start or resume an interactive coordinator session",
+	Long: `Resumes the most recent coordinator session, or creates a new one if none exists.
+The coordinator runs in an isolated worktree, keeping the base repo clean on
+the default branch. Must be run inside a tmux session.
+
+Use 'klaus new' to explicitly start a fresh session.
+
+If run outside a git repository, creates a scratch workspace and uses
+~/.klaus/config.json for configuration. Use 'klaus launch --repo owner/repo'
+from inside the session to target specific repositories.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runSession(cmd, false)
+	},
+}
+
+var newSessionCmd = &cobra.Command{
+	Use:   "new",
+	Short: "Start a fresh coordinator session",
+	Long: `Creates a new isolated worktree and starts a fresh interactive coordinator session
+with no prior conversation context.
+
+This is the same as the old default behavior of 'klaus' — use this when you
+want to start clean instead of resuming the most recent session.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runSession(cmd, true)
+	},
+}
+
+func runSession(cmd *cobra.Command, forceNew bool) error {
+	ctx := cmd.Context()
+	tmuxClient := tmux.NewExecClient()
+
+	if !tmux.InSession() {
+		return fmt.Errorf("klaus session must be run inside a tmux session")
+	}
+
+	continueFlag, _ := cmd.Flags().GetBool("continue")
+	resumeFlag, _ := cmd.Flags().GetString("resume")
+
+	// Git repo is optional — session can run without one
+	root, _ := git.RepoRoot()
+	inRepo := root != ""
+	gitClient := git.NewExecClient()
+
+	cfg, err := config.Load(root)
+	if err != nil {
+		return err
+	}
+
+	backendFlag, _ := cmd.Flags().GetString("backend")
+	backendName := backendFlag
+	if backendName == "" {
+		backendName = cfg.DefaultCoordinatorBackend
+	}
+	kind, err := backend.Parse(backendName)
+	if err != nil {
+		return err
+	}
+	workerFlag, _ := cmd.Flags().GetString("agent-backend")
+	workerName := workerFlag
+	if workerName == "" {
+		workerName = cfg.DefaultAgentBackend
+	}
+	workerKind, err := backend.Parse(workerName)
+	if err != nil {
+		return err
+	}
+	sessionsDir, err := run.SessionsDir()
+	if err != nil {
+		return err
+	}
+
+	var id string
+	var resuming bool
+
+	switch {
+	case forceNew:
+		// Explicit fresh session via 'klaus new'
+		baseID, err := run.GenID()
+		if err != nil {
+			return err
+		}
+		id = "session-" + baseID
+	case continueFlag:
+		found, err := run.FindMostRecentSession(sessionsDir)
+		if err != nil {
+			return fmt.Errorf("finding most recent session: %w", err)
+		}
+		id = found
+		resuming = true
+	case resumeFlag != "":
+		id = resumeFlag
+		dir := filepath.Join(sessionsDir, id)
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			return fmt.Errorf("session directory does not exist: %s", id)
+		}
+		resuming = true
+	default:
+		// Default: resume most recent session if one exists
+		found, findErr := run.FindMostRecentSession(sessionsDir)
+		if findErr == nil {
+			id = found
+			resuming = true
+		} else {
+			// No existing session — create a new one
+			baseID, err := run.GenID()
+			if err != nil {
+				return err
+			}
+			id = "session-" + baseID
+		}
+	}
+
+	store, err := run.NewHomeDirStore(id)
+	if err != nil {
+		return err
+	}
+	if err := store.EnsureDirs(); err != nil {
+		return err
+	}
+	// The coordinator arms klaus watch at start, before anything has emitted
+	// an event: the file has to be there for it to follow. A coordinator
+	// without Monitor starts its first one-shot watch from the file's size
+	// now, so it misses nothing that lands before it arms the watch.
+	events := event.NewLog(store.BaseDir())
+	if err := events.Create(); err != nil {
+		return err
+	}
+	var watchAfter int64
+	if info, err := os.Stat(events.Path()); err == nil {
+		watchAfter = info.Size()
+	}
+
+	// Keep registered project clones up-to-date with their upstreams in the
+	// background so the coordinator sees current code. Never blocks startup;
+	// results are appended to ~/.klaus/sync.log. The current repo is excluded
+	// to avoid racing with the foreground git operations below.
+	kickoffBackgroundSync("session", root)
+
+	var branch, repoName, worktree string
+	var state *run.State
+
+	if resuming {
+		// Load existing state — carry forward backend conversation IDs,
+		// worktree path, and repo root. All ephemeral state (pane IDs,
+		// etc.) starts clean to avoid stale references after tmux restarts.
+		prevState, err := store.Load(id)
+		if err != nil {
+			return fmt.Errorf("loading session state: %w", err)
+		}
+		previousKind, parseErr := backend.Parse(prevState.Backend)
+		if parseErr != nil {
+			return parseErr
+		}
+		if backendFlag != "" && kind != previousKind {
+			return fmt.Errorf("session %s uses %s; use klaus new --backend %s for a new conversation", id, previousKind, kind)
+		}
+		kind = previousKind
+		if workerFlag == "" && prevState.AgentBackend != "" {
+			workerKind, err = backend.Parse(prevState.AgentBackend)
+			if err != nil {
+				return err
+			}
+		}
+		worktree = prevState.Worktree
+		branch = prevState.Branch
+		if branch != "" {
+			repoName = filepath.Base(filepath.Dir(worktree))
+		} else if inRepo {
+			repoName = filepath.Base(root)
+		}
+
+		// Verify worktree still exists; recreate if cleaned up
+		if _, statErr := os.Stat(worktree); os.IsNotExist(statErr) {
+			if branch == "" {
+				if err := os.MkdirAll(worktree, 0o755); err != nil {
+					return fmt.Errorf("recreating scratch workspace: %w", err)
+				}
+			} else {
+				baseRepo := root
+				if prevState.RepoRoot != nil && *prevState.RepoRoot != "" {
+					baseRepo = *prevState.RepoRoot
+				}
+				if baseRepo == "" {
+					return fmt.Errorf("session worktree no longer exists and no repo root available: %s", worktree)
+				}
+				defaultBranch := cfg.DefaultBranch
+				if err := gitClient.FetchBranch(ctx, baseRepo, defaultBranch); err != nil {
+					return fmt.Errorf("fetching %s: %w", defaultBranch, err)
+				}
+				startPoint := "origin/" + defaultBranch
+				if err := gitClient.WorktreeAdd(ctx, baseRepo, worktree, branch, startPoint); err != nil {
+					return fmt.Errorf("recreating worktree: %w", err)
+				}
+				if err := gitClient.InstallHooks(ctx, worktree, git.Provenance{}, formatCommand(ctx, cfg, worktree)); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: could not install git hooks: %v\n", err)
+				}
+			}
+			fmt.Printf("Recreated worktree at %s\n", worktree)
+		} else if branch != "" {
+			// Worktree already exists (resuming an existing session). Reinstall
+			// the hooks so sessions created before them (or where they were
+			// removed) still strip attribution trailers and format commits,
+			// and ones whose hooks were enabled in the shared config get them
+			// scoped to this worktree. InstallHooks is idempotent, so this is
+			// safe to rerun. The coordinator gets no provenance trailers: it is
+			// not a run that produces a change.
+			if err := gitClient.InstallHooks(ctx, worktree, git.Provenance{}, formatCommand(ctx, cfg, worktree)); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not install git hooks: %v\n", err)
+			}
+		}
+
+		// Re-link the shared coordinator memory: the project dir for this
+		// worktree may have been recreated (or predate memory sharing).
+		if err := linkBackendMemory(kind, worktree); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not link shared memory: %v\n", err)
+		}
+
+		// Clear stale tmux pane references from all agent runs in this session.
+		// After a tmux restart, pane IDs recycle and point to unrelated panes.
+		agentStates, _ := store.List()
+		for _, as := range agentStates {
+			if as.Type == "session" || as.TmuxPane == nil {
+				continue
+			}
+			as.TmuxPane = nil
+			if err := store.Save(as); err != nil {
+				slog.Warn("failed to clear stale pane from agent", "id", as.ID, "err", err)
+			}
+		}
+
+		// Build clean state, carrying forward only what matters
+		state = &run.State{
+			Backend:          string(kind),
+			AgentBackend:     string(workerKind),
+			ID:               id,
+			Type:             "session",
+			Prompt:           "(interactive session)",
+			Branch:           branch,
+			Worktree:         worktree,
+			CreatedAt:        prevState.CreatedAt,
+			RepoRoot:         prevState.RepoRoot,
+			ClaudeSessionID:  prevState.ClaudeSessionID,
+			BackendSessionID: prevState.BackendSessionID,
+		}
+		if err := store.Save(state); err != nil {
+			return fmt.Errorf("saving refreshed session state: %w", err)
+		}
+
+		fmt.Printf("Resuming coordinator session %s...\n", id)
+		fmt.Printf("  worktree: %s\n", worktree)
+		if branch != "" {
+			fmt.Printf("  branch:   %s\n", branch)
+		}
+	} else {
+		if inRepo {
+			branch = "session/" + id
+			repoName = filepath.Base(root)
+			worktree = filepath.Join(cfg.WorktreeBase, repoName, id)
+			defaultBranch := cfg.DefaultBranch
+
+			fmt.Printf("Creating coordinator session %s...\n", id)
+
+			if err := gitClient.FetchBranch(ctx, root, defaultBranch); err != nil {
+				return fmt.Errorf("fetching %s: %w", defaultBranch, err)
+			}
+
+			startPoint := "origin/" + defaultBranch
+			if err := gitClient.WorktreeAdd(ctx, root, worktree, branch, startPoint); err != nil {
+				return fmt.Errorf("creating worktree: %w", err)
+			}
+			fmt.Printf("  worktree: %s\n", worktree)
+			fmt.Printf("  branch:   %s\n", branch)
+
+			if err := gitClient.InstallHooks(ctx, worktree, git.Provenance{}, formatCommand(ctx, cfg, worktree)); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not install git hooks: %v\n", err)
+			}
+
+			// Set up Nix dev environment if flake.nix exists
+			nix.SetupDevEnvironment(worktree)
+		} else {
+			// No repo — use a scratch workspace
+			worktree = filepath.Join(store.BaseDir(), "workspace")
+			if err := os.MkdirAll(worktree, 0o755); err != nil {
+				return fmt.Errorf("creating scratch workspace: %w", err)
+			}
+
+			fmt.Printf("Creating coordinator session %s (no repo)...\n", id)
+			fmt.Printf("  workspace: %s\n", worktree)
+		}
+
+		if err := trustBackendWorktree(kind, worktree); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not pre-trust worktree: %v\n", err)
+		}
+
+		if err := linkBackendMemory(kind, worktree); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not link shared memory: %v\n", err)
+		}
+
+		// Write state
+		createdAt := time.Now().Format(time.RFC3339)
+		var repoRoot *string
+		if inRepo {
+			repoRoot = &root
+		}
+		state = &run.State{
+			Backend:      string(kind),
+			AgentBackend: string(workerKind),
+			ID:           id,
+			Type:         "session",
+			Prompt:       "(interactive session)",
+			Branch:       branch,
+			Worktree:     worktree,
+			CreatedAt:    createdAt,
+			RepoRoot:     repoRoot,
+		}
+		if err := store.Save(state); err != nil {
+			return fmt.Errorf("saving state: %w", err)
+		}
+	}
+
+	// Load project list for session prompt
+	var projectList string
+	if reg, loadErr := project.Load(); loadErr == nil {
+		projectList = config.FormatProjectList(reg.List(), reg.Descriptions)
+	}
+
+	// Render session system prompt
+	sessionPrompt, err := config.RenderSessionPrompt(root, config.PromptVars{
+		RunID:       id,
+		Branch:      branch,
+		RepoName:    repoName,
+		Projects:    projectList,
+		Coordinator: string(kind),
+		WatchAfter:  watchAfter,
+	})
+	if err != nil {
+		return fmt.Errorf("rendering session prompt: %w", err)
+	}
+
+	if kind != backend.Claude {
+		sessionPrompt += "\n\nBackend note: You are running " + string(kind) + ". Use klaus status and klaus logs to inspect workers. Do not assume Claude-specific memory or conversation replay."
+	}
+	// Configure tmux window for better situational awareness
+	currentPane := os.Getenv("TMUX_PANE")
+	if currentPane != "" {
+		windowTitle := repoName
+		if windowTitle == "" {
+			windowTitle = "klaus"
+		}
+		tmuxClient.SetWindowOption(ctx, currentPane, "automatic-rename", "off")
+		tmuxClient.RenameWindow(ctx, currentPane, windowTitle)
+		tmuxClient.SetWindowOption(ctx, currentPane, "pane-border-status", "top")
+		tmuxClient.SetWindowOption(ctx, currentPane, "pane-border-format", "#{pane_title}")
+
+		// Persist the coordinator pane so the dashboard can route "discuss"
+		// requests (the 'd' keybinding) to this coordinator session.
+		state.CoordinatorPane = &currentPane
+		if err := store.Save(state); err != nil {
+			slog.Warn("failed to persist coordinator pane", "id", state.ID, "err", err)
+		}
+	}
+
+	fmt.Println()
+	fmt.Printf("Starting interactive %s session...\n", kind)
+	fmt.Println("  Use 'klaus launch' from inside to spawn workers.")
+	fmt.Println()
+
+	// Launch dashboard in a bottom pane before starting the coordinator.
+	var dashPane string
+	if currentPane != "" {
+		dashCmd := fmt.Sprintf("KLAUS_SESSION_ID=%s klaus dashboard", id)
+		paneID, err := tmuxClient.SplitWindowSized(ctx, currentPane, worktree, dashCmd, "-v", "30%")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not open dashboard pane: %v\n", err)
+		} else {
+			dashPane = paneID
+			state.DashboardPane = &dashPane
+			if err := store.Save(state); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not persist dashboard pane: %v\n", err)
+			}
+		}
+	}
+
+	opts := backend.Options{SystemPrompt: sessionPrompt, RunID: id, Continue: resuming}
+	// A coordinator with a worktree gets a status line naming its repo, from
+	// a file in the session's state, rewritten on every start or resume.
+	if kind == backend.Claude && branch != "" {
+		path := claudeSettingsPath(store, id)
+		if err := writeClaudeSettings(path, repoName); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not write the coordinator's status line settings: %v\n", err)
+		} else {
+			opts.SettingsFile = path
+		}
+	}
+	if kind == backend.Claude {
+		if state.ClaudeSessionID != nil {
+			opts.ResumeID = *state.ClaudeSessionID
+		}
+		if !resuming {
+			opts.ResumeID = genUUIDv4()
+			state.ClaudeSessionID = stringPtr(opts.ResumeID)
+			if err := store.Save(state); err != nil {
+				return err
+			}
+		}
+	}
+	if kind == backend.Agy && resuming {
+		if state.BackendSessionID != nil {
+			opts.ResumeID = *state.BackendSessionID
+		}
+		if opts.ResumeID == "" {
+			opts.ResumeID = backend.AgyConversationID(worktree)
+		}
+		if opts.ResumeID == "" {
+			fmt.Fprintln(os.Stderr, "warning: no agy conversation recorded for this workspace; starting fresh")
+		}
+	}
+	fmt.Printf("Coordinator: %s; default workers: %s\n", kind, workerKind)
+	argv := kind.Coordinator(opts)
+	coordinator := exec.Command(argv[0], argv[1:]...)
+	coordinator.Dir = worktree
+	coordinator.Stdin = os.Stdin
+	coordinator.Stdout = os.Stdout
+	coordinator.Stderr = os.Stderr
+	coordinator.Env = append(os.Environ(), sessionIDEnv+"="+id, "KLAUS_BACKEND="+string(kind), "KLAUS_AGENT_BACKEND="+string(workerKind))
+	coordinatorErr := coordinator.Run()
+	if kind == backend.Agy {
+		if sid := backend.AgyConversationID(worktree); sid != "" {
+			state.BackendSessionID = &sid
+			if err := store.Save(state); err != nil {
+				return err
+			}
+		}
+	}
+
+	fmt.Println()
+	fmt.Printf("Session %s ended.\n", id)
+
+	// Install signal handler so Ctrl+C during post-exit work exits promptly.
+	sigCtx, sigStop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer sigStop()
+
+	// Check for running agents and print a summary instead of blocking.
+	running := checkRunningAgents(sigCtx, store, tmuxClient)
+
+	if dashPane != "" {
+		if len(running) > 0 {
+			fmt.Println("Dashboard pane left open to monitor running agents.")
+		} else {
+			if err := tmuxClient.KillPane(sigCtx, dashPane); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not kill dashboard pane %s: %v\n", dashPane, err)
+			}
+		}
+	}
+
+	if inRepo {
+		fmt.Printf("  Worktree preserved at: %s\n", worktree)
+	}
+	fmt.Printf("  To clean up: klaus cleanup %s\n", id)
+	if coordinatorErr != nil {
+		return fmt.Errorf("%s coordinator exited: %w", kind, coordinatorErr)
+	}
+	return nil
+}
+
+// kickoffBackgroundSync fires projectsync.Sync in a goroutine and writes its
+// results to ~/.klaus/sync.log. The foreground caller is not blocked. The
+// goroutine uses a detached context so it survives past the foreground
+// command's lifetime (bounded by projectsync.PerRepoTimeout per repo).
+//
+// excludePath is the absolute path of any repo the foreground caller is about
+// to operate on; it's skipped to avoid racing with concurrent git operations
+// (e.g., FETCH_HEAD.lock contention).
+func kickoffBackgroundSync(source, excludePath string) {
+	reg, err := project.Load()
+	if err != nil || reg == nil || len(reg.Projects) == 0 {
+		return
+	}
+	go func() {
+		results := projectsync.Sync(context.Background(), reg, git.NewExecClient(), excludePath)
+		projectsync.WriteLog(source, results)
+	}()
+}
+
+// checkRunningAgents inspects agent states and returns those still running
+// in tmux panes. It prints a summary so the user knows what's still active.
+// It does not block — agents continue in their tmux panes independently.
+func checkRunningAgents(ctx context.Context, store run.StateStore, tc tmux.Client) []*run.State {
+	states, err := store.List()
+	if err != nil {
+		slog.Warn("failed to list agent states", "err", err)
+		return nil
+	}
+
+	td := run.TmuxDepsFor(ctx, tc)
+
+	var running []*run.State
+	for _, s := range states {
+		if ctx.Err() != nil {
+			break
+		}
+		if s.Type == "session" {
+			continue
+		}
+		if s.IsAgentRunningWith(td) {
+			running = append(running, s)
+		}
+	}
+
+	if len(running) == 0 {
+		fmt.Println("No agents running.")
+		return nil
+	}
+
+	fmt.Printf("%d agent(s) still running:\n", len(running))
+	for _, s := range running {
+		fmt.Printf("  - %s (pane %s)\n", s.ID, *s.TmuxPane)
+	}
+	return running
+}
+
+// genUUIDv4 returns a random UUID v4 string, or "" on error.
+func genUUIDv4() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 1
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+func init() {
+	for _, c := range []*cobra.Command{rootCmd, sessionCmd, newSessionCmd} {
+		c.Flags().String("backend", "", "Coordinator backend: claude, codex, or agy (default from config; saved on session)")
+		c.Flags().String("agent-backend", "", "Default worker backend: claude, codex, or agy (independent of coordinator)")
+	}
+	sessionCmd.Flags().Bool("continue", false, "Resume the most recent coordinator session")
+	sessionCmd.Flags().String("resume", "", "Resume a specific session by ID")
+	rootCmd.AddCommand(sessionCmd)
+	rootCmd.AddCommand(newSessionCmd)
+}

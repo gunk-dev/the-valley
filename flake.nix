@@ -153,6 +153,7 @@
               valley-web-image
               valley-web-publish
               valley-read-coverage
+              klaus
               ;
             default = packages.valley;
           }

@@ -1,0 +1,143 @@
+package valley
+
+import (
+	"strings"
+	"testing"
+)
+
+const sampleChanges = `{
+  "schema": "valley-changes/v1",
+  "host": "valley-host",
+  "served_by": "valley 0.9",
+  "repos": [
+    { "repo": "site", "url": "git@valley-host:site.git", "error": null, "mirror": true,
+      "changes": [
+        { "change_id": "nxvpkqlmzrtwoyus", "handle": "nxvp", "target": "main", "owner": "operator",
+          "state": "ready", "record": "1111111111111111111111111111111111111111", "seq": 3, "active": 2,
+          "priority": "high",
+          "versions": [
+            { "n": 1, "head": "aaaa", "title": "Add a health check", "branch": "agent/a", "uploader": "operator",
+              "landing": "not-landed", "landed_commit": null, "request": null, "outcome": null, "signed": false },
+            { "n": 2, "head": "bbbb", "title": "Add a health check", "branch": "agent/a", "uploader": "operator",
+              "landing": "landed", "landed_commit": "cccc",
+              "request": { "ref": "refs/valley/requests/nxvp", "commit": "dddd", "lease": 1 },
+              "outcome": { "decision": "landed", "head": "bbbb", "tip": "cccc" } }
+          ],
+          "includes": ["zzzz"] }
+      ],
+      "branches": [ { "branch": "agent/a", "head": "bbbb" } ] },
+    { "repo": "broken", "url": "git@valley-host:broken.git", "error": "fetch failed: permission denied", "changes": [] },
+    { "repo": "odd", "url": "x", "error": { "code": 7 }, "changes": [] }
+  ]
+}`
+
+func TestDecodeToleratesUnknownFields(t *testing.T) {
+	c, err := Decode([]byte(sampleChanges))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if c.Host != "valley-host" || len(c.Repos) != 3 {
+		t.Fatalf("decoded %+v", c)
+	}
+	site := c.Repos[0]
+	if site.Err() != "" {
+		t.Errorf("site error = %q, want none", site.Err())
+	}
+	ch := site.Changes[0]
+	if ch.Handle != "nxvp" || ch.State != StateReady || ch.Active != 2 || len(ch.Versions) != 2 || ch.Includes[0] != "zzzz" {
+		t.Errorf("change = %+v", ch)
+	}
+	v1, v2 := ch.Versions[0], ch.Versions[1]
+	if v1.Request != nil || v1.Outcome != nil || v1.LandedCommit != nil || v1.Landing != NotLanded {
+		t.Errorf("v1 = %+v", v1)
+	}
+	if v2.Landing != Landed || *v2.LandedCommit != "cccc" || v2.Request.Ref != "refs/valley/requests/nxvp" || v2.Outcome.Decision != "landed" {
+		t.Errorf("v2 = %+v", v2)
+	}
+	if got := c.Repos[1].Err(); got != "fetch failed: permission denied" {
+		t.Errorf("broken repo error = %q", got)
+	}
+	if got := c.Repos[2].Err(); got == "" {
+		t.Error("a repo whose error is an object should still read as failed")
+	}
+}
+
+// TestDecodeLandedVersion: a change's landed_version is read whether it is
+// a version, null, or absent, as from a valley older than the field, and
+// absent stays distinct from null.
+func TestDecodeLandedVersion(t *testing.T) {
+	c, err := Decode([]byte(`{"schema":"valley-changes/v1","repos":[{"repo":"r","changes":[
+		{"change_id":"k1","landed_version":2,"landed_commit":"cccc"},
+		{"change_id":"k2","landed_version":null,"landed_commit":null},
+		{"change_id":"k3"}]}]}`))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	chs := c.Repos[0].Changes
+	if l := chs[0].LandedVersion; !l.Listed || l.N == nil || *l.N != 2 || *chs[0].LandedCommit != "cccc" {
+		t.Errorf("landed: %+v, commit %v", l, chs[0].LandedCommit)
+	}
+	if l := chs[1].LandedVersion; !l.Listed || l.N != nil || chs[1].LandedCommit != nil {
+		t.Errorf("not landed: %+v, commit %v", l, chs[1].LandedCommit)
+	}
+	if l := chs[2].LandedVersion; l.Listed || l.N != nil {
+		t.Errorf("absent: %+v", l)
+	}
+}
+
+func TestDecodeRefusesOtherSchemas(t *testing.T) {
+	for name, schema := range map[string]string{
+		"later version": `"valley-changes/v2"`,
+		"other view":    `"valley-status/v1"`,
+		"missing":       ``,
+	} {
+		t.Run(name, func(t *testing.T) {
+			data := `{"host":"h","repos":[]}`
+			if schema != "" {
+				data = `{"schema":` + schema + `,"host":"h","repos":[]}`
+			}
+			_, err := Decode([]byte(data))
+			if err == nil || !strings.Contains(err.Error(), "schema") {
+				t.Errorf("Decode(%s) error = %v, want a schema error", data, err)
+			}
+		})
+	}
+	if _, err := Decode([]byte("valley: no such verb changes")); err == nil {
+		t.Error("Decode should refuse output that isn't JSON")
+	}
+}
+
+func TestParseReady(t *testing.T) {
+	r, err := parseReady([]byte("note: fetching origin\nsite nxvp v2 ready\n"))
+	if err != nil || r != (Readied{Repo: "site", Handle: "nxvp", Version: 2}) {
+		t.Errorf("parseReady = %+v, %v", r, err)
+	}
+	if _, err := parseReady([]byte("ok\n")); err == nil {
+		t.Error("parseReady should refuse output without a ready line")
+	}
+}
+
+// TestParseUnready: valley unready's draft line, with the version that was
+// ready or without one, and its notes that the change wasn't ready.
+func TestParseUnready(t *testing.T) {
+	for _, tc := range []struct {
+		out  string
+		want Unreadied
+	}{
+		{"the-valley vqmw v1 draft\n", Unreadied{Repo: "the-valley", Handle: "vqmw", Draft: true}},
+		{"note: fetching origin\nsite nxvp v12 draft\n", Unreadied{Repo: "site", Handle: "nxvp", Draft: true}},
+		{"site nxvp draft\n", Unreadied{Repo: "site", Handle: "nxvp", Draft: true}},
+		{"nxvp is already a draft\n", Unreadied{Note: "nxvp is already a draft"}},
+		{"valley: change nxvp is not ready\n", Unreadied{Note: "valley: change nxvp is not ready"}},
+		{"valley: no change record for nxvp-id\n", Unreadied{Note: "valley: no change record for nxvp-id"}},
+	} {
+		if got, err := parseUnready([]byte(tc.out)); err != nil || got != tc.want {
+			t.Errorf("parseUnready(%q) = %+v, %v; want %+v", tc.out, got, err, tc.want)
+		}
+	}
+	for _, out := range []string{"site nxvp v2 ready\n", "site nxvp vx draft\n", "ok\n", ""} {
+		if got, err := parseUnready([]byte(out)); err == nil {
+			t.Errorf("parseUnready(%q) = %+v; want an error", out, got)
+		}
+	}
+}

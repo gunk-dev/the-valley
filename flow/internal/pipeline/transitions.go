@@ -1,0 +1,942 @@
+package pipeline
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"the-valley/flow/internal/event"
+	ghutil "the-valley/flow/internal/github"
+	"the-valley/flow/internal/review"
+	"the-valley/flow/internal/run"
+)
+
+// transition defines a single state-machine rule. Guards are evaluated
+// top-to-bottom; the first matching transition fires. An Apply function
+// mutates pipeline state and returns any actions/descriptors.
+type transition struct {
+	Name  string
+	Guard func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) bool
+	Apply func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) ([]Action, []ActionDescriptor)
+}
+
+// transitions is the ordered list of pipeline rules. First match wins.
+var transitions = []transition{
+	// ── Terminal: merged PRs must not be re-processed ───────────────────
+	{
+		Name:  "terminal/merged",
+		Guard: inStage(StageMerged),
+		Apply: func(_ *Controller, _ *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			return nil, nil
+		},
+	},
+
+	// ── A failed dispatch waits, stalled, for new inputs ────────────────
+	{
+		Name:  "dispatch-failed/await-new-inputs",
+		Guard: dispatchFailedOnTheseInputs,
+		Apply: func(_ *Controller, _ *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			return nil, nil
+		},
+	},
+
+	// ── Budget-paused (handled before CI rules so the dashboard surfaces
+	// the pause regardless of CI state) ────────────────────────────────
+
+	{
+		Name: "budget-paused/await-decision",
+		Guard: allOf(
+			isBudgetPausedDraft,
+			agentNotRunning,
+		),
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			if ps.Stage != StageBudgetPaused {
+				c.emitEvent(ps.PRNumber, event.AgentPaused, map[string]interface{}{
+					"pr_number": ps.PRNumber,
+					"pr_url":    status.PRURL,
+					"reason":    "budget_exhausted",
+				})
+			}
+			ps.Stage = StageBudgetPaused
+			return nil, nil
+		},
+	},
+	{
+		Name:  "budget-paused/noop-while-agent-running",
+		Guard: isBudgetPausedDraft,
+		Apply: func(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			// An agent is running against the paused PR (klaus launch --pr).
+			// Hold the budget_paused stage until the agent's _finalize
+			// clears the label.
+			if ps.Stage != StageBudgetPaused {
+				ps.Stage = StageBudgetPaused
+			}
+			return nil, nil
+		},
+	},
+
+	// ── CI failing ──────────────────────────────────────────────────────
+
+	{
+		Name: "ci-failing/circuit-breaker-already-stalled",
+		Guard: allOf(
+			ciFailing,
+			fixAttemptsExhausted,
+			agentNotRunning,
+			inStage(StageStalled),
+		),
+		Apply: func(_ *Controller, _ *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			return nil, nil
+		},
+	},
+	{
+		Name: "ci-failing/circuit-breaker-trip",
+		Guard: allOf(
+			ciFailing,
+			fixAttemptsExhausted,
+			agentNotRunning,
+		),
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			c.stall(ps, status.PRURL, fmt.Sprintf("%d CI fix attempts failed", ps.FixAttempts))
+			c.logger.Warn("fix agent circuit breaker tripped",
+				"pr", ps.PRNumber,
+				"attempts", ps.FixAttempts,
+			)
+			return []Action{{
+				Type:   "error",
+				Detail: fmt.Sprintf("PR #%s: %d fix attempts failed, stopping", ps.PRNumber, ps.FixAttempts),
+			}}, nil
+		},
+	},
+	{
+		Name: "ci-failing/dispatch-fix-agent",
+		Guard: allOf(
+			ciFailing,
+			notInStageWhileRunning(StageCIFailed),
+			agentNotRunning,
+			cooldownExpired,
+		),
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) ([]Action, []ActionDescriptor) {
+			// Count a failed fix attempt when a previous agent finished but CI is still failing.
+			if ps.Stage == StageCIFailed && ps.LastAgentID != "" {
+				ps.FixAttempts++
+			}
+
+			// Re-check circuit breaker after incrementing.
+			if ps.FixAttempts >= maxFixAttempts {
+				c.stall(ps, status.PRURL, fmt.Sprintf("%d CI fix attempts failed", ps.FixAttempts))
+				c.logger.Warn("fix agent circuit breaker tripped",
+					"pr", ps.PRNumber,
+					"attempts", ps.FixAttempts,
+				)
+				return []Action{{
+					Type:   "error",
+					Detail: fmt.Sprintf("PR #%s: %d fix attempts failed, stopping", ps.PRNumber, ps.FixAttempts),
+				}}, nil
+			}
+
+			var descs []ActionDescriptor
+			descs = append(descs, ActionDescriptor{
+				Type:      ActionCleanupWorktrees,
+				PRNumber:  ps.PRNumber,
+				RunStates: runStates,
+			})
+
+			prompt := fmt.Sprintf(
+				"CI is failing on PR #%s. Diagnose the failures and push fixes. Check `gh pr checks %s` for details and `gh run view <run-id> --log-failed` for error output.",
+				ps.PRNumber, ps.PRNumber,
+			)
+			ps.pendingLaunchDetail = fmt.Sprintf("CI fix agent for PR #%s", ps.PRNumber)
+			descs = append(descs, ActionDescriptor{
+				Type:       ActionLaunchAgent,
+				PRNumber:   ps.PRNumber,
+				Repo:       status.TargetRepo,
+				Prompt:     prompt,
+				ResumeFrom: ps.LastAgentID,
+				Reason:     event.DispatchCIFix,
+			})
+
+			ps.Stage = StageCIFailed
+			c.emitEvent(ps.PRNumber, event.AgentCIFailed, map[string]interface{}{
+				"pr_number": ps.PRNumber,
+				"pr_url":    status.PRURL,
+			})
+			return nil, descs
+		},
+	},
+	{
+		Name: "ci-failing/update-stage",
+		Guard: allOf(
+			ciFailing,
+			notInStageWhileRunning(StageCIFailed),
+		),
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			if ps.Stage != StageCIFailed {
+				c.emitEvent(ps.PRNumber, event.AgentCIFailed, map[string]interface{}{
+					"pr_number": ps.PRNumber,
+					"pr_url":    status.PRURL,
+				})
+			}
+			ps.Stage = StageCIFailed
+			return nil, nil
+		},
+	},
+	{
+		Name:  "ci-failing/noop-already-handling",
+		Guard: ciFailing,
+		Apply: func(_ *Controller, _ *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			return nil, nil
+		},
+	},
+
+	// ── CI passing + conflicts → rebase ─────────────────────────────────
+
+	{
+		Name: "ci-passing/rebase-circuit-breaker-already-stalled",
+		Guard: allOf(
+			ciPassing,
+			hasConflicts,
+			rebaseAttemptsExhausted,
+			agentNotRunning,
+			inStage(StageStalled),
+		),
+		Apply: func(_ *Controller, _ *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			return nil, nil
+		},
+	},
+	{
+		Name: "ci-passing/conflicts-dispatch-rebase",
+		Guard: allOf(
+			ciPassing,
+			hasConflicts,
+			agentNotRunning,
+			cooldownExpired,
+		),
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) ([]Action, []ActionDescriptor) {
+			emitCIPassedIfNeeded(c, ps, status)
+
+			// CI is now passing — any prior CI-fix attempts no longer count against
+			// the rebase agent's budget. RebaseAttempts is tracked separately.
+			ps.FixAttempts = 0
+
+			// Count a failed rebase attempt when a previous agent finished but conflicts persist.
+			if ps.Stage == StageNeedsRebase && ps.LastAgentID != "" {
+				ps.RebaseAttempts++
+			}
+
+			// Re-check rebase circuit breaker after incrementing.
+			if ps.RebaseAttempts >= maxFixAttempts {
+				c.stall(ps, status.PRURL, fmt.Sprintf("%d rebase attempts failed", ps.RebaseAttempts))
+				c.logger.Warn("rebase agent circuit breaker tripped",
+					"pr", ps.PRNumber,
+					"attempts", ps.RebaseAttempts,
+				)
+				return []Action{{
+					Type:   "error",
+					Detail: fmt.Sprintf("PR #%s: %d rebase attempts failed, stopping", ps.PRNumber, ps.RebaseAttempts),
+				}}, nil
+			}
+
+			var descs []ActionDescriptor
+			descs = append(descs, ActionDescriptor{
+				Type:      ActionCleanupWorktrees,
+				PRNumber:  ps.PRNumber,
+				RunStates: runStates,
+			})
+			prompt := fmt.Sprintf(
+				"PR #%s has merge conflicts with the base branch. Rebase onto main, resolve all conflicts, and push. Run tests after resolving.",
+				ps.PRNumber,
+			)
+			ps.Stage = StageNeedsRebase
+			ps.pendingLaunchDetail = fmt.Sprintf("Rebase agent for PR #%s", ps.PRNumber)
+			descs = append(descs, ActionDescriptor{
+				Type:       ActionLaunchAgent,
+				PRNumber:   ps.PRNumber,
+				Repo:       status.TargetRepo,
+				Prompt:     prompt,
+				ResumeFrom: ps.LastAgentID,
+				Reason:     event.DispatchConflictFix,
+			})
+			return nil, descs
+		},
+	},
+	{
+		Name: "ci-passing/conflicts-wait",
+		Guard: allOf(
+			ciPassing,
+			hasConflicts,
+		),
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			emitCIPassedIfNeeded(c, ps, status)
+			// Move stage out of CI-failed/pending stages so emitCIPassedIfNeeded
+			// doesn't fire on every poll while the rebase dispatch is gated on
+			// cooldown or an in-flight agent. Preserve Stalled so the circuit
+			// breaker remains observable.
+			if ps.Stage != StageStalled && ps.Stage != StageNeedsRebase {
+				ps.Stage = StageNeedsRebase
+			}
+			return nil, nil
+		},
+	},
+
+	// ── CI passing + approved + no conflicts → merge ────────────────────
+
+	{
+		Name: "ci-passing/approved-merge-exhausted",
+		Guard: allOf(
+			ciPassing,
+			isApproved,
+			noConflicts,
+			autoMergeEnabled,
+			mergeBudgetExhausted,
+		),
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) ([]Action, []ActionDescriptor) {
+			approvedBookkeeping(c, ps, status, runStates)
+			// stall() is edge-triggered, so the poll that spends the last
+			// attempt emits pipeline:stalled once and later polls are silent.
+			if status.BehindBy > 0 {
+				c.stall(ps, status.PRURL, fmt.Sprintf("branch update failed after %d attempts", ps.BranchUpdateAttempts))
+			} else {
+				c.stall(ps, status.PRURL, fmt.Sprintf("auto-merge failed after %d attempts", ps.MergeAttempts))
+			}
+			return nil, nil
+		},
+	},
+	{
+		Name: "ci-passing/approved-behind-update-branch",
+		Guard: allOf(
+			ciPassing,
+			isApproved,
+			noConflicts,
+			autoMergeEnabled,
+			isBehind,
+			mergeBackoffExpired,
+		),
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) ([]Action, []ActionDescriptor) {
+			approvedBookkeeping(c, ps, status, runStates)
+
+			// The PR is mergeable but its head lacks commits from the base
+			// branch, which an up-to-date-branch protection rule rejects.
+			// Update the branch first; the merge happens on a later poll once
+			// BehindBy is back to 0 and CI has re-run.
+			ps.BranchUpdateAttempts++
+			ps.LastMergeAttemptAt = time.Now()
+			c.logger.Info("updating behind PR branch before auto-merge",
+				"pr", ps.PRNumber,
+				"behind", status.BehindBy,
+				"attempt", ps.BranchUpdateAttempts,
+			)
+			return nil, []ActionDescriptor{{
+				Type:     ActionUpdateBranch,
+				PRNumber: ps.PRNumber,
+				Repo:     dispatchRepo(c, status),
+			}}
+		},
+	},
+	{
+		Name: "ci-passing/approved-auto-merge",
+		Guard: allOf(
+			ciPassing,
+			isApproved,
+			noConflicts,
+			autoMergeEnabled,
+			notBehind,
+			mergeBackoffExpired,
+		),
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) ([]Action, []ActionDescriptor) {
+			approvedBookkeeping(c, ps, status, runStates)
+
+			ps.MergeAttempts++
+			ps.LastMergeAttemptAt = time.Now()
+			ps.Stage = StageMerging
+			return nil, []ActionDescriptor{{
+				Type:      ActionMergePR,
+				PRNumber:  ps.PRNumber,
+				Repo:      dispatchRepo(c, status),
+				PRNumbers: []string{ps.PRNumber},
+			}}
+		},
+	},
+	// Also the resting state for an approved PR waiting out the auto-merge
+	// backoff between attempts.
+	{
+		Name: "ci-passing/approved-no-auto-merge",
+		Guard: allOf(
+			ciPassing,
+			isApproved,
+		),
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) ([]Action, []ActionDescriptor) {
+			approvedBookkeeping(c, ps, status, runStates)
+			return nil, nil
+		},
+	},
+
+	// ── CI passing + changes requested ──────────────────────────────────
+
+	{
+		Name: "ci-passing/changes-requested-dispatch",
+		Guard: allOf(
+			ciPassing,
+			changesRequested,
+			agentNotRunning,
+			cooldownExpired,
+		),
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) ([]Action, []ActionDescriptor) {
+			ps.FixAttempts = 0
+			ps.RebaseAttempts = 0
+			emitCIPassedIfNeeded(c, ps, status)
+
+			var descs []ActionDescriptor
+			descs = append(descs, ActionDescriptor{
+				Type:      ActionCleanupWorktrees,
+				PRNumber:  ps.PRNumber,
+				RunStates: runStates,
+			})
+			descs = append(descs, ActionDescriptor{
+				Type:     ActionSnapshotThreads,
+				PRNumber: ps.PRNumber,
+				Repo:     dispatchRepo(c, status),
+			})
+
+			prompt := reviewFixPrompt(
+				fmt.Sprintf("PR #%s in %s has changes requested by reviewers.", ps.PRNumber, status.TargetRepo),
+				ps.PRNumber,
+			)
+			ps.pendingLaunchDetail = fmt.Sprintf("Review fix agent for PR #%s", ps.PRNumber)
+			ps.Stage = StageReviewPending
+			descs = append(descs, ActionDescriptor{
+				Type:       ActionLaunchAgent,
+				PRNumber:   ps.PRNumber,
+				Repo:       status.TargetRepo,
+				Prompt:     prompt,
+				ResumeFrom: ps.LastAgentID,
+				Reason:     event.DispatchReviewFix,
+			})
+			return nil, descs
+		},
+	},
+	{
+		Name: "ci-passing/changes-requested-wait",
+		Guard: allOf(
+			ciPassing,
+			changesRequested,
+		),
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			ps.FixAttempts = 0
+			ps.RebaseAttempts = 0
+			emitCIPassedIfNeeded(c, ps, status)
+			return nil, nil
+		},
+	},
+
+	// ── CI passing + trusted comments ───────────────────────────────────
+
+	{
+		Name: "ci-passing/trusted-comments-circuit-breaker-already-stalled",
+		Guard: allOf(
+			ciPassing,
+			hasTrustedComments,
+			reviewFixAttemptsExhausted,
+			agentNotRunning,
+			inStage(StageStalled),
+		),
+		Apply: func(_ *Controller, _ *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			return nil, nil
+		},
+	},
+	{
+		Name: "ci-passing/trusted-comments-circuit-breaker-trip",
+		Guard: allOf(
+			ciPassing,
+			hasTrustedComments,
+			reviewFixAttemptsExhausted,
+			agentNotRunning,
+		),
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			c.stall(ps, status.PRURL, fmt.Sprintf("%d review fix attempts failed", ps.ReviewFixAttempts))
+			c.logger.Warn("review fix agent circuit breaker tripped",
+				"pr", ps.PRNumber,
+				"attempts", ps.ReviewFixAttempts,
+			)
+			return []Action{{
+				Type:   "error",
+				Detail: fmt.Sprintf("PR #%s: %d review fix attempts failed, stopping", ps.PRNumber, ps.ReviewFixAttempts),
+			}}, nil
+		},
+	},
+	{
+		Name: "ci-passing/trusted-comments-dispatch",
+		Guard: allOf(
+			ciPassing,
+			hasTrustedComments,
+			agentNotRunning,
+			cooldownExpired,
+		),
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			ps.FixAttempts = 0
+			ps.RebaseAttempts = 0
+			emitCIPassedIfNeeded(c, ps, status)
+
+			// Count a failed attempt when a previous review-fix agent finished
+			// but the trusted comments are still unaddressed (no new commit
+			// advanced the watermark).
+			if ps.Stage == StageReviewPending && ps.LastAgentID != "" {
+				ps.ReviewFixAttempts++
+			}
+
+			// Re-check circuit breaker after incrementing.
+			if ps.ReviewFixAttempts >= maxFixAttempts {
+				c.stall(ps, status.PRURL, fmt.Sprintf("%d review fix attempts failed", ps.ReviewFixAttempts))
+				c.logger.Warn("review fix agent circuit breaker tripped",
+					"pr", ps.PRNumber,
+					"attempts", ps.ReviewFixAttempts,
+				)
+				return []Action{{
+					Type:   "error",
+					Detail: fmt.Sprintf("PR #%s: %d review fix attempts failed, stopping", ps.PRNumber, ps.ReviewFixAttempts),
+				}}, nil
+			}
+
+			var descs []ActionDescriptor
+			descs = append(descs, ActionDescriptor{
+				Type:     ActionSnapshotThreads,
+				PRNumber: ps.PRNumber,
+				Repo:     dispatchRepo(c, status),
+			})
+
+			prompt := reviewFixPrompt(
+				fmt.Sprintf("PR #%s in %s has review comments from a trusted reviewer that need to be addressed.", ps.PRNumber, status.TargetRepo),
+				ps.PRNumber,
+			)
+			ps.pendingLaunchDetail = fmt.Sprintf("Review fix agent for PR #%s (trusted reviewer)", ps.PRNumber)
+			ps.Stage = StageReviewPending
+			descs = append(descs, ActionDescriptor{
+				Type:       ActionLaunchAgent,
+				PRNumber:   ps.PRNumber,
+				Repo:       status.TargetRepo,
+				Prompt:     prompt,
+				ResumeFrom: ps.LastAgentID,
+				Reason:     event.DispatchReviewCommentFix,
+			})
+			return nil, descs
+		},
+	},
+	{
+		Name: "ci-passing/trusted-comments-wait",
+		Guard: allOf(
+			ciPassing,
+			hasTrustedComments,
+		),
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			ps.FixAttempts = 0
+			ps.RebaseAttempts = 0
+			// Emit CI-passed only when arriving from a CI stage. Unlike
+			// emitCIPassedIfNeeded, StageReviewPending is excluded because this
+			// transition holds that stage across polls while the dispatch above
+			// is gated on cooldown or an in-flight agent — the hold is what lets
+			// the dispatch's attempt counter recognize a re-dispatch (the
+			// awaiting-review transition below would otherwise reset the stage
+			// to ci_passed and emit a spurious awaiting-approval event).
+			if ps.Stage == StageCIFailed || ps.Stage == StageCIPending {
+				c.emitEvent(ps.PRNumber, event.AgentCIPassed, map[string]interface{}{
+					"pr_number": ps.PRNumber,
+					"pr_url":    status.PRURL,
+				})
+				ps.Stage = StageCIPassed
+			}
+			return nil, nil
+		},
+	},
+
+	// ── CI passing + awaiting review ────────────────────────────────────
+
+	{
+		Name: "ci-passing/awaiting-review",
+		Guard: allOf(
+			ciPassing,
+			notInStages(StageApproved, StageMerging),
+			agentNotRunning,
+		),
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			ps.FixAttempts = 0
+			ps.RebaseAttempts = 0
+			// Reaching here means no trusted comments are pending (the
+			// trusted-comments transitions above match first otherwise), so
+			// any prior review-fix attempts were addressed.
+			ps.ReviewFixAttempts = 0
+			emitCIPassedIfNeeded(c, ps, status)
+			if ps.Stage != StageCIPassed {
+				c.emitEvent(ps.PRNumber, event.PRAwaitingApproval, map[string]interface{}{
+					"pr_number": ps.PRNumber,
+					"pr_url":    status.PRURL,
+				})
+			}
+			ps.Stage = StageCIPassed
+			return nil, nil
+		},
+	},
+
+	// CI passing catch-all (agent running, or already approved/merging with no action needed).
+	{
+		Name:  "ci-passing/noop",
+		Guard: ciPassing,
+		Apply: func(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			ps.FixAttempts = 0
+			ps.RebaseAttempts = 0
+			// No trusted comments pending here (the trusted-comments-wait
+			// transition matches first otherwise).
+			ps.ReviewFixAttempts = 0
+			return nil, nil
+		},
+	},
+
+	// ── CI pending / unknown ────────────────────────────────────────────
+
+	{
+		Name: "ci-pending/reset-from-failed",
+		Guard: allOf(
+			ciPendingOrUnknown,
+			inStages(StageCIFailed, StageStalled),
+		),
+		Apply: func(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			ps.FixAttempts = 0
+			ps.RebaseAttempts = 0
+			ps.ReviewFixAttempts = 0
+			if ps.Stage == StageStalled {
+				ps.Stage = StageCIPending
+			}
+			return nil, nil
+		},
+	},
+	{
+		Name: "ci-pending/init",
+		Guard: allOf(
+			ciPendingOrUnknown,
+			inStages("", StageStalled),
+		),
+		Apply: func(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			ps.Stage = StageCIPending
+			return nil, nil
+		},
+	},
+	{
+		Name:  "ci-pending/noop",
+		Guard: ciPendingOrUnknown,
+		Apply: func(_ *Controller, _ *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			return nil, nil
+		},
+	},
+}
+
+// ── Guard functions ─────────────────────────────────────────────────────
+
+type guardFunc = func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) bool
+
+// allOf combines multiple guards with logical AND.
+func allOf(guards ...guardFunc) guardFunc {
+	return func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) bool {
+		for _, g := range guards {
+			if !g(c, ps, status, runStates) {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+// CI status guards.
+
+func ciFailing(_ *Controller, _ *PRPipelineState, status *PRStatus, _ []*run.State) bool {
+	return status.CI == "failing"
+}
+
+func ciPassing(_ *Controller, _ *PRPipelineState, status *PRStatus, _ []*run.State) bool {
+	return status.CI == "passing"
+}
+
+func ciPendingOrUnknown(_ *Controller, _ *PRPipelineState, status *PRStatus, _ []*run.State) bool {
+	return status.CI != "failing" && status.CI != "passing"
+}
+
+// Agent status guards.
+
+// agentNotRunning gates dispatch on there being no active agent for this PR.
+// It checks both the controller's last-dispatched agent (ps.AgentRunning) and
+// any pr-fix run in runStates that matches the PR — the latter catches
+// coordinator-launched runs (`klaus launch --pr`) that the controller did not
+// dispatch itself, preventing the pipeline from racing them with a competing
+// fix agent.
+func agentNotRunning(c *Controller, ps *PRPipelineState, _ *PRStatus, runStates []*run.State) bool {
+	if ps.AgentRunning {
+		return false
+	}
+	return !c.anyPRFixRunning(ps.PRNumber, runStates)
+}
+
+func cooldownExpired(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) bool {
+	return time.Since(ps.LastDispatchAt) > dispatchCooldown
+}
+
+// dispatchFailedOnTheseInputs holds a PR whose last dispatch failed while its
+// inputs stay as they were (HandleGHStatus clears the failure once they change).
+func dispatchFailedOnTheseInputs(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) bool {
+	return ps.FailedDispatch != nil
+}
+
+// Fix attempt guards.
+
+func fixAttemptsExhausted(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) bool {
+	return ps.FixAttempts >= maxFixAttempts
+}
+
+func rebaseAttemptsExhausted(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) bool {
+	return ps.RebaseAttempts >= maxFixAttempts
+}
+
+func reviewFixAttemptsExhausted(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) bool {
+	return ps.ReviewFixAttempts >= maxFixAttempts
+}
+
+// Auto-merge attempt guards.
+
+// mergeBudgetExhausted reports whether the attempt budget for the step the PR
+// currently needs — a base-branch update while it is behind, otherwise the
+// merge itself — is spent.
+func mergeBudgetExhausted(_ *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) bool {
+	if status.BehindBy > 0 {
+		return ps.BranchUpdateAttempts >= maxMergeAttempts
+	}
+	return ps.MergeAttempts >= maxMergeAttempts
+}
+
+// mergeBackoffExpired gates auto-merge retries so a merge that cannot succeed
+// in the PR's current state is re-attempted once per backoff window instead of
+// on every GH poll.
+func mergeBackoffExpired(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) bool {
+	return ps.LastMergeAttemptAt.IsZero() || time.Since(ps.LastMergeAttemptAt) > mergeRetryBackoff
+}
+
+// Stage guards.
+
+func inStage(s Stage) guardFunc {
+	return func(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) bool {
+		return ps.Stage == s
+	}
+}
+
+func inStages(stages ...Stage) guardFunc {
+	return func(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) bool {
+		for _, s := range stages {
+			if ps.Stage == s {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+func notInStages(stages ...Stage) guardFunc {
+	return func(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) bool {
+		for _, s := range stages {
+			if ps.Stage == s {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+// notInStageWhileRunning returns true unless the PR is already in the given
+// stage AND the agent is currently running (meaning we're already handling it).
+func notInStageWhileRunning(s Stage) guardFunc {
+	return func(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) bool {
+		return !(ps.Stage == s && ps.AgentRunning)
+	}
+}
+
+// Review decision guards.
+
+func isApproved(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) bool {
+	cr := strings.EqualFold(status.ReviewDecision, "CHANGES_REQUESTED")
+	return strings.EqualFold(status.ReviewDecision, "APPROVED") ||
+		(!cr && c.hasKlausApproval(ps.PRNumber, runStates))
+}
+
+func changesRequested(_ *Controller, _ *PRPipelineState, status *PRStatus, _ []*run.State) bool {
+	return strings.EqualFold(status.ReviewDecision, "CHANGES_REQUESTED")
+}
+
+func hasTrustedComments(_ *Controller, _ *PRPipelineState, status *PRStatus, _ []*run.State) bool {
+	return status.HasNewTrustedComments
+}
+
+// Label guards.
+
+// isBudgetPausedDraft reports whether the PR carries the klaus:budget-paused
+// label. We treat the label as the canonical paused-state signal: it persists
+// across klaus restarts and survives the worktree being cleaned up. Whether
+// the PR is currently draft or ready-for-review doesn't change the signal;
+// the label IS the signal.
+func isBudgetPausedDraft(_ *Controller, _ *PRPipelineState, status *PRStatus, _ []*run.State) bool {
+	for _, label := range status.Labels {
+		if label == event.BudgetPausedLabel {
+			return true
+		}
+	}
+	return false
+}
+
+// Conflict guards.
+
+func hasConflicts(_ *Controller, _ *PRPipelineState, status *PRStatus, _ []*run.State) bool {
+	return status.Conflicts == "yes"
+}
+
+func noConflicts(_ *Controller, _ *PRPipelineState, status *PRStatus, _ []*run.State) bool {
+	return status.Conflicts != "yes"
+}
+
+// Base-freshness guards. A PR can be conflict-free yet still behind its base
+// branch; branch protection rules that require an up-to-date branch reject a
+// merge in that state.
+
+func isBehind(_ *Controller, _ *PRPipelineState, status *PRStatus, _ []*run.State) bool {
+	return status.BehindBy > 0
+}
+
+func notBehind(_ *Controller, _ *PRPipelineState, status *PRStatus, _ []*run.State) bool {
+	return status.BehindBy <= 0
+}
+
+// Controller config guards.
+
+func autoMergeEnabled(c *Controller, _ *PRPipelineState, _ *PRStatus, _ []*run.State) bool {
+	return c.autoMergeOnApproval
+}
+
+// ── Shared helpers used by Apply functions ──────────────────────────────
+
+// emitCIPassedIfNeeded emits the CI-passed event when transitioning from
+// stages where CI was not previously known to be passing. StageNeedsRebase is
+// excluded so that polls during an in-flight rebase don't re-emit the event.
+func emitCIPassedIfNeeded(c *Controller, ps *PRPipelineState, status *PRStatus) {
+	if ps.Stage == StageCIFailed || ps.Stage == StageCIPending || ps.Stage == StageReviewPending {
+		c.emitEvent(ps.PRNumber, event.AgentCIPassed, map[string]interface{}{
+			"pr_number": ps.PRNumber,
+			"pr_url":    status.PRURL,
+		})
+	}
+}
+
+// dispatchRepo returns the owner/repo slug to attach to ActionDescriptors whose
+// handlers treat Repo as a real GitHub slug (ActionSnapshotThreads, ActionMergePR).
+// It derives the slug from status.PRURL (always a full GitHub PR URL) because
+// status.TargetRepo holds the canonical project SHORT name (e.g. "klaus") for
+// registered projects, which is NOT a valid owner/repo slug. If the URL can't be
+// parsed it falls back to status.TargetRepo to preserve prior behavior.
+//
+// Note: ActionLaunchAgent intentionally does NOT use this — its handler runs the
+// value through normalizeTargetRepo, which expects the short name.
+func dispatchRepo(c *Controller, status *PRStatus) string {
+	if slug := ghutil.OwnerRepoFromPRURL(status.PRURL); slug != "" {
+		return slug
+	}
+	c.logger.Warn("could not derive owner/repo from PR URL; falling back to TargetRepo",
+		"pr", status.PRURL,
+		"target_repo", status.TargetRepo,
+	)
+	return status.TargetRepo
+}
+
+// AgentReplyMarker is embedded in every reply a review-fix agent posts. Agents
+// run gh as the operator, who is often a trusted reviewer, so the comment
+// author can't distinguish an agent's reply from real feedback; review
+// detection skips comments carrying this marker. It is an HTML comment so it
+// doesn't render on GitHub.
+const AgentReplyMarker = "<!-- klaus-agent-reply -->"
+
+// CrossReviewMarker opens the hidden line in a `klaus review --post` review body. Such a review counts as trusted when posted by the operator's gh account.
+const CrossReviewMarker = review.CrossReviewMarker
+
+// FixCommand and ActionableMarker are the two ways a PR author opts a PR
+// conversation comment in as review feedback. The operator and fix agents post
+// through the same account, so author conversation comments are ignored by
+// review detection unless the first non-blank line is FixCommand or a line
+// consists of ActionableMarker alone. Comments from trusted reviewers other
+// than the PR author need neither.
+const (
+	FixCommand       = "/klaus fix"
+	ActionableMarker = "<!-- klaus-actionable -->"
+)
+
+// reviewFixPrompt builds the prompt sent to a review-fix agent. The leadIn is
+// the situation-specific opening sentence (e.g. "PR #X has changes requested
+// by reviewers."); the rest of the body is shared so both the changes-requested
+// and trusted-comments dispatch paths produce identical instructions to the agent.
+//
+// The "(that you haven't already replied to)" qualifier matters because a fix
+// agent may be re-dispatched (e.g. after CI fails on its first push). Without
+// it the agent may post duplicate replies on threads it already answered.
+func reviewFixPrompt(leadIn, prNumber string) string {
+	// The API paths use the literal {owner}/{repo} placeholder, which gh expands
+	// from the worktree's git remote at runtime. We must NOT substitute the
+	// dispatch repo here: PRStatus.TargetRepo is the canonical project short name
+	// (e.g. "klaus") for registered projects, not an owner/repo slug, so it would
+	// produce a 404 path like repos/klaus/pulls/267/comments. The fix agent always
+	// runs inside the PR's worktree, so {owner}/{repo} resolves correctly.
+	return fmt.Sprintf(
+		"%s "+
+			"Review comments come in two kinds; fetch both:\n"+
+			"  inline review comments: gh api repos/{owner}/{repo}/pulls/%s/comments\n"+
+			"  PR conversation comments: gh api repos/{owner}/{repo}/issues/%s/comments\n"+
+			"Ignore comments whose body contains %s — those are earlier agent replies.\n"+
+			"Conversation comments from the PR author are feedback only if their first line is %s or a line is exactly %s; ignore the author's other conversation comments.\n"+
+			"Address each comment in the code, then push your fixes.\n"+
+			"After pushing, reply to EACH review comment that you haven't already replied to with a concise (1-2 sentence) explanation of what you changed. "+
+			"If a comment was intentionally not addressed, reply explaining why it was discounted.\n"+
+			"End every reply body with the line %s so klaus doesn't mistake your reply for new review feedback. Never start a reply with %s or copy a %s line into it; link to the original comment instead of quoting such lines.\n"+
+			"Use this exact command to reply to an inline comment, substituting the comment id and your explanation:\n"+
+			"  gh api repos/{owner}/{repo}/pulls/%s/comments/{commentId}/replies -f body='<explanation> %s'\n"+
+			"A conversation comment has no reply thread; reply with a new PR comment that quotes or links the original:\n"+
+			"  gh pr comment %s --body '<quote or link to the original> <explanation> %s'",
+		leadIn, prNumber, prNumber, AgentReplyMarker, FixCommand, ActionableMarker,
+		AgentReplyMarker, FixCommand, ActionableMarker,
+		prNumber, AgentReplyMarker, prNumber, AgentReplyMarker,
+	)
+}
+
+// approvedBookkeeping is the shared prelude for every transition that observes
+// an approved PR: reset the agent-attempt budgets that approval invalidates,
+// emit the CI-passed and approval edges, and mirror the approval into run state.
+func approvedBookkeeping(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) {
+	ps.FixAttempts = 0
+	ps.RebaseAttempts = 0
+	ps.ReviewFixAttempts = 0
+	emitCIPassedIfNeeded(c, ps, status)
+	setApprovedIfNeeded(c, ps, status)
+	c.markRunStatesApproved(ps.PRNumber, runStates)
+}
+
+// setApprovedIfNeeded emits pr:approved the first time the PR is seen
+// approved and moves the PR into StageApproved.
+//
+// The emission is keyed off the ledger rather than the stage, because the
+// stage is not a reliable edge signal: a failed auto-merge moves an approved
+// PR out of StageApproved and the next poll moves it back, which would
+// re-emit pr:approved on every poll for as long as the merge keeps failing.
+// The ledger also outlives a restart and a PR dropping out of tracking, so
+// the event fires once per PR, even when an approval is dismissed and
+// granted again.
+//
+// StageStalled is preserved so a tripped circuit breaker stays observable.
+func setApprovedIfNeeded(c *Controller, ps *PRPipelineState, status *PRStatus) {
+	if c.recordTransition(ledgerKey(ps.PRNumber, status.PRURL), markApproved) {
+		c.emitEvent(ps.PRNumber, event.PRApproved, map[string]interface{}{
+			"pr_number": ps.PRNumber,
+			"pr_url":    status.PRURL,
+		})
+	}
+	if ps.Stage != StageMerging && ps.Stage != StageNeedsRebase && ps.Stage != StageStalled {
+		ps.Stage = StageApproved
+	}
+}

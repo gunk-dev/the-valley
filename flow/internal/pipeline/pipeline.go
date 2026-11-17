@@ -1,0 +1,869 @@
+package pipeline
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"the-valley/flow/internal/event"
+	ghutil "the-valley/flow/internal/github"
+	"the-valley/flow/internal/run"
+)
+
+// Stage represents the pipeline stage for a PR.
+type Stage string
+
+const (
+	StageCIPending     Stage = "ci_pending"
+	StageCIFailed      Stage = "ci_failed"
+	StageCIPassed      Stage = "ci_passed"
+	StageReviewPending Stage = "review_pending"
+	StageApproved      Stage = "approved"
+	StageNeedsRebase   Stage = "needs_rebase"
+	StageMerging       Stage = "merging"
+	StageMerged        Stage = "merged"
+	StageStalled       Stage = "stalled"
+	StageBudgetPaused  Stage = "budget_paused"
+)
+
+// PRStatus holds the GitHub-fetched status for a single PR, passed from the dashboard.
+type PRStatus struct {
+	PRNumber              string
+	PRURL                 string
+	State                 string   // OPEN, MERGED, CLOSED, or UNKNOWN when GitHub couldn't be asked
+	CI                    string   // passing, failing, pending, unknown
+	Conflicts             string   // yes, none, unknown
+	BehindBy              int      // commits base has that head lacks; >0 = stale-but-mergeable
+	ReviewDecision        string   // APPROVED, CHANGES_REQUESTED, etc.
+	TargetRepo            string   // canonical project short name (e.g. "klaus") for registered projects, else an owner/repo slug; NOT guaranteed to be a GitHub owner/repo slug — do not use in gh api paths
+	HasNewTrustedComments bool     // unaddressed comments from trusted reviewers
+	Labels                []string // GitHub label names; klaus uses "klaus:budget-paused" as a pause signal
+	HeadSHA               string
+	TrustedFeedbackAt     time.Time // when trusted reviewers last left feedback; new feedback moves it
+}
+
+// DispatchInputs are what a PR's dispatch decision reads from GitHub. A
+// dispatch that failed isn't tried again until they change.
+type DispatchInputs struct {
+	HeadSHA         string
+	CI              string
+	ReviewDecision  string
+	TrustedComments bool
+	TrustedFeedback time.Time
+}
+
+func dispatchInputs(s *PRStatus) DispatchInputs {
+	return DispatchInputs{HeadSHA: s.HeadSHA, CI: s.CI, ReviewDecision: s.ReviewDecision, TrustedComments: s.HasNewTrustedComments, TrustedFeedback: s.TrustedFeedbackAt}
+}
+
+// PRPipelineState tracks per-PR pipeline state.
+type PRPipelineState struct {
+	PRNumber                string
+	PRURL                   string // the PR this state tracks; the number alone is ambiguous across repos
+	Stage                   Stage
+	LastAgentID             string // run ID of last dispatched agent
+	AgentRunning            bool   // whether the dispatched agent is still active
+	SeenCommentIDs          map[int64]bool
+	PendingResolveThreadIDs []string        // GraphQL thread IDs to resolve after agent completes
+	FailedDispatch          *DispatchInputs // the inputs the last dispatch failed on; nil once they change
+	LastDispatchAt          time.Time       // when the last agent was dispatched (cooldown guard)
+	FixAttempts             int             // number of CI-fix agents dispatched that completed without fixing CI
+	RebaseAttempts          int             // number of rebase agents dispatched that completed without resolving conflicts
+	ReviewFixAttempts       int             // number of review-fix agents dispatched that completed without addressing trusted comments
+	MergeAttempts           int             // number of auto-merge attempts made since approval
+	BranchUpdateAttempts    int             // number of base-branch updates attempted since approval
+	LastMergeAttemptAt      time.Time       // when the last merge or branch-update attempt was made (backoff guard)
+
+	pendingLaunchDetail string // transient: detail text for pending launch action
+}
+
+// Action describes a side-effect the controller wants the dashboard to perform.
+type Action struct {
+	Type   string // "launch", "merge", or "error"
+	Detail string // human-readable description
+	Error  string // non-empty if action represents a failure
+}
+
+// ActionType enumerates the kinds of side-effects evaluate() can request.
+type ActionType int
+
+const (
+	ActionLaunchAgent ActionType = iota
+	ActionMergePR
+	ActionCleanupWorktrees
+	ActionSnapshotThreads
+	ActionUpdateBranch
+)
+
+// ActionDescriptor is a pure data description of a side-effect to perform.
+// evaluate() returns these instead of executing I/O directly.
+type ActionDescriptor struct {
+	Type       ActionType
+	PRNumber   string
+	Repo       string
+	Prompt     string
+	ResumeFrom string
+	Reason     string       // why an agent is launched: an event.Dispatch* reason, for klaus launch --reason
+	PRNumbers  []string     // for merge
+	RunStates  []*run.State // for worktree cleanup
+}
+
+// Controller manages the PR pipeline lifecycle.
+type Controller struct {
+	store    run.StateStore
+	eventLog *event.Log
+	logger   *slog.Logger
+	prStates map[string]*PRPipelineState // keyed by PR number
+	ledger   *Ledger                     // the PR transitions already seen and reported
+	mu       sync.Mutex
+
+	autoMergeOnApproval bool // whether to auto-merge approved PRs
+
+	tmuxDeps run.TmuxDeps // tmux operations for checking pane state
+
+	// Injectable runners for testing.
+	launchAgent     func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error)
+	mergePRs        func(ctx context.Context, repo string, prNumbers []string) error
+	updateBranch    func(ctx context.Context, repo, prNumber string) error
+	snapshotThreads func(repo, prNumber string) ([]string, error)
+	resolveThread   func(threadID string) error
+}
+
+// New creates a new pipeline controller.
+func New(store run.StateStore, eventLog *event.Log, logger *slog.Logger) *Controller {
+	c := &Controller{
+		store:    store,
+		eventLog: eventLog,
+		logger:   logger,
+		prStates: make(map[string]*PRPipelineState),
+		ledger:   NewLedger(),
+		tmuxDeps: run.DefaultTmuxDeps(),
+	}
+	c.launchAgent = c.defaultLaunchAgent
+	c.mergePRs = c.defaultMergePRs
+	c.updateBranch = c.defaultUpdateBranch
+	c.snapshotThreads = c.defaultSnapshotThreads
+	c.resolveThread = func(threadID string) error {
+		return ghutil.NewGHCLIClient("").ResolveReviewThread(context.TODO(), threadID)
+	}
+	return c
+}
+
+// SetTmuxDeps overrides the tmux dependencies used for pane state checks.
+func (c *Controller) SetTmuxDeps(td run.TmuxDeps) {
+	c.tmuxDeps = td
+}
+
+// SetLedger replaces the in-memory ledger, typically with one loaded from
+// the session directory so a restarted dashboard doesn't report a PR
+// transition again.
+func (c *Controller) SetLedger(l *Ledger) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ledger = l
+}
+
+// SetAutoMergeOnApproval controls whether approved PRs are automatically merged.
+func (c *Controller) SetAutoMergeOnApproval(enabled bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.autoMergeOnApproval = enabled
+}
+
+// SetLaunchAgent overrides the agent launcher (for testing).
+func (c *Controller) SetLaunchAgent(fn func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.launchAgent = fn
+}
+
+// SetMergePRs overrides the merge runner (for testing).
+func (c *Controller) SetMergePRs(fn func(ctx context.Context, repo string, prNumbers []string) error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.mergePRs = fn
+}
+
+// SetUpdateBranch overrides the branch-update runner (for testing).
+func (c *Controller) SetUpdateBranch(fn func(ctx context.Context, repo, prNumber string) error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.updateBranch = fn
+}
+
+// SetSnapshotThreads overrides thread snapshot fetching (for testing).
+func (c *Controller) SetSnapshotThreads(fn func(repo, prNumber string) ([]string, error)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.snapshotThreads = fn
+}
+
+// SetResolveThread overrides thread resolution (for testing).
+func (c *Controller) SetResolveThread(fn func(threadID string) error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.resolveThread = fn
+}
+
+// HandleGHStatus is called by the dashboard on each GH poll with fresh PR statuses.
+// It evaluates pipeline transitions and returns any actions taken.
+//
+// The method holds the mutex only while computing what to do (evaluate), then
+// releases it to execute I/O (agent launches, merges, worktree cleanup), and
+// re-acquires to update state with results. This prevents blocking dashboard
+// rendering during slow exec calls.
+func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PRStatus, runStates []*run.State) []Action {
+	// Phase 1: Hold lock, compute descriptors and collect immediate actions.
+	c.mu.Lock()
+
+	var actions []Action
+	var descriptors []ActionDescriptor
+	// Track which PRs need thread resolution (agent just completed).
+	var threadResolvePRs []*PRPipelineState
+
+	// Build a set of running agent run IDs from current run states.
+	runningAgents := make(map[string]bool)
+	for _, s := range runStates {
+		if c.isRunning(s) {
+			runningAgents[s.ID] = true
+		}
+	}
+
+	for prNum, status := range statuses {
+		key := ledgerKey(prNum, status.PRURL)
+		switch status.State {
+		case "OPEN":
+			c.recordTransition(key, markSeenOpen)
+		case "MERGED":
+			// A merge is reported once, and only for a PR klaus saw open:
+			// one already merged when klaus first sees it is history.
+			if c.recordTransition(key, markMerged) && c.ledger.has(key, markSeenOpen) {
+				c.emitEvent(prNum, event.PRMerged, map[string]interface{}{
+					"pr_number": prNum,
+					"pr_url":    status.PRURL,
+				})
+			}
+			delete(c.prStates, prNum)
+			continue
+		case "CLOSED":
+			c.recordTransition(key, markClosed)
+			delete(c.prStates, prNum)
+			continue
+		default:
+			// GitHub couldn't be asked (UNKNOWN: a timeout, rate limit or
+			// network failure). That says nothing about the PR, so leave it
+			// as it was. Taking it for open once tracked long-merged PRs
+			// afresh, re-approved them, tried to merge them, and reported
+			// them merged again when the next poll got through.
+			continue
+		}
+
+		ps := c.getOrCreateState(prNum, status)
+		ps.PRURL = status.PRURL
+
+		// Update agent running status.
+		wasRunning := ps.AgentRunning
+		if ps.LastAgentID != "" {
+			ps.AgentRunning = runningAgents[ps.LastAgentID]
+		}
+
+		// Mark PRs that need thread resolution (agent just completed).
+		if wasRunning && !ps.AgentRunning && len(ps.PendingResolveThreadIDs) > 0 {
+			threadResolvePRs = append(threadResolvePRs, ps)
+		}
+
+		// Approval-edge bookkeeping: once the PR is no longer approved, the
+		// next approval gives auto-merge a fresh attempt budget. pr:approved
+		// itself is reported once per PR, through the ledger.
+		if !isApproved(c, ps, status, runStates) {
+			ps.MergeAttempts = 0
+			ps.BranchUpdateAttempts = 0
+			ps.LastMergeAttemptAt = time.Time{}
+		}
+
+		// A dispatch that failed waits for its inputs to change; once they
+		// have, the PR is evaluated afresh.
+		if ps.FailedDispatch != nil && *ps.FailedDispatch != dispatchInputs(status) {
+			ps.FailedDispatch = nil
+		}
+
+		prevStage := ps.Stage
+		evalActions, evalDescs := c.evaluate(ps, status, runStates)
+		actions = append(actions, evalActions...)
+		descriptors = append(descriptors, evalDescs...)
+
+		if ps.Stage != prevStage {
+			c.logger.Info("pipeline transition",
+				"pr", prNum,
+				"from", string(prevStage),
+				"to", string(ps.Stage),
+			)
+		}
+	}
+
+	c.mu.Unlock()
+
+	// Phase 2: Execute I/O without holding the lock.
+
+	// Resolve pending review threads for agents that just completed.
+	for _, ps := range threadResolvePRs {
+		c.resolvePendingThreads(ps)
+	}
+
+	// Execute descriptors and collect results to apply under the lock.
+	type launchResult struct {
+		prNumber string
+		agentID  string
+		err      error
+	}
+	type mergeResult struct {
+		prNumber string
+		repo     string
+		err      error
+	}
+	type updateResult struct {
+		prNumber string
+		err      error
+	}
+	var launchResults []launchResult
+	var mergeResults []mergeResult
+	var updateResults []updateResult
+
+	for _, desc := range descriptors {
+		switch desc.Type {
+		case ActionCleanupWorktrees:
+			c.cleanupStaleWorktrees(desc.PRNumber, desc.RunStates)
+
+		case ActionSnapshotThreads:
+			c.mu.Lock()
+			ps := c.prStates[desc.PRNumber]
+			c.mu.Unlock()
+			if ps != nil {
+				c.snapshotUnresolvedThreads(ps, desc.Repo)
+			}
+
+		case ActionLaunchAgent:
+			agentID, err := c.launchAgent(ctx, desc.PRNumber, desc.Repo, desc.Prompt, desc.ResumeFrom, desc.Reason)
+			launchResults = append(launchResults, launchResult{
+				prNumber: desc.PRNumber,
+				agentID:  agentID,
+				err:      err,
+			})
+
+		case ActionMergePR:
+			err := c.mergePRs(ctx, desc.Repo, desc.PRNumbers)
+			mergeResults = append(mergeResults, mergeResult{
+				prNumber: desc.PRNumber,
+				repo:     desc.Repo,
+				err:      err,
+			})
+
+		case ActionUpdateBranch:
+			err := c.updateBranch(ctx, desc.Repo, desc.PRNumber)
+			updateResults = append(updateResults, updateResult{
+				prNumber: desc.PRNumber,
+				err:      err,
+			})
+		}
+	}
+
+	// Phase 3: Re-acquire lock to apply results.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, lr := range launchResults {
+		ps := c.prStates[lr.prNumber]
+		if ps == nil {
+			continue
+		}
+		if lr.err != nil {
+			// Retrying on the same inputs fails the same way, so the PR stalls
+			// until they change, and the coordinator hears of it once.
+			c.logger.Error("failed to dispatch agent", "pr", lr.prNumber, "err", lr.err)
+			in := dispatchInputs(statuses[lr.prNumber])
+			ps.FailedDispatch = &in
+			msg := truncateError(lr.err.Error(), 120)
+			c.stall(ps, ps.PRURL, "dispatch failed: "+msg)
+			actions = append(actions, Action{Type: "error", Detail: fmt.Sprintf("PR #%s: dispatch failed", lr.prNumber), Error: msg})
+		} else {
+			ps.LastAgentID = lr.agentID
+			ps.AgentRunning = true
+			ps.LastDispatchAt = time.Now()
+			actions = append(actions, Action{Type: "launch", Detail: ps.pendingLaunchDetail})
+			ps.pendingLaunchDetail = ""
+		}
+	}
+
+	for _, ur := range updateResults {
+		ps := c.prStates[ur.prNumber]
+		if ps == nil {
+			continue
+		}
+		if ur.err != nil {
+			c.logger.Error("branch update failed", "pr", ur.prNumber, "err", ur.err)
+			c.stallIfExhausted(ps, ps.BranchUpdateAttempts, fmt.Sprintf("branch update failed after %d attempts", ps.BranchUpdateAttempts))
+			actions = append(actions, Action{Type: "error", Detail: fmt.Sprintf("PR #%s: branch update failed", ur.prNumber), Error: truncateError(ur.err.Error(), 120)})
+		} else {
+			actions = append(actions, Action{Type: "update-branch", Detail: fmt.Sprintf("Updated PR #%s from base branch", ur.prNumber)})
+		}
+	}
+
+	for _, mr := range mergeResults {
+		ps := c.prStates[mr.prNumber]
+		if ps == nil {
+			continue
+		}
+		if mr.err != nil {
+			c.logger.Error("auto-merge failed", "pr", mr.prNumber, "err", mr.err)
+			// Drop back to approved so the next poll re-evaluates instead of
+			// re-entering merging immediately; the backoff and attempt budget
+			// on the auto-merge transition gate the retry.
+			ps.Stage = StageApproved
+			c.stallIfExhausted(ps, ps.MergeAttempts, fmt.Sprintf("auto-merge failed after %d attempts", ps.MergeAttempts))
+			actions = append(actions, Action{Type: "error", Detail: fmt.Sprintf("PR #%s: auto-merge failed", mr.prNumber), Error: truncateError(mr.err.Error(), 120)})
+		} else {
+			ps.Stage = StageMerged
+			if c.recordTransition(ledgerKey(mr.prNumber, ps.PRURL), markMerged) {
+				c.emitEvent(mr.prNumber, event.PRMerged, map[string]interface{}{
+					"pr_number": mr.prNumber,
+					"pr_url":    ps.PRURL,
+				})
+			}
+			actions = append(actions, Action{Type: "merge", Detail: fmt.Sprintf("Merged PR #%s", mr.prNumber)})
+		}
+	}
+
+	return actions
+}
+
+// PipelineStates returns a snapshot of current pipeline states (for dashboard rendering).
+func (c *Controller) PipelineStates() map[string]*PRPipelineState {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make(map[string]*PRPipelineState, len(c.prStates))
+	for k, v := range c.prStates {
+		cp := *v
+		out[k] = &cp
+	}
+	return out
+}
+
+func (c *Controller) getOrCreateState(prNum string, status *PRStatus) *PRPipelineState {
+	ps, ok := c.prStates[prNum]
+	if !ok {
+		// Seed initial stage from current GitHub status so that session
+		// resume doesn't force already-progressed PRs back to ci_pending.
+		stage := seedStageFromStatus(status)
+		ps = &PRPipelineState{
+			PRNumber:       prNum,
+			Stage:          stage,
+			SeenCommentIDs: make(map[int64]bool),
+		}
+		c.prStates[prNum] = ps
+	}
+	return ps
+}
+
+// seedStageFromStatus returns an appropriate initial pipeline stage based on
+// the PR's current GitHub status. Merged/closed PRs are filtered out before
+// this function is called, so only open-PR statuses are handled here.
+func seedStageFromStatus(status *PRStatus) Stage {
+	switch {
+	case status.CI == "passing":
+		return StageCIPassed
+	case status.CI == "failing":
+		return StageCIFailed
+	default:
+		return StageCIPending
+	}
+}
+
+// maxFixAttempts is the maximum number of fix agents dispatched for a single PR
+// before the pipeline gives up. Reset when the branch is updated or CI passes.
+const maxFixAttempts = 3
+
+// dispatchCooldown is the minimum time between agent dispatches for the same PR.
+const dispatchCooldown = 60 * time.Second
+
+// maxMergeAttempts bounds how many auto-merge attempts — and, separately, how
+// many base-branch updates — the controller makes for a single approval before
+// stalling the PR. A PR that can never reach a mergeable state stalls loudly
+// instead of retrying forever. The budgets are separate so a PR that is merely
+// behind a fast-moving base doesn't spend its merge attempts catching up.
+const maxMergeAttempts = 3
+
+// mergeRetryBackoff is the minimum time between auto-merge attempts for the
+// same PR. Without it the dashboard's ~3s GH poll would retry a failing merge
+// on every tick.
+const mergeRetryBackoff = 60 * time.Second
+
+// evaluate checks the current GH status and determines transitions + action
+// descriptors. It performs NO I/O — all side-effects are described as
+// ActionDescriptor values for the caller to execute outside the lock.
+//
+// The method iterates over the transition table defined in transitions.go.
+// The first transition whose Guard matches is applied; subsequent transitions
+// are skipped. This makes the state machine explicit and testable.
+func (c *Controller) evaluate(ps *PRPipelineState, status *PRStatus, runStates []*run.State) ([]Action, []ActionDescriptor) {
+	for _, t := range transitions {
+		if t.Guard(c, ps, status, runStates) {
+			return t.Apply(c, ps, status, runStates)
+		}
+	}
+	return nil, nil
+}
+
+// Settled returns MERGED or CLOSED for a PR the ledger has seen so, else "".
+// The dashboard doesn't ask GitHub about such a PR again, so a closed PR
+// that is reopened stays closed to klaus.
+func (c *Controller) Settled(prURL string) string {
+	switch {
+	case c.ledger.has(prURL, markMerged):
+		return "MERGED"
+	case c.ledger.has(prURL, markClosed):
+		return "CLOSED"
+	}
+	return ""
+}
+
+// stall moves a PR into StageStalled and emits pipeline:stalled on the
+// transition edge. Re-entering an already-stalled state is a no-op, so a
+// coordinator watching `klaus watch` gets exactly one notification per stall
+// rather than one per poll.
+func (c *Controller) stall(ps *PRPipelineState, prURL, reason string) {
+	if ps.Stage == StageStalled {
+		return
+	}
+	ps.Stage = StageStalled
+	data := map[string]interface{}{
+		"pr_number": ps.PRNumber,
+		"reason":    reason,
+	}
+	if prURL != "" {
+		data["pr_url"] = prURL
+	}
+	c.emitEvent(ps.PRNumber, event.PipelineStalled, data)
+}
+
+// stallIfExhausted stalls the PR once the given attempt budget is spent. Below
+// the budget the PR stays approved and is retried after the backoff window.
+func (c *Controller) stallIfExhausted(ps *PRPipelineState, attempts int, reason string) {
+	if attempts < maxMergeAttempts {
+		return
+	}
+	c.logger.Warn("auto-merge circuit breaker tripped",
+		"pr", ps.PRNumber,
+		"attempts", attempts,
+	)
+	c.stall(ps, "", reason)
+}
+
+// cleanupStaleWorktrees removes worktrees from completed runs that match the given PR number.
+// This prevents "worktree already exists" errors when re-dispatching agents.
+func (c *Controller) cleanupStaleWorktrees(prNumber string, runStates []*run.State) {
+	for _, s := range runStates {
+		if s.PR == nil || *s.PR != prNumber {
+			continue
+		}
+		if c.isRunning(s) {
+			continue
+		}
+		if s.Worktree == "" {
+			continue
+		}
+		// Check if the worktree directory still exists on disk.
+		if _, err := os.Stat(s.Worktree); err != nil {
+			continue
+		}
+		// Run klaus cleanup for this stale run.
+		c.logger.Info("cleaning up stale worktree before dispatch",
+			"pr", prNumber,
+			"run", s.ID,
+			"worktree", s.Worktree,
+		)
+		cmd := exec.Command("klaus", "cleanup", s.ID)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			c.logger.Error("stale worktree cleanup failed",
+				"run", s.ID,
+				"err", err,
+				"output", string(out),
+			)
+		}
+	}
+}
+
+// markRunStatesApproved sets Approved=true on run states matching the given PR number
+// that are not already approved, and persists the change via the store.
+func (c *Controller) markRunStatesApproved(prNumber string, runStates []*run.State) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, s := range runStates {
+		if !runStateMatchesPR(s, prNumber) {
+			continue
+		}
+		if s.Approved != nil && *s.Approved {
+			continue
+		}
+		approved := true
+		s.Approved = &approved
+		s.ApprovedAt = &now
+		if c.store != nil {
+			if err := c.store.Save(s); err != nil {
+				c.logger.Error("failed to persist GitHub approval to run state",
+					"pr", prNumber, "run", s.ID, "err", err)
+			}
+		}
+	}
+}
+
+// runStateMatchesPR reports whether the run state is associated with the given PR number.
+func runStateMatchesPR(s *run.State, prNumber string) bool {
+	if s.PR != nil && *s.PR == prNumber {
+		return true
+	}
+	if s.PRURL != nil && strings.HasSuffix(strings.TrimRight(*s.PRURL, "/"), "/"+prNumber) {
+		return true
+	}
+	return false
+}
+
+// hasKlausApproval returns true if any run state for the given PR has been
+// approved via `klaus approve`.
+func (c *Controller) hasKlausApproval(prNumber string, runStates []*run.State) bool {
+	for _, s := range runStates {
+		if !runStateMatchesPR(s, prNumber) {
+			continue
+		}
+		if s.Approved != nil && *s.Approved {
+			return true
+		}
+	}
+	return false
+}
+
+// recordTransition records a PR's transition in the ledger and reports
+// whether it is new, that is, whether its event should be emitted.
+func (c *Controller) recordTransition(key string, m ledgerMark) bool {
+	first, err := c.ledger.record(key, m)
+	if err != nil {
+		c.logger.Error("failed to persist PR transition", "pr", key, "err", err)
+	}
+	return first
+}
+
+// emitEvent emits a PR's event. The run ID is the PR number; a PR URL in
+// data adds the repo-qualified keys run events carry: repo_key (owner/repo)
+// and key (owner/repo#<pr>).
+func (c *Controller) emitEvent(prNumber, eventType string, data map[string]interface{}) {
+	if c.eventLog == nil {
+		return
+	}
+	if prURL, _ := data["pr_url"].(string); prURL != "" {
+		if repo := ghutil.OwnerRepoFromPRURL(prURL); repo != "" {
+			data["repo_key"] = repo
+			data["key"] = repo + "#" + prNumber
+		}
+	}
+	evt := event.New(prNumber, eventType, data)
+	if err := c.eventLog.Emit(evt); err != nil {
+		c.logger.Error("failed to emit event", "type", eventType, "pr", prNumber, "err", err)
+	}
+}
+
+func (c *Controller) defaultLaunchAgent(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+	args := []string{"launch", "--pr", prNumber}
+	if repo != "" {
+		args = append(args, "--repo", repo)
+	}
+	if resumeFrom != "" {
+		args = append(args, "--resume-from", resumeFrom)
+	}
+	if reason != "" {
+		args = append(args, "--reason", reason)
+	}
+	args = append(args, prompt)
+	cmd := exec.CommandContext(ctx, "klaus", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("klaus launch: %w: %s", err, string(out))
+	}
+	// Extract run ID from output (first line typically: "Launching agent <id>...")
+	// Best-effort extraction.
+	output := string(out)
+	if id := extractAgentID(output); id != "" {
+		return id, nil
+	}
+	return "unknown", nil
+}
+
+func (c *Controller) defaultMergePRs(ctx context.Context, repo string, prNumbers []string) error {
+	args := []string{"merge", "--yes"}
+	if repo != "" {
+		args = append(args, "--repo", repo)
+	}
+	args = append(args, prNumbers...)
+	cmd := exec.CommandContext(ctx, "klaus", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("klaus merge: %w: %s", err, string(out))
+	}
+	return nil
+}
+
+func (c *Controller) defaultUpdateBranch(ctx context.Context, repo, prNumber string) error {
+	return ghutil.NewGHCLIClient(repo).UpdateBranch(ctx, prNumber)
+}
+
+// extractAgentID attempts to pull the run ID from "Launching agent <id>..." output.
+func extractAgentID(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "Launching agent ") {
+			parts := strings.Fields(line)
+			if len(parts) >= 3 {
+				return strings.TrimSuffix(parts[2], "...")
+			}
+		}
+	}
+	return ""
+}
+
+// isRunning checks if a run is still active (has tmux pane, not finalized).
+func (c *Controller) isRunning(s *run.State) bool {
+	return s.IsAgentRunningWith(c.tmuxDeps)
+}
+
+// anyPRFixRunning returns true if any pr-fix run is currently active on the
+// given PR, regardless of whether the controller itself dispatched it. This
+// detects coordinator-launched pr-fix runs (`klaus launch --pr <num>`) that
+// the controller has no record of, so it can avoid racing with them while
+// they are pushing incremental commits.
+func (c *Controller) anyPRFixRunning(prNumber string, runStates []*run.State) bool {
+	for _, s := range runStates {
+		if s == nil || s.Type != "pr-fix" {
+			continue
+		}
+		if !runStateMatchesPR(s, prNumber) {
+			continue
+		}
+		if c.isRunning(s) {
+			return true
+		}
+	}
+	return false
+}
+
+// truncateError returns a short, single-line version of an error message.
+// It strips cobra "Usage:" help text and truncates to maxLen.
+func truncateError(s string, maxLen int) string {
+	// Strip everything from "Usage:" onward (cobra help text).
+	if idx := strings.Index(s, "Usage:"); idx > 0 {
+		s = strings.TrimSpace(s[:idx])
+	}
+	// Take only the first line.
+	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+		s = s[:idx]
+	}
+	s = strings.TrimSpace(s)
+	if len(s) > maxLen {
+		return s[:maxLen-1] + "…"
+	}
+	return s
+}
+
+// snapshotUnresolvedThreads fetches and stores unresolved review thread IDs
+// so they can be resolved after the fix agent completes.
+func (c *Controller) snapshotUnresolvedThreads(ps *PRPipelineState, repo string) {
+	threadIDs, err := c.snapshotThreads(repo, ps.PRNumber)
+	if err != nil {
+		c.logger.Warn("failed to snapshot review threads", "pr", ps.PRNumber, "err", err)
+		ps.PendingResolveThreadIDs = nil
+		return
+	}
+	ps.PendingResolveThreadIDs = threadIDs
+	if len(threadIDs) > 0 {
+		c.logger.Info("snapshotted unresolved review threads",
+			"pr", ps.PRNumber,
+			"count", len(threadIDs),
+		)
+	}
+}
+
+// resolvePendingThreads resolves all pending review threads for a PR.
+func (c *Controller) resolvePendingThreads(ps *PRPipelineState) {
+	resolved := 0
+	for _, threadID := range ps.PendingResolveThreadIDs {
+		if err := c.resolveThread(threadID); err != nil {
+			c.logger.Warn("failed to resolve review thread",
+				"pr", ps.PRNumber,
+				"thread", threadID,
+				"err", err,
+			)
+			continue
+		}
+		resolved++
+	}
+	if resolved > 0 {
+		c.logger.Info("resolved review threads after agent completion",
+			"pr", ps.PRNumber,
+			"resolved", resolved,
+			"total", len(ps.PendingResolveThreadIDs),
+		)
+	}
+	ps.PendingResolveThreadIDs = nil
+}
+
+// defaultSnapshotThreads fetches unresolved review thread IDs from GitHub.
+func (c *Controller) defaultSnapshotThreads(repo, prNumber string) ([]string, error) {
+	parts := strings.SplitN(repo, "/", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid repo format: %s", repo)
+	}
+	prNum, err := strconv.Atoi(prNumber)
+	if err != nil {
+		return nil, fmt.Errorf("invalid PR number: %s", prNumber)
+	}
+	threads, err := ghutil.NewGHCLIClient("").FetchReviewThreads(context.TODO(), parts[0], parts[1], prNum)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, t := range threads {
+		if !t.IsResolved {
+			ids = append(ids, t.ID)
+		}
+	}
+	return ids, nil
+}
+
+// StageLabel returns a human-readable label for dashboard display.
+func StageLabel(stage Stage) string {
+	switch stage {
+	case StageCIPending:
+		return "CI pending"
+	case StageCIFailed:
+		return "CI failed, fix running"
+	case StageCIPassed:
+		return "CI passed, reviewing"
+	case StageReviewPending:
+		return "review fix running"
+	case StageApproved:
+		return "approved, ready"
+	case StageNeedsRebase:
+		return "rebasing"
+	case StageMerging:
+		return "merging"
+	case StageMerged:
+		return "merged"
+	case StageStalled:
+		return "stalled"
+	case StageBudgetPaused:
+		return "budget paused, awaiting decision"
+	default:
+		return string(stage)
+	}
+}

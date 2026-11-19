@@ -30,6 +30,7 @@ project: {
 		"note-unit",
 		"exactjson-unit",
 		"pushpolicy-unit",
+		"pushreason-unit",
 		"change-unit",
 		"knot-unit",
 		"knot-agree",
@@ -278,6 +279,14 @@ project: {
 		requires: "approval-unit":   true
 		requires: "identity-unit":   true
 		requires: "integrator-unit": true
+	}
+
+	// The reason a failed mirror push is logged with. mirror-e2e runs it
+	// from the pusher a host renders.
+	classes: pushreason: {
+		paths: "pushreason/**":      true
+		requires: "pushreason-unit": true
+		requires: "mirror-e2e":      true
 	}
 
 	// The identity registry compiler, and the registries it is driven over.

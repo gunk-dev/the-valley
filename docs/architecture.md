@@ -39,6 +39,8 @@ The parts are:
 - `valley-restacker`, the restacker, which rebases ready changes onto `main` as its own principal,
   one controller for each project a host lists (`restack/`);
 - `valley-telemetry`, which collects host and workstation diagnostics (`telemetry/`);
+- `pushreason`, which makes git's output for a failed mirror push into the line the host logs
+  (`pushreason/`);
 - `approval`, which writes and verifies `the-valley/approval/v1` statements and signs them with a
   software key or YubiKey PIV slot (`approval/`, **implemented**). Storage and approval gates are
   **not built**;
@@ -581,8 +583,16 @@ branches, and those are theirs. Deleting a ref that a public mirror has already 
 unpublish it anyway, because forges keep its objects fetchable by SHA. The push uses the git user's
 own ssh identity, which the host provides. Checked by `mirror-e2e`.
 
+`valley-init` queues a push too. On every run, it writes an empty entry into the queue of each
+project with mirrors and a `main`. A mirror declared on a project with `main` is therefore pushed
+when the declaration is activated, not at the project's next move. Nothing records what a mirror was
+last sent, because a repeated push simply resends the current `main` and tags. A change to a
+project's mirrors reruns `valley-init` on activation, since its restart triggers name each mirrored
+project's pusher. A project without `main` has nothing to push yet, and its first move queues its
+first push. Checked by `mirror-e2e`.
+
 A repository that becomes a mirror keeps every ref it already holds. So the operator deletes what
-should not be published when declaring the mirror:
+should not be published before declaring the mirror:
 
 ```sh
 git ls-remote <url>               # list every ref the mirror holds
@@ -594,6 +604,18 @@ deletion fails, the service fails and the files stay. systemd then runs the serv
 delay that grows from 30 seconds to 15 minutes. A run that lasts 15 minutes is stopped with
 everything it started. Checked by `publish-e2e`, and the retry delays by `module-eval`. Because the
 integrator publishes its events itself, a mirror outage never delays an event on the bus.
+
+A failed push writes one line to the unit's journal and to the `valley-mirror` log: the project, the
+mirror's URL as declared, and the reason `pushreason` makes from git's error output. The reason
+keeps the last lines without git's own framing: the mirror's refusal (`remote:` lines and the
+rejected ref) or what stopped the connection. Any word holding `://`, `@`, `?`, `=` or `%`, the
+marks of an address or a parameter, is replaced whole by `[…]`, so no part of a credential in it is
+kept. A secret printed as a plain word still passes through. Invalid UTF-8 is replaced, a tab
+becomes a space, and other control characters are deleted. A line longer than 1 KiB is replaced
+whole, because cutting it could leave part of a credential without the mark that would drop it. The
+reason keeps at most its last 600 bytes, starting on a whole character. git's exit status, not the
+reason, decides that the push failed. `valley telemetry read --source mirrors --logs` reads the
+unit's journal. Checked by `pushreason-unit`, `mirror-e2e` and `publish-e2e`.
 
 Having one publisher is what keeps a mirror from being rewound. git reads the local refs before it
 contacts the mirror. So when two pushes run at once, one can read an old `main`, stall, and then

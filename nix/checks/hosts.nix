@@ -11,9 +11,9 @@
   stubbed ? false,
 }:
 let
-  # The stand-ins: the integrator, the identity compiler, valleyhook and
-  # the restacker, each a script with the program's name that fails if
-  # anything runs it.
+  # The stand-ins: the integrator, the identity compiler, valleyhook, the
+  # restacker and pushreason, each a script with the program's name that
+  # fails if anything runs it.
   # A host rendered over them renders the same units, hooks and scripts,
   # with the stand-ins' store paths where the programs' would be. None of
   # them changes when a program does, so a check that reads only what the
@@ -25,7 +25,7 @@ let
       echo "${name}: a stand-in the module checks render hosts over, which runs nothing" >&2
       exit 1
     '';
-  stubs = lib.genAttrs [ "integrator" "identity" "valleyhook" ] stub // {
+  stubs = lib.genAttrs [ "integrator" "identity" "valleyhook" "pushreason" ] stub // {
     restacker = stub "valley-restacker";
   };
 

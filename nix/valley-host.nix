@@ -646,16 +646,28 @@ let
   # ref the primary lacks, and on GitHub the read-only refs/pull/* makes
   # that fail every push, masking real replication failures.
   # The pusher exits non-zero when a replication push fails, and the drain
-  # retries on that.
+  # retries on that: git's exit status decides. A failure carries its
+  # reason, which pushreason (../pushreason) makes from git's error output:
+  # the remote's own words, with any word that looks like an address or
+  # carries a parameter dropped, in one line fit for the journal. The URL
+  # in the line is the declared one, as written: it is configuration the
+  # operator wrote, not text a remote chose. The line goes to the unit's
+  # output as well as the log, because the journal files the unit's output
+  # under the unit, and the unit's journal is what telemetry reads.
   mirrorPusher =
     name: mirrors:
     pkgs.writeShellScript "valley-mirror-push-${name}" ''
+      reason=${lib.getExe pushreasonPackage}
+      log() { ${pkgs.util-linux}/bin/logger -t valley-mirror "$1" || true; }
       status=0
       for url in ${lib.escapeShellArgs mirrors}; do
-        if ${pkgs.git}/bin/git push --prune "$url" '+refs/heads/main:refs/heads/main' '+refs/tags/*:refs/tags/*' >/dev/null 2>&1; then
-          ${pkgs.util-linux}/bin/logger -t valley-mirror "${name}: pushed to $url" || true
+        if why="$(${pkgs.git}/bin/git push --prune "$url" '+refs/heads/main:refs/heads/main' '+refs/tags/*:refs/tags/*' 2>&1 >/dev/null | "$reason"
+          exit "''${PIPESTATUS[0]}")"; then
+          log "${name}: pushed to $url"
         else
-          ${pkgs.util-linux}/bin/logger -t valley-mirror "${name}: push to $url FAILED" || true
+          msg="${name}: push to $url FAILED: $why"
+          log "$msg"
+          printf '%s\n' "$msg" >&2
           status=1
         fi
       done
@@ -732,7 +744,9 @@ let
   # through the mirror hook above. The integrator moves refs with
   # update-ref, which runs no post-receive hook, so it queues each landing
   # itself (integrator/bus.go). It runs as its own user, which does not hold
-  # the git user's mirror credentials and must not.
+  # the git user's mirror credentials and must not. valley-init queues one
+  # push of each mirrored project too, so a newly declared mirror is pushed
+  # without waiting for a move (publishQueueCommands, below).
   #
   # A single publisher is what keeps a mirror from being rewound. git reads
   # the local refs before it contacts the mirror, so two pushers running at
@@ -804,9 +818,39 @@ let
 
   # The queue directory of every published project. The integrator's
   # projects also get it group-shared, with the rest of the repository.
-  publishQueueCommands = lib.concatMapStrings (name: ''
-    mkdir -p ${lib.escapeShellArg "${cfg.dataDir}/${name}.git/${publishQueueName}"}
-  '') (lib.attrNames publishedProjects);
+  #
+  # Every run of valley-init also queues one push for each project with
+  # mirrors and a main: an empty entry, a push with no move recorded. So a
+  # mirror declared on a project that already has history is pushed when
+  # the declaration is activated, not at the project's next move. It
+  # queues on every run rather than keeping a record of what each mirror
+  # was last sent, because a repeated push is harmless. A project with no
+  # main has nothing to publish, and its push would fail and retry until
+  # it had one, so its first move queues its first push instead. Only git
+  # saying main is absent (rev-parse's 1) skips the push: a repository git
+  # cannot read is queued, so the drain fails and logs git's reason. A
+  # push that cannot be queued costs the mirror and not the host, so it
+  # warns.
+  publishQueueCommands = lib.concatStrings (
+    lib.mapAttrsToList (
+      name: p:
+      let
+        repo = lib.escapeShellArg "${cfg.dataDir}/${name}.git";
+        queue = lib.escapeShellArg "${cfg.dataDir}/${name}.git/${publishQueueName}";
+      in
+      ''
+        mkdir -p ${queue}
+      ''
+      + lib.optionalString (p.mirrors != [ ]) ''
+        absent=0
+        git -C ${repo} rev-parse --verify --quiet refs/heads/main >/dev/null || absent=$?
+        if [ "$absent" -ne 1 ]; then
+          : >${queue}/"$(date +%s%N)-declared" ||
+            echo "valley-init: could not queue a push of ${name} to its mirrors; they are pushed at its next move" >&2
+        fi
+      ''
+    ) publishedProjects
+  );
 
   # The post-receive.d hook that publishes a push's ref-updated events. The
   # publisher runs detached (setsid, inheriting the updates on stdin), so a
@@ -1130,6 +1174,7 @@ let
   # The program every project's pre-receive hook runs: the whole of the ref
   # policy (valleyhook/), built by this flake.
   valleyhookPackage = cfg.packages.valleyhook;
+  pushreasonPackage = cfg.packages.pushreason;
 
   # The grants declared by hand, in the format the compiler writes, so the
   # hook reads one format whichever wrote it. The holders of the approve
@@ -2340,6 +2385,14 @@ in
         defaultText = lib.literalExpression "(import ./packages.nix { inherit pkgs lib; }).valley-restacker";
         description = "The restacker, which each restacker controller runs.";
       };
+
+      pushreason = lib.mkOption {
+        type = lib.types.package;
+        internal = true;
+        default = flakePackages.pushreason;
+        defaultText = lib.literalExpression "(import ./packages.nix { inherit pkgs lib; }).pushreason";
+        description = "The reason a failed mirror push is logged with, which each mirror pusher runs.";
+      };
     };
   };
 
@@ -2752,6 +2805,14 @@ in
           map (name: "valley-integrator@${name}.service") (lib.attrNames integratedProjects)
         );
       unitConfig.RequiresMountsFor = cfg.dataDir;
+      # Each run queues a push to every mirrored project's mirrors, and the
+      # pushers name the mirrors. A mirror added to a project that already
+      # has one changes no line of the script, so the pushers are named
+      # here, and activation runs init again to queue the new mirror's
+      # first push.
+      restartTriggers = lib.mapAttrsToList (name: p: mirrorPusher name p.mirrors) (
+        lib.filterAttrs (_: p: p.mirrors != [ ]) gitProjects
+      );
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

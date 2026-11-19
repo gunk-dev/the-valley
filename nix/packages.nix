@@ -443,6 +443,16 @@ rec {
     meta.mainProgram = "valley-telemetry";
   };
 
+  # The reason a failed push is logged with (../pushreason): git's error
+  # output made one line fit for the journal and telemetry. The mirror
+  # pusher a host renders hands it what git printed. Go, standard library
+  # only.
+  pushreason = goModule {
+    pname = "valley-pushreason";
+    dir = ../pushreason;
+    meta.mainProgram = "pushreason";
+  };
+
   # The pre-receive hook's policy (valleyhook/): what a push may write to a
   # project a valley host serves. It validates a push to the plan graph
   # with the one reading of a graph the CLI shares (../knot), reads a

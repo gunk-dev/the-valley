@@ -796,20 +796,26 @@ directory should be owned by `git` with mode `0700`; the private key should have
 the mirror's host key through its administrator. The publisher runs as `git` and uses that account's
 SSH configuration.
 
-For an existing mirror, inspect its refs before cutover. Remove unwanted old refs explicitly; the
-publisher does not clean up old topic branches or project storage. Start with an empty mirror when
-possible. See [mirror cutover](./architecture.md#after-a-push-events-and-mirrors).
+For an existing mirror, inspect its refs before declaring it. Remove unwanted old refs explicitly;
+the publisher does not clean up old topic branches or project storage. Start with an empty mirror
+when possible. See [mirror cutover](./architecture.md#after-a-push-events-and-mirrors).
 
-After a test landing, inspect the publisher:
+Applying the configuration pushes the project's `main` and tags to each declared mirror, and every
+later move pushes them again. Inspect the publisher:
 
 ```sh
-sudo systemctl start valley-publish@demo
 sudo journalctl -u valley-publish@demo -n 50 --no-pager
 git ls-remote git@mirror.example:team/demo.git
 ```
 
-Its `main` should match the primary. The publisher sends `main` and tags, not the plan graph or
-other project storage. A mirror is not a backup of the valley.
+Its `main` should match the primary. A failed push is retried after a growing delay. Its log line
+ends with the reason the mirror or the connection gave, such as a branch rule that refuses the push
+or a key the mirror does not accept. An observer reads the same lines with
+`valley telemetry read --source mirrors --logs`. The reason is the remote's own words, with any word
+that looks like an address or carries a parameter removed. A secret printed as a plain word still
+passes through: the reason is for diagnosis, and whoever can read the host's journal or its
+telemetry can read it. The publisher sends `main` and tags, not the plan graph or other project
+storage. A mirror is not a backup of the valley.
 
 ### Back up and test a restore
 

@@ -221,6 +221,22 @@ let
     ];
   };
 
+  # mirrorHost with a second mirror on mirror-pilot, which already has one.
+  addedMirrorHost = mirrorHost.extendModules {
+    modules = [
+      {
+        services.valley.config = lib.mkForce (
+          pkgs.writeText "valley-added-mirror.cue" (
+            builtins.replaceStrings
+              [ ''"mirror-pilot": mirrors: ["../mirror.git"]'' ]
+              [ ''"mirror-pilot": mirrors: ["../mirror.git", "../second-mirror.git"]'' ]
+              (builtins.readFile ../../examples/hosts/mirrors.cue)
+          )
+        );
+      }
+    ];
+  };
+
   failedAssertions = builtins.filter (a: !a.assertion) (
     host.config.assertions
     ++ noBackupHost.config.assertions
@@ -786,6 +802,14 @@ let
     protectedHost.config.services.valley.pushPolicies.sealed.retainChangeRecords or null != true
     || protectedHost.config.services.valley.pushPolicies.open ? retainChangeRecords;
 
+  # Every run of valley-init queues a push to each mirrored project's
+  # mirrors. A mirror added beside another changes no line of its script,
+  # so the unit must change some other way, or activation would not run
+  # init and the new mirror would wait for the project's next move.
+  addedMirrorUnqueued =
+    mirrorHost.config.systemd.units."valley-init.service".text
+    == addedMirrorHost.config.systemd.units."valley-init.service".text;
+
   signersRenderedWithoutIntegrator =
     protectedHost.config.systemd.services ? valley-signers
     || protectedHost.config.systemd.paths ? valley-signers;
@@ -1340,6 +1364,8 @@ in
       throw "valley module-eval: the signers publisher must publish the controllers' own signers file and signing name into the instance repository, as the git user, writing nothing else, after valley-init and the compilation, at boot and whenever a file it publishes from changes, starting only while valley-init is active after success, which starts it, without ever starting valley-init"
     else if controllerApprovalInputsMisrendered then
       throw "valley module-eval: each controller must be handed the approval signers files the compiler writes, or none on a host that compiles no registry, and its project's push policy through its environment file"
+    else if addedMirrorUnqueued then
+      throw "valley module-eval: a mirror added to a project that already has one must change valley-init's unit, so activation runs init and queues the new mirror's first push"
     else if retentionMisrendered then
       throw "valley module-eval: a project that retains its change records must hand the hook retainChangeRecords = true, and one that does not must leave the key out"
     else if signerProjectsMisrendered then

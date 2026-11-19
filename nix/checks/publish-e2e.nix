@@ -197,9 +197,11 @@ in
           tree = f"{git} -C /srv/git/project.git rev-parse"
           assert host.succeed(f"{tree} {landing}^{{tree}}") == host.succeed(f"{tree} {change}^{{tree}}")
 
-      with subtest("a failed mirror push keeps the move queued and fails the run"):
+      # The failure's reason is in the unit's own journal, which is what
+      # telemetry reads for the mirrors source.
+      with subtest("a failed mirror push says why, keeps the move queued and fails the run"):
           host.wait_until_succeeds(
-              "journalctl -t valley-mirror | grep -q 'project: push to /srv/mirror.git FAILED'", timeout=60
+              "journalctl -u valley-publish@project -o cat | grep -q 'project: push to /srv/mirror.git FAILED: .'", timeout=60
           )
           host.wait_until_succeeds("test \"$(systemctl show -p SubState --value valley-publish@project)\" = auto-restart")
           host.succeed(f"test -n \"$(ls -A {queue})\"")

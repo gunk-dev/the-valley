@@ -3,10 +3,13 @@
 # a host would execute — never a copy of it written for the test.
 #
 # A check that pushes through the pre-receive hook runs the real valleyhook,
-# and takes the hosts that run it. mirror-e2e, bus-e2e and init-e2e run none
-# of this flake's programs: they drive what the module renders around them,
-# so they take the hosts rendered over stand-ins (nix/checks/hosts.nix), and
-# an edit to a program does not change them.
+# and takes the hosts that run it. bus-e2e and init-e2e run none of this
+# flake's programs: they drive what the module renders around them, so they
+# take the hosts rendered over stand-ins (nix/checks/hosts.nix), and an edit
+# to a program does not change them. mirror-e2e runs one, pushreason, which
+# the mirror pusher hands git's output to: it takes the host rendered over
+# stand-ins with the real pushreason put back, so an edit to any other
+# program does not change it.
 {
   pkgs,
   packages,
@@ -14,6 +17,11 @@
   stubbedHosts,
   ...
 }:
+let
+  mirrorHost = stubbedHosts.mirrorHost.extendModules {
+    modules = [ { services.valley.packages.pushreason = pkgs.lib.mkForce packages.pushreason; } ];
+  };
+in
 {
   # What a mirror ends up holding, end to end and unmocked: a bare
   # repo wired with the real rendered hooks, pushed to for real, the
@@ -32,8 +40,8 @@
   # move queued and publishes it next.
   mirror-e2e = pkgs.runCommand "valley-mirror-e2e" {
     nativeBuildInputs = [ pkgs.git ];
-    initScript = stubbedHosts.mirrorHost.config.systemd.services.valley-init.script;
-    publishUnit = stubbedHosts.mirrorHost.config.systemd.units."valley-publish@.service".text;
+    initScript = mirrorHost.config.systemd.services.valley-init.script;
+    publishUnit = mirrorHost.config.systemd.units."valley-publish@.service".text;
     passAsFile = [
       "initScript"
       "publishUnit"
@@ -50,6 +58,12 @@
 
   # The note envelope every reader of an attestation shares (note/).
   note-unit = packages.note.unit;
+
+  # The reason a failed mirror push is logged with (pushreason/): each
+  # rule that makes git's output fit for the journal, the words that could
+  # carry a credential among them. What a host logs from a real refusal is
+  # mirror-e2e's.
+  pushreason-unit = packages.pushreason.unit;
 
   # The strict JSON reading the hook reads its push policy with, the
   # identity compiler its registry, and read access a policy/read and the

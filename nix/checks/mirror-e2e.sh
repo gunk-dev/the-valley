@@ -202,4 +202,53 @@ drain race
 race_main_is "$new"
 [ "$(queued race.git)" -eq 0 ]
 
+# A mirror declared on a project that already has a main. The rendered
+# valley-init script runs as the host runs it, with the data directory
+# moved into the sandbox. It queues one push, and the drain publishes
+# main with no move of the primary in between. The projects init
+# creates have no main to publish, and nothing is queued for them.
+data="$TMPDIR/srv/git"
+mkdir -p "$data"
+sed "s|/srv/git|$data|g" "$initScriptPath" >init.sh
+git init --quiet --bare "$data/mirror-pilot.git"
+git init --quiet --bare "$data/mirror.git"
+git -C work push --quiet "$data/mirror-pilot.git" main
+tip="$(git -C work rev-parse HEAD)"
+bash init.sh
+[ "$(queued "$data/mirror-pilot.git")" -eq 1 ]
+[ "$(queued "$data/dead-mirror.git")" -eq 0 ]
+
+# The mirror refuses the push, at length: its reason is the last of a
+# thousand lines, one long line and one that would erase a terminal's
+# line, and names a URL with a credential in its userinfo and another in
+# its query. The drain fails and the push stays queued for the unit's
+# retry. The drain's output, which is the unit's, gives the mirror's
+# reason in one bounded line, the URL's word dropped, with no credential
+# and no control character.
+printf '%s\n' "#!$(command -v sh)" 'seq 1000' 'head -c 3000 /dev/zero | tr "\0" x; echo' \
+  "printf '\\033[2Kerased\\n'" \
+  'echo "main is protected: see https://operator:s3cret-token@example.org/rules?access_token=s3cret-token"' \
+  'exit 1' >"$data/mirror.git/hooks/pre-receive"
+chmod +x "$data/mirror.git/hooks/pre-receive"
+if (cd "$data" && drain mirror-pilot) 2>refused.err; then
+  echo "mirror-e2e: a drain whose mirror refused the push succeeded" >&2
+  exit 1
+fi
+cat refused.err
+[ "$(queued "$data/mirror-pilot.git")" -eq 1 ]
+refusal="$(grep -F 'main is protected: see […]' refused.err)" || {
+  echo "mirror-e2e: the refusal's reason is not in the drain's output" >&2
+  exit 1
+}
+if grep -q -e s3cret-token -e "$(printf '\033')" refused.err; then
+  echo "mirror-e2e: the drain's output carries a credential or a control character" >&2
+  exit 1
+fi
+[ "$(printf '%s\n' "$refusal" | wc -l)" -eq 1 ]
+[ "${#refusal}" -lt 1000 ]
+rm "$data/mirror.git/hooks/pre-receive"
+(cd "$data" && drain mirror-pilot)
+[ "$(git -C "$data/mirror.git" rev-parse main)" = "$tip" ]
+[ "$(queued "$data/mirror-pilot.git")" -eq 0 ]
+
 touch "$out"

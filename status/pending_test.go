@@ -354,15 +354,17 @@ func TestPendingStartsGitAsOftenWhateverItLists(t *testing.T) {
 	}
 }
 
-// A host that refuses the read of the worker's telemetry, as it does when
-// the principal already has every bounded request it may have open,
-// leaves main's line without the worker's runs: pending says why once,
-// asks the host once, and prints main's line from the walk alone.
+// A host that refuses the read of the worker's telemetry and sources, as
+// it does when the principal already has every bounded request it may
+// have open, leaves main's line without the worker's runs and prints no
+// host entry: pending asks each operation once, says why once on stderr
+// (no extra warning for sources), and prints main's line from the walk
+// alone.
 func TestPendingAsksARefusingHostOnce(t *testing.T) {
 	dir := t.TempDir()
 	starts := toolsOnPath(t, dir, "git", "cue")
-	refusal := `{"kind":"error","error":"operator already has 4 bounded requests open; try again when one ends"}`
-	ssh := fmt.Sprintf("#!/bin/sh\necho ssh >> '%s'\necho '%s'\n", starts, refusal)
+	refusal := fmt.Sprintf(`{"kind":"error","error":%q}`, telemetry.SlotRefusal("operator", telemetry.BoundedSlots, "bounded"))
+	ssh := fmt.Sprintf("#!/bin/sh\necho \"$*\" >> '%s'\necho '%s'\n", starts, refusal)
 	if err := os.WriteFile(filepath.Join(dir, "bin", "ssh"), []byte(ssh), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -374,13 +376,16 @@ func TestPendingAsksARefusingHostOnce(t *testing.T) {
 		t.Fatalf("pending: %s", stderr.String())
 	}
 	log, _ := os.ReadFile(starts)
-	if n := strings.Count(string(log), "ssh"); n != 1 {
-		t.Errorf("pending asked the refusing host %d times", n)
+	if n := strings.Count(string(log), "valley-telemetry read"); n != 1 {
+		t.Errorf("pending asked the refusing host for worker reads %d times:\n%s", n, log)
+	}
+	if n := strings.Count(string(log), "valley-telemetry sources"); n != 1 {
+		t.Errorf("pending asked the refusing host for sources %d times:\n%s", n, log)
 	}
 	if n := strings.Count(stderr.String(), "refused"); n != 1 || strings.Count(stderr.String(), "\n") != 1 {
 		t.Errorf("pending said, of the refusal:\n%s", stderr.String())
 	}
-	if !strings.HasPrefix(stdout.String(), "main  ◐ clearing · f-1 due · covers ") {
+	if !strings.HasPrefix(stdout.String(), "main  ◐ clearing · f-1 due · covers ") || strings.Contains(stdout.String(), "host  ") {
 		t.Errorf("pending's main line, with the host refusing:\n%s", stdout.String())
 	}
 }
@@ -418,10 +423,11 @@ func TestPendingEndsAReadNobodyWaitsFor(t *testing.T) {
 	}
 	dir := t.TempDir()
 	toolsOnPath(t, dir, "git", "cue")
-	// ssh is the host: it says the answer's first line, and stalls as a
-	// sleep of a length nothing else in this process sleeps.
+	// ssh is the host: it answers sources with nothing unhealthy, and on
+	// the worker read says the answer's first line and stalls as a sleep
+	// of a length nothing else in this process sleeps.
 	header := `{"kind":"header","host":"valley-host","format":"valley-telemetry/v1"}`
-	stall := fmt.Sprintf("#!/bin/sh\necho '%s'\nexec sleep 86399\n", header)
+	stall := fmt.Sprintf("#!/bin/sh\necho '%s'\ncase \"$*\" in *\"valley-telemetry sources\"*) echo '{\"kind\":\"end\"}'; exit 0 ;; esac\nexec sleep 86399\n", header)
 	if err := os.WriteFile(filepath.Join(dir, "bin", "ssh"), []byte(stall), 0o755); err != nil {
 		t.Fatal(err)
 	}

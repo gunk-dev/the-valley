@@ -33,13 +33,14 @@ func TestAReadKeepsTheLastOfWhatSSHSaid(t *testing.T) {
 	}
 }
 
-// One valley pending's history reads its older pages of the worker's
-// stream at once, and a host whose collector gives the principal
-// telemetry.BoundedSlots bounded slots admits every one: each page's
-// build is read, none refused. Each older page's read joins a barrier
-// and tells it whether it took a slot; an admitted one keeps its slot and
-// answers only once every older page has told, so the slots held when
-// the last one tells are held at once, and every one must be.
+// One valley pending runs its older worker-history pages and its host
+// sources read at once, and a host whose collector gives the principal
+// telemetry.BoundedSlots bounded slots admits every one: every page's
+// build and the sources answer are read, none refused. Each concurrent
+// read joins a barrier and tells it whether it took a slot; an admitted
+// one keeps its slot and answers only once every concurrent read has
+// told, so the slots held when the last one tells are held at once, and
+// every one must be.
 func TestAHistoryReadFitsTheBoundedSlots(t *testing.T) {
 	dir, bin := t.TempDir(), t.TempDir()
 	if err := os.Symlink(os.Args[0], filepath.Join(bin, "ssh")); err != nil {
@@ -52,6 +53,7 @@ func TestAHistoryReadFitsTheBoundedSlots(t *testing.T) {
 		t.Fatal(err)
 	}
 	older := costRecords/telemetry.MaxReadLimit - 1
+	concurrent := older + 1 // older history pages + sources
 	held := make(chan int, 1)
 	go func() {
 		var joined []net.Conn
@@ -61,7 +63,7 @@ func TestAHistoryReadFitsTheBoundedSlots(t *testing.T) {
 			}
 		}()
 		n := 0
-		for len(joined) < older {
+		for len(joined) < concurrent {
 			c, err := barrier.Accept()
 			if err != nil {
 				held <- -1
@@ -83,41 +85,53 @@ func TestAHistoryReadFitsTheBoundedSlots(t *testing.T) {
 		}
 		held <- n
 	}()
-	builds, _, _, why := readBuilds(context.Background(), sshDest{host: "valley-host"})
+	dest := sshDest{host: "valley-host"}
+	type sourcesResult struct {
+		entries []jsonHostSource
+		err     error
+	}
+	sourcesDone := make(chan sourcesResult, 1)
+	go func() {
+		entries, err := readHostSources(context.Background(), dest)
+		sourcesDone <- sourcesResult{entries, err}
+	}()
+	builds, _, _, why := readBuilds(context.Background(), dest)
+	sr := <-sourcesDone
 	barrier.Close()
-	if n := <-held; n != older {
-		t.Errorf("%d of the %d older pages' reads held a slot at once", n, older)
+	if n := <-held; n != concurrent {
+		t.Errorf("%d of the %d concurrent bounded reads held a slot at once", n, concurrent)
 	}
 	if pages := costRecords / telemetry.MaxReadLimit; why != "" || len(builds) != pages {
 		t.Errorf("the history read %d of %d pages' builds: %q", len(builds), pages, why)
+	}
+	if sr.err != nil || len(sr.entries) != 1 || sr.entries[0].Source != "mirrors" {
+		t.Errorf("sources read = %+v, %v; want mirrors failed", sr.entries, sr.err)
 	}
 }
 
 // fakePooledSSH is a host whose collector admits telemetry.BoundedSlots
 // reads at once, as it does for one principal, and refuses any more. The
-// newest page answers at once. An older page's read joins the test's
-// barrier, tries for a slot and tells the barrier whether it holds one;
-// admitted, it answers once the barrier says go, and fails when the
-// barrier closes without saying it.
+// newest worker page answers at once. Each older page's read and the
+// sources read join the test's barrier, try for a slot and tell the
+// barrier whether they hold one; admitted, each answers once the barrier
+// says go, and fails when the barrier closes without saying it.
 func fakePooledSSH(dir string, args []string) int {
 	_, command, ok := sshDestCommand(args)
 	if !ok {
 		return 255
 	}
 	req, err := telemetry.ParseCommand(command)
-	if err != nil || req.Op != telemetry.OpRead {
+	if err != nil || (req.Op != telemetry.OpRead && req.Op != telemetry.OpSources) {
 		return 1
 	}
 	answer := func(seq, end int64) {
 		fmt.Printf(`{"kind":"record","stream":"worker","seq":%d,"type":"check.result","project":"app","tree":"t1","check":"c-%d","data":{"result":"passed","build_ms":1000}}`+"\n", seq, seq)
 		fmt.Printf(`{"kind":"end","cursor":"worker=0123456789abcdef:%d"}`+"\n", end)
 	}
-	if req.Cursor == "" {
+	if req.Op == telemetry.OpRead && req.Cursor == "" {
 		answer(costRecords, costRecords)
 		return 0
 	}
-	cursor, _ := telemetry.ParseCursor(req.Cursor)
-	after := cursor["worker"].Seq
 	barrier, err := net.Dial("unix", filepath.Join(dir, "barrier"))
 	if err != nil {
 		return 1
@@ -144,6 +158,14 @@ func fakePooledSSH(dir string, args []string) int {
 	if said, _ := bufio.NewReader(barrier).ReadString('\n'); said != "go\n" {
 		return 1
 	}
+	if req.Op == telemetry.OpSources {
+		fmt.Println(`{"kind":"header","host":"valley-host","format":"valley-telemetry/v1"}`)
+		fmt.Println(`{"kind":"source","name":"mirrors","state":"failed","detail":"valley-publish@app.service: activating, result exit-code, status 1","unit_states":[{"Id":"valley-publish@app.service","ActiveState":"activating","Result":"exit-code","ExecMainStatus":"1"}]}`)
+		fmt.Println(`{"kind":"end","truncated":false}`)
+		return 0
+	}
+	cursor, _ := telemetry.ParseCursor(req.Cursor)
+	after := cursor["worker"].Seq
 	answer(after+1, after+telemetry.MaxReadLimit)
 	return 0
 }

@@ -351,8 +351,8 @@ in
 
     # One collector per connection, which only the git user can make. At
     # most 16 at once; each principal's own slots are the collector's
-    # (four follows, four bounded requests, one report), so one principal
-    # at every bound holds 9 of them. A connection that outlives the
+    # (four follows, five bounded requests, one report), so one principal
+    # at every bound holds 10 of them. A connection that outlives the
     # longest follow is killed.
     systemd.sockets.valley-telemetry = {
       description = "The valley telemetry collector's socket";

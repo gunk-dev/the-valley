@@ -3386,11 +3386,18 @@ commit comes first. Every line fits the terminal's width, or 80 columns when std
 terminal. A title is cut short with `…`, and a handle or a branch never is. On a terminal, names are
 bold, unless `NO_COLOR` is set.
 
+`valley pending` reads host telemetry once alongside `origin` (`implemented`,
+`status/hostsources.go`). Its `host` entries describe the host as a whole, even when the listing
+covers several projects. A listing without `host` entries can mean the sources are healthy or that
+telemetry was unavailable to the caller. See the [`pending` output](./reference.md#valley-pending)
+for the states, unit names and log commands it shows.
+
 `valley pending --json` prints `valley-pending/v1`. It has the shape of `valley-changes/v1`, with
-the human view's sections. `changes` holds only the ready changes that have not landed. Each
-repository has a `drafts` array as well, holding the drafts, with the same entry shape, including
-`knots`, and with `--drafts --checks` the `checks` of each draft that has not landed. `branches` is
-the same as in `valley-changes/v1`. Its `includes` counts only changes that have not landed.
+the human view's sections and a top-level `host_sources` array for the same host entries. `changes`
+holds ready changes that have yet to land. Each repository has a `drafts` array with the same entry
+shape, including `knots`. With `--drafts --checks`, it includes `checks` for drafts that have yet to
+land. `branches` follows `valley-changes/v1`, and its `includes` counts changes that have yet to
+land.
 
 Each change in `changes` has `approved`: `true` when its active version has an integration request
 at its head, or when an earlier version's request carries its approval to the active version, as
@@ -5226,22 +5233,21 @@ wrote is lifecycle, shown by default; anything else is the unit's own output, sh
 `--logs`. Reports from each reporter go into a stream of the collector's own, at most 4 MiB per
 reporter.
 
-Each principal's open requests take slots from separate pools by kind: four follows, four bounded
+Each principal's open requests take slots from separate pools by kind: four follows, five bounded
 requests (`sources`, `snapshot`, and `read`), and one `report` (`implemented`). A follow holds its
 connection for up to 300 seconds; a bounded request holds it until its answer ends, capped by the
 read limits rather than duration. Separate pools keep a principal's follows from causing its reads
-to be refused, and four bounded slots hold the four older pages `valley pending` reads at once. Each
-slot is a lock file in the collector's state directory, named for the principal and kind and locked
-by the collector holding it, so a collector that dies releases it. A request beyond its pool is
-refused, naming the kind that is full.
+to be refused. Five bounded slots let `valley pending` read host sources while it reads four pages
+of worker telemetry. The collector holds each slot with a file lock that releases on exit. A request
+beyond its pool is refused, naming the kind that is full.
 
 A follow without a source receives every stream, so a client watching all streams holds one follow
 and leaves three per principal for concurrent `valley checks --build` waits; a fifth concurrent
 follow is refused, and `--build` then waits by rereading `origin`. The socket's 16 connections bound
-all principals together: one principal at every bound holds nine, and several principals' follows
-can fill the socket, which drops any further connection unanswered. If a collector upgrade changes
-the slot lock names, earlier collectors keep holding locks the new pools do not count; until those
-exit within 360 seconds, a principal can exceed its pools up to the socket's bound.
+all principals together: one principal at every bound holds ten, and several principals' follows can
+fill the socket, which drops any further connection unanswered. If a collector upgrade changes the
+slot lock names, earlier collectors keep holding locks the new pools do not count; until those exit
+within 360 seconds, a principal can exceed its pools up to the socket's bound.
 
 A source's state says what can be said about it. A run recorded as started, with no end and no unit
 of the source running, reads as `stale`, because a killed process records no end of its own. A
@@ -5259,7 +5265,7 @@ as idle.
 | A read                 | 1000 records, 4 MiB, logs' last 64 KiB each                          |
 | A follow               | 300 seconds; the unit is killed after 360                            |
 | A report               | 1000 records, 1 MiB, 30 seconds                                      |
-| Connections            | 16 at once; per principal, 4 follows, 4 bounded requests, 1 report   |
+| Connections            | 16 at once; per principal, 4 follows, 5 bounded requests, 1 report   |
 | The collector          | 256 MiB of memory, 32 tasks, half a CPU                              |
 | The journal            | the host's own journal settings; each source reports `journal_since` |
 

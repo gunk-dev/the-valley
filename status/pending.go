@@ -4,7 +4,12 @@
 // It opens with main's state (mainstate.go), one line for each project
 // whose policy has classes that checks follow: clear, clearing or muddy.
 // A project with no follow check has no line. A project that did not read
-// says why on a line of its own.
+// says why on a line of its own. Beside those lines, one host entry for
+// each host telemetry source whose state is failed, stale or unavailable
+// (hostsources.go) gives the collector's reason, each failing unit when
+// several fail, and the command that reads its logs; healthy sources, a
+// caller without the observe grant, and a host with no collector print
+// nothing.
 //
 // Then come two sections over every project listed, from the queue
 // (queue.go). needs you holds the ready changes that wait on an approval,
@@ -133,11 +138,12 @@
 // glyphs coloured, unless NO_COLOR is set.
 //
 // With --json it prints valley-pending/v1: valley-changes/v1's shape, with
-// the pending changes alone in changes, each marked approved or not, the
-// drafts in an array of their own, drafts, and the same branches. Each
-// pending change carries conflicts and conflicts_unknown. --checks gives
-// each pending change its checks object, and with --drafts each draft that
-// has not landed too.
+// the host's unhealthy telemetry sources in host_sources, the pending
+// changes alone in changes, each marked approved or not, the drafts in an
+// array of their own, drafts, and the same branches. Each pending change
+// carries conflicts and conflicts_unknown. --checks gives each pending
+// change its checks object, and with --drafts each draft that has not
+// landed too.
 
 package main
 
@@ -253,9 +259,10 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	// The worker's telemetry, which main's lines and the checks read, is
-	// read while origin is, so they wait on it only once the rest is read.
-	// A read nobody waited for is cancelled as the command ends.
+	// The worker's telemetry, which main's lines and the checks read, and
+	// the host's telemetry sources are read while origin is, so they wait
+	// on them only once the rest is read. A read nobody waited for is
+	// cancelled as the command ends.
 	c := newCosts()
 	defer c.close()
 	if !l.asJSON || l.checks {
@@ -263,6 +270,8 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 			c.start(s.g)
 		}
 	}
+	hs := startHostSources(g, list)
+	defer hs.close()
 	repos := readSources(list, newVerifier())
 	defer closeSources(repos)
 	readKnots(repos, l.verbose, stderr)
@@ -282,9 +291,11 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 			utf8Branches(&view, stderr)
 			doc.Repos = append(doc.Repos, view)
 		}
+		entries := hs.wait()
+		doc.HostSources = &entries
 		return writeDocument(stdout, doc)
 	}
-	writePending(repos, h, l, c, stdout, stderr, terminalOf(stdout), len(repos) > 1 || l.all || l.repo != "")
+	writePending(repos, h, l, c, hs, stdout, stderr, terminalOf(stdout), len(repos) > 1 || l.all || l.repo != "")
 	return nil
 }
 
@@ -326,9 +337,9 @@ type entry struct {
 }
 
 // writePending prints the listing of every repository: the main lines,
-// needs you, moving, and the drafts and branches. named says whether each
-// line names its project.
-func writePending(repos []listed, h handleMap, l listing, c *costs, w, stderr io.Writer, t terminal, named bool) {
+// any unhealthy host sources, needs you, moving, and the drafts and
+// branches. named says whether each line names its project.
+func writePending(repos []listed, h handleMap, l listing, c *costs, hs *hostSources, w, stderr io.Writer, t terminal, named bool) {
 	p := func(format string, args ...any) { fmt.Fprintf(w, format, args...) }
 	head := false
 	for _, r := range repos {
@@ -341,6 +352,10 @@ func writePending(repos []listed, h handleMap, l listing, c *costs, w, stderr io
 			p("%s\n", line)
 			head = true
 		}
+	}
+	for _, line := range t.hostLines(hs.wait()) {
+		p("%s\n", line)
+		head = true
 	}
 	if head {
 		p("\n")

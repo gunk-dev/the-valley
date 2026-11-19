@@ -193,6 +193,21 @@ carries no `Change-Id`. `muddy` names each check whose newest run on `main` fail
 evaluate since its last pass (see
 [Follow runs and main's state](architecture.md#follow-runs-and-mains-state)).
 
+With the host's telemetry `observe` grant, `valley pending` prints one `host` entry alongside `main`
+for each `failed`, `stale`, or `unavailable` source. The `see:` line gives the log command.
+
+```text
+host  mirrors  failed · valley-publish@app.service: activating, result exit-code, status 1
+      see: valley telemetry read --source mirrors --logs
+```
+
+Each entry shows the collector's one-line detail. When several units fail, the entry lists up to
+five failing units on separate lines and counts any others as `and N more`. With `--all`, each entry
+still appears once for the host.
+
+Sources in `idle`, `active`, or `disabled` state produce no entry. A missing collector or a key
+without the `observe` grant also produces no entry or warning.
+
 Two sections follow, then one line of counts:
 
 ```text
@@ -302,8 +317,9 @@ valley pending [--all] [--repo <name>] [--checks] [--drafts] [--branches] [--jso
     each draft that has not landed.
   - `--drafts`, `--branches`: List the drafts, or the branches no change is on, as blocks in place
     of their count. Each listing stacks its own entries.
-  - `--json`: Emits [`valley-pending/v1`](#valley-changesv1-and-valley-pendingv1) JSON. Each change
-    in `changes` has `approved`, `conflicts` and `conflicts_unknown` fields.
+  - `--json`: Emits [`valley-pending/v1`](#valley-changesv1-and-valley-pendingv1) JSON. Includes
+    `host_sources` at the top level; each change in `changes` has `approved`, `conflicts` and
+    `conflicts_unknown` fields.
   - `-v`: Follows each row with its block, with its stack drawn in full and its full check state,
     and warns on `stderr` when a project's plan graph (`refs/the-valley/knots`) cannot be read.
   - `--known-signers <file>`, `--integrator-name <name>`: The known-signers file and the
@@ -1024,7 +1040,7 @@ The operations:
 - `flush`: send this workstation's spooled records now, each spool to its own destination (see
   [The telemetry spool](#the-telemetry-spool)).
 
-A principal may have four follows, four bounded requests (`sources`, `snapshot`, and `read`), and
+A principal may have four follows, five bounded requests (`sources`, `snapshot`, and `read`), and
 one `report` open on a host at once. Follows and bounded requests draw from separate pools, so a
 principal's own follows never cause its reads to be refused. A request beyond its pool is refused,
 naming the kind that is full, such as
@@ -1032,7 +1048,7 @@ naming the kind that is full, such as
 is admitted. Each principal can run three `valley checks --build` waits alongside a client following
 every stream on one connection; a fifth concurrent follow is refused, and `--build` then waits by
 rereading `origin`. The pools bound each principal, and the host's 16 telemetry connections bound
-all principals together: one principal at every bound holds 9, and several principals' follows can
+all principals together: one principal at every bound holds 10, and several principals' follows can
 fill all 16. Until one ends, any further connection is dropped unanswered and reads as an answer
 that did not end.
 
@@ -2908,6 +2924,7 @@ Five `--json` commands emit versioned JSON documents for scripts and front ends.
 {
   "schema": "valley-pending/v1",
   "host": "git@valley.example",
+  "host_sources": [],
   "repos": [
     {
       "repo": "demo",
@@ -2930,6 +2947,11 @@ Five `--json` commands emit versioned JSON documents for scripts and front ends.
   - `schema`: `"valley-changes/v1"` or `"valley-pending/v1"`.
   - `host` (`string`): Host prefix derived from `origin`'s URL (URL minus the final `/<repo>` or
     `:<repo>` segment).
+  - `host_sources` (`array`, **present only in `valley-pending/v1`**): Sources the collector reports
+    as `"failed"`, `"stale"`, or `"unavailable"`. Each entry has `source`, `state`, and `reason`
+    strings. `reason` is the collector's one-line detail. `units` is an array of all failing unit
+    names, or `[]` when none are failing. `host_sources` is `[]` when no source matches, the caller
+    lacks `observe`, or the host has no collector.
   - `repos` (`array` of repository objects):
     - `repo` (`string`), `url` (`string`), `error` (`string` or `null`). When `error` is non-null,
       `changes` and `branches` are `[]` (and `drafts` is `[]` in `valley-pending/v1`).

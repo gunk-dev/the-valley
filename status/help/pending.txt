@@ -5,8 +5,16 @@ usage: valley pending [--all] [--repo <name>] [--checks] [--drafts] [--branches]
                    list what waits on you and what is moving. one line
                    on main's state comes first for each project whose
                    policy declares follow checks: clear, clearing or
-                   muddy. needs you holds the ready changes that wait on
-                   an approval, one numbered row each in landing order:
+                   muddy. beside those lines, when your key holds the
+                   host's telemetry observe grant, one host entry is
+                   printed for each host automation whose state is
+                   failed, stale or unavailable, with the collector's
+                   reason, each failing unit when several fail, and
+                   the valley telemetry read command for its logs;
+                   healthy sources, no observe grant, and no collector
+                   print nothing. needs you holds the ready changes
+                   that wait on an approval, one numbered row each in
+                   landing order:
                    oldest ready first, as the check worker builds them,
                    then by project and change id. a row gives the
                    handle and active version, its checks as passed out of
@@ -72,10 +80,12 @@ usage: valley pending [--all] [--repo <name>] [--checks] [--drafts] [--branches]
                                   `on <base>`
                      --json       print valley-pending/v1: the
                                   valley-changes/v1 shape, with the
-                                  pending changes in changes, each
-                                  marked approved or not, with its
-                                  conflicts and conflicts_unknown, and
-                                  the drafts in drafts
+                                  host's unhealthy telemetry sources in
+                                  host_sources, the pending changes in
+                                  changes, each marked approved or not,
+                                  with its conflicts and
+                                  conflicts_unknown, and the drafts in
+                                  drafts
                      -v           follow each row with its block, its
                                   stack drawn in full, with what its
                                   head includes, `uncertain` when it may

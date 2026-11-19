@@ -20,7 +20,7 @@ usage: valley telemetry [--remote <remote>] [--json] <operation> [flags]
   flush                   send this workstation's spooled records now
 
 Reading needs a key whose principal holds the host's observe grant. A
-principal may have four follows and four bounded requests (sources,
+principal may have four follows and five bounded requests (sources,
 snapshot, read) open on a host at once; one more of a kind is refused
 until one ends. The remote is the checkout's valley.telemetry.remote, else
 origin, or the one --remote names (a remote, an ssh URL, or

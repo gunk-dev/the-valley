@@ -250,7 +250,8 @@ valley review kqxm
 A change can land on its fast checks while slower ones follow it: the host's worker runs those on
 `main` when nothing waits, one run covering every landing since their last pass. `pending` opens
 with whether `main` is `clear`, `clearing` while they run, or `muddy` when one failed, with the
-landings it covers.
+landings it covers. If your key has the telemetry `observe` grant, look there for `host` entries
+about failed, stale, or unavailable automation. Each entry points you to its logs.
 
 `pending` lists the changes waiting on your approval under `needs you`, one row each, numbered in
 the order they would land, with their checks and how long they have been ready. A stack is one row,
@@ -400,8 +401,8 @@ the bus; it is not a history viewer. See
 
 Telemetry lets a session see what the host's components are doing without a shell on the host: the
 check worker and the builds it runs, the integrators, the registry compiler, the signers publisher,
-the publish queues, the bus, the web publisher, backups, `valley-init` and the build slice. It is
-diagnostics. It never approves anything and never stands in for evidence.
+the publish queues, the bus, the web publisher, backups, `valley-init` and the build slice. Use
+telemetry to diagnose host behaviour. It has no role in approval or evidence.
 
 An observer reads it with the same SSH key it pushes with:
 

@@ -43,9 +43,12 @@ const (
 
 // The valley-changes/v1 object.
 type jsonChanges struct {
-	Schema string     `json:"schema"`
-	Host   string     `json:"host"`
-	Repos  []jsonRepo `json:"repos"`
+	Schema string `json:"schema"`
+	Host   string `json:"host"`
+	// HostSources is valley-pending/v1's alone: host telemetry sources
+	// whose state is failed, stale or unavailable (hostsources.go).
+	HostSources *[]jsonHostSource `json:"host_sources,omitempty"`
+	Repos       []jsonRepo        `json:"repos"`
 }
 
 type jsonRepo struct {
@@ -718,6 +721,16 @@ func walkStrings(doc any, f func(string)) {
 	case jsonChanges:
 		f(d.Schema)
 		f(d.Host)
+		if d.HostSources != nil {
+			for _, h := range *d.HostSources {
+				f(h.Source)
+				f(h.State)
+				f(h.Reason)
+				for _, u := range h.Units {
+					f(u)
+				}
+			}
+		}
 		for _, r := range d.Repos {
 			walkStrings(r, f)
 		}

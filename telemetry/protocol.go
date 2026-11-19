@@ -65,10 +65,10 @@ const (
 // snapshot, read) draw from pools of their own, so a principal's follows
 // never refuse its reads. BoundedSlots holds the reads one valley pending
 // runs at once: its history asks for four older pages together
-// (status/checkcost.go).
+// (status/checkcost.go) alongside its sources read (status/hostsources.go).
 const (
 	FollowSlots  = 4
-	BoundedSlots = 4
+	BoundedSlots = 5
 	ReportSlots  = 1
 )
 

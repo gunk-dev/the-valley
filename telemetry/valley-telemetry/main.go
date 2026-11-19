@@ -164,8 +164,8 @@ func (c *collector) handle(in *bufio.Reader, conn net.Conn) int {
 // telemetry.ReportSlots for a report, and telemetry.BoundedSlots for any
 // other request. The pools bound each principal; the socket's
 // MaxConnections (16, nix/telemetry.nix) bounds every principal's
-// requests together, so one principal at every bound holds 9 connections
-// and leaves 7 to all others. A slot is a lock file named for the
+// requests together, so one principal at every bound holds 10 connections
+// and leaves 6 to all others. A slot is a lock file named for the
 // principal and the kind; the lock is the open file's, so a collector
 // that dies releases it.
 func (c *collector) slot(req telemetry.Request) (func(), error) {

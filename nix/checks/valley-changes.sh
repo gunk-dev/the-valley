@@ -868,6 +868,10 @@ if [ -e "$TELEMETRY_DIR/refuse" ]; then
   printf '%s\n' '{"kind":"error","error":"alice holds no observe grant"}'
   exit 1
 fi
+if [ "$command" = "valley-telemetry sources" ]; then
+  printf '%s\n%s\n' '{"kind":"header","host":"valley-host","format":"valley-telemetry/v1"}' '{"kind":"end","truncated":false}'
+  exit 0
+fi
 since=-1
 for word in $command; do
   case "$word" in --since=worker=*) since="${word##*:}" ;; esac
@@ -942,7 +946,8 @@ after '^  4  klkl v1  ' '^     chk-pass$' '^     requires 1 quick check, 0 slow$
 after '^  ✗ kmkm v1  prose-format failed$' '^    requires 1 quick check, 0 slow$' \
   '^    checks: 1 failed \(prose-format\) in 1m1s \(eval 23s\)$'
 after '^  5  knkn v1  ' '^     chk-none$' '^     requires 1 quick check, 0 slow$' '^     checks: 1 pending$'
-[ "$(wc -l < "$tel/ssh.log")" = 2 ] || fail "pending read the worker's telemetry otherwise than in two pages: $(cat "$tel/ssh.log")"
+[ "$(grep -c '^valley-telemetry read ' "$tel/ssh.log")" = 2 ] || fail "pending read the worker's telemetry otherwise than in two pages: $(cat "$tel/ssh.log")"
+[ "$(grep -cx 'valley-telemetry sources' "$tel/ssh.log")" = 1 ] || fail "pending did not read host sources once: $(cat "$tel/ssh.log")"
 # review shows the same line just before its prompt, whole: it is paged,
 # not fitted to a terminal. It reads the line while it shows the diff and
 # does not wait for it, so this run is told to wait.

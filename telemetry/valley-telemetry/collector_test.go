@@ -235,11 +235,12 @@ func TestFollowStreamsBuildOutputAsItIsWritten(t *testing.T) {
 }
 
 // A principal's follows and its bounded requests draw from pools of
-// their own: four bounded requests at once are admitted, as one valley
-// pending's history reads four pages together (status/checkcost.go); with
-// every follow slot held, a sources, snapshot and read are answered and a
-// fifth follow is refused, naming follows; with every bounded slot held,
-// a read is refused, naming them, and a follow is admitted.
+// their own: five bounded requests at once are admitted, as one valley
+// pending reads four older history pages alongside sources
+// (status/checkcost.go, status/hostsources.go); with every follow slot
+// held, a sources, snapshot and read are answered and a fifth follow is
+// refused, naming follows; with every bounded slot held, a read is
+// refused, naming them, and a follow is admitted.
 func TestFollowsAndBoundedRequestsTakeSeparateSlots(t *testing.T) {
 	c, out, _ := testCollector(t)
 	as := func(op string) telemetry.Request { return telemetry.Request{V: 1, Principal: "operator", Op: op} }
@@ -267,7 +268,7 @@ func TestFollowsAndBoundedRequestsTakeSeparateSlots(t *testing.T) {
 		}
 	}
 
-	for _, release := range hold(telemetry.OpRead, 4) {
+	for _, release := range hold(telemetry.OpRead, telemetry.BoundedSlots) {
 		release()
 	}
 
@@ -283,7 +284,7 @@ func TestFollowsAndBoundedRequestsTakeSeparateSlots(t *testing.T) {
 	}
 
 	bounded := hold(telemetry.OpSnapshot, telemetry.BoundedSlots)
-	refused(telemetry.OpRead, "4 bounded requests")
+	refused(telemetry.OpRead, "5 bounded requests")
 	hold(telemetry.OpFollow, 1)[0]()
 	for _, release := range bounded {
 		release()

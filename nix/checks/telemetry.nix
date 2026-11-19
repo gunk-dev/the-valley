@@ -509,6 +509,30 @@ in
           shown = host.succeed("valley telemetry --remote git@localhost:project.git read --source=host-probe --logs")
           assert "host-probe says why" in shown and "untrusted output" in shown, shown
           assert "host-probe says why" not in json.dumps(observe("read --source=host-probe")), "lifecycle only without --logs"
+          # valley pending surfaces the failed unit (and any unavailable source)
+          # above needs you for an observer, once across --all, and carries it
+          # in --json; a caller without observe sees no host entry and no warning.
+          host.succeed("git clone --quiet git@localhost:project.git /root/project && git -C /root/project config valley.principal operator")
+          pending_op = host.succeed("cd /root/project && valley pending")
+          assert "host  host-probe  failed · host-probe.service: failed, result exit-code, status 3\n      see: valley telemetry read --source host-probe --logs\n" in pending_op, pending_op
+          assert pending_op.index("host  host-probe") < pending_op.index("nothing needs you"), pending_op
+          assert "host  remote-receiver  unavailable · " in pending_op, pending_op
+          for ok_name in ["worker", "integrator", "identity", "signers", "mirrors", "convergence", "telemetry", "bus", "backup"]:
+              assert f"host  {ok_name}  " not in pending_op, (ok_name, pending_op)
+          pending_all = host.succeed("cd /root/project && valley pending --all")
+          assert pending_all.count("host  host-probe  ") == 1, pending_all
+          pending_json = json.loads(host.succeed("cd /root/project && valley pending --json"))
+          by_src = {h["source"]: h for h in pending_json["host_sources"]}
+          assert by_src["host-probe"]["state"] == "failed" and by_src["host-probe"]["units"] == ["host-probe.service"], by_src
+          assert "host-probe.service" in by_src["host-probe"]["reason"], by_src
+          assert by_src["remote-receiver"]["state"] == "unavailable" and by_src["remote-receiver"]["units"] == [], by_src
+          pending_alice = as_alice("valley pending 2>/tmp/alice-pending.err")
+          alice_err = host.succeed("cat /tmp/alice-pending.err")
+          assert "host  " not in pending_alice and "valley:" not in alice_err and "observe" not in alice_err, (pending_alice, alice_err)
+          alice_json = json.loads(as_alice("valley pending --json"))
+          assert alice_json["host_sources"] == [], alice_json
+          host.succeed("systemctl reset-failed host-probe.service")
+          assert "host  host-probe  " not in host.succeed("cd /root/project && valley pending")
 
       with subtest("a reader sees a worker's slow check build while it builds, and its interruption after a kill"):
           good = ready("good", "good.txt")
@@ -670,7 +694,7 @@ in
           # tree, the slow check's build error, the nix log command for the
           # slow check's derivation, and where to look when nix has no log.
           requests = f"{git} -C /srv/git/project.git for-each-ref refs/the-valley/check-requests/"
-          host.succeed("git clone --quiet git@localhost:project.git /root/project && git -C /root/project config valley.principal operator")
+          host.succeed("git -C /root/project fetch --quiet origin")
           for branch, cp in [("asked", ""), ("asked-broken", "cp ${broken} slow.sh && ")]:
               host.succeed(f"git -C /root/project worktree add --quiet -b {branch} /root/{branch} origin/main && cd /root/{branch} && {cp}"
                            f"echo {branch} > {branch}.txt && git add -A && {commit} -m {branch}")

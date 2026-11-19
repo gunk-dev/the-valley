@@ -42,14 +42,25 @@ func TestPendingsSSHEndsWithIt(t *testing.T) {
 				t.Skip("no git to run")
 			}
 			toolsOnPath(t, dir, "git", "cue")
-			pid, gate := filepath.Join(dir, "ssh.pid"), filepath.Join(dir, "ssh.gate")
+			pid, sourcesPID, gate := filepath.Join(dir, "ssh.pid"), filepath.Join(dir, "sources.pid"), filepath.Join(dir, "ssh.gate")
 			if err := syscall.Mkfifo(pid, 0o600); err != nil {
 				t.Fatal(err)
 			}
 			// ssh is the host: it says its process ID, lets a git the
 			// gate holds go on, says the answer's first line, and stalls.
+			// For SIGPIPE, sources answers empty so pending writes at
+			// once while the worker read is still stalled; for SIGTERM
+			// and SIGKILL, both reads stall and both must die with
+			// pending.
 			header := `{"kind":"header","host":"valley-host","format":"valley-telemetry/v1"}`
-			ssh := fmt.Sprintf("#!/bin/sh\necho $$ > '%s'\n[ -p '%s' ] && echo go > '%s'\necho '%s'\nexec sleep 86398\n", pid, gate, gate, header)
+			sourcesBranch := fmt.Sprintf(`echo $$ > '%s'; echo '%s'; exec sleep 86398`, sourcesPID, header)
+			if c.signal == syscall.SIGPIPE {
+				sourcesBranch = fmt.Sprintf(`echo '%s'; echo '{"kind":"end"}'; exit 0`, header)
+			} else if err := syscall.Mkfifo(sourcesPID, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ssh := fmt.Sprintf("#!/bin/sh\ncase \"$*\" in *\"valley-telemetry sources\"*) %s ;; esac\necho $$ > '%s'\n[ -p '%s' ] && echo go > '%s'\necho '%s'\nexec sleep 86398\n",
+				sourcesBranch, pid, gate, gate, header)
 			if err := os.WriteFile(filepath.Join(dir, "bin", "ssh"), []byte(ssh), 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -86,23 +97,40 @@ func TestPendingsSSHEndsWithIt(t *testing.T) {
 			}
 			exited := make(chan error, 1)
 			go func() { exited <- cmd.Wait() }()
-			said := make(chan int, 1)
-			go func() {
-				data, _ := os.ReadFile(pid)
-				n, _ := strconv.Atoi(strings.TrimSpace(string(data)))
-				said <- n
-			}()
-			var read int
-			select {
-			case read = <-said:
-			case err := <-exited:
-				unheard(pid)
-				t.Fatalf("pending ended before its read reached the host: %v\n%s", err, out.String())
-			case <-time.After(time.Minute):
-				cmd.Process.Kill()
-				<-exited
-				unheard(pid)
-				t.Fatalf("pending's read did not reach the host in a minute\n%s", out.String())
+			readPID := func(fifo string) chan int {
+				ch := make(chan int, 1)
+				go func() {
+					data, _ := os.ReadFile(fifo)
+					n, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+					ch <- n
+				}()
+				return ch
+			}
+			said := readPID(pid)
+			var saidSources chan int
+			if c.signal != syscall.SIGPIPE {
+				saidSources = readPID(sourcesPID)
+			}
+			awaitPID := func(ch chan int, label string) int {
+				select {
+				case p := <-ch:
+					return p
+				case err := <-exited:
+					unheard(pid)
+					unheard(sourcesPID)
+					t.Fatalf("pending ended before its %s reached the host: %v\n%s", label, err, out.String())
+				case <-time.After(time.Minute):
+					cmd.Process.Kill()
+					<-exited
+					unheard(pid)
+					unheard(sourcesPID)
+					t.Fatalf("pending's %s did not reach the host in a minute\n%s", label, out.String())
+				}
+				return 0
+			}
+			pids := []int{awaitPID(said, "read")}
+			if saidSources != nil {
+				pids = append(pids, awaitPID(saidSources, "sources read"))
 			}
 			if c.signal != syscall.SIGPIPE {
 				cmd.Process.Signal(c.signal)
@@ -112,8 +140,10 @@ func TestPendingsSSHEndsWithIt(t *testing.T) {
 			if !errors.As(err, &ee) || !ee.Sys().(syscall.WaitStatus).Signaled() || ee.Sys().(syscall.WaitStatus).Signal() != c.signal {
 				t.Errorf("pending ended with %v, not by %s\n%s", err, c.name, out.String())
 			}
-			if ws, ok := waitOrphan(t, read); ok && (!ws.Signaled() || ws.Signal() != syscall.SIGKILL) {
-				t.Errorf("the read's ssh ended with %v, not killed as pending died", ws)
+			for _, p := range pids {
+				if ws, ok := waitOrphan(t, p); ok && (!ws.Signaled() || ws.Signal() != syscall.SIGKILL) {
+					t.Errorf("the read's ssh (%d) ended with %v, not killed as pending died", p, ws)
+				}
 			}
 		})
 	}

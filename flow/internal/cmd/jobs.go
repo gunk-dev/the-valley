@@ -21,6 +21,7 @@ import (
 const recentJobs = 3 * time.Hour
 
 func newJobsCmd() *cobra.Command {
+	var rawKinds []string
 	c := &cobra.Command{
 		Use:   "jobs",
 		Short: "List running and recent consults, reviews and prose passes",
@@ -29,7 +30,7 @@ most recent session outside a pane): each klaus consult backend call, one per
 member of a --panel, each klaus review, and each prose pass of a worker's
 _pre-review, with the run's ID under THREAD/PR. Running jobs come first, then the
 jobs that finished in the last 3 hours, newest first; --all lists every
-record kept.
+record kept, and --kind filters by kind (consult, review or prose).
 
 STATUS is running, succeeded, failed, timed out or interrupted, as the job
 recorded it, or died: the job's klaus process is gone (it was killed with
@@ -43,6 +44,10 @@ jobs that finished more than 7 days ago are removed when a new job starts.
 Use 'klaus jobs show <id>' to read a job's answer.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			kinds, err := parseJobKinds(rawKinds)
+			if err != nil {
+				return err
+			}
 			store, err := sessionJobStore()
 			if err != nil {
 				return err
@@ -55,6 +60,15 @@ Use 'klaus jobs show <id>' to read a job's answer.`,
 			if all, _ := cmd.Flags().GetBool("all"); !all {
 				list = jobs.Recent(list, now, recentJobs)
 			}
+			if len(kinds) > 0 {
+				var filtered []*jobs.Job
+				for _, j := range list {
+					if kinds[j.Kind] {
+						filtered = append(filtered, j)
+					}
+				}
+				list = filtered
+			}
 			if len(list) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "No jobs.")
 				return nil
@@ -64,6 +78,7 @@ Use 'klaus jobs show <id>' to read a job's answer.`,
 		},
 	}
 	c.Flags().Bool("all", false, "List every job record kept, not only running and recent ones")
+	c.Flags().StringArrayVar(&rawKinds, "kind", nil, "Only jobs of this kind: consult, review or prose (repeatable or comma-separated)")
 	c.AddCommand(newJobsShowCmd())
 	return c
 }
@@ -161,6 +176,67 @@ func warnJob(w io.Writer, j *jobs.Job, err error) {
 	if err != nil {
 		fmt.Fprintf(w, "warning: recording job %s: %v\n", j.ID, err)
 	}
+}
+
+// parseJobKinds validates --kind flag values (each repeatable or
+// comma-separated) and returns them as a set.
+func parseJobKinds(raw []string) (map[string]bool, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]bool, len(raw))
+	for _, item := range raw {
+		for _, part := range strings.Split(item, ",") {
+			k := strings.TrimSpace(part)
+			switch k {
+			case jobs.KindConsult, jobs.KindReview, jobs.KindProse:
+				out[k] = true
+			default:
+				return nil, fmt.Errorf("unknown job kind %q: want %s, %s or %s", k, jobs.KindConsult, jobs.KindReview, jobs.KindProse)
+			}
+		}
+	}
+	return out, nil
+}
+
+// proseSummary counts finished prose passes and how many did not succeed.
+type proseSummary struct {
+	total  int
+	failed int
+}
+
+func (p *proseSummary) add(j *jobs.Job) {
+	p.total++
+	if j.Status != jobs.Succeeded {
+		p.failed++
+	}
+}
+
+func (p proseSummary) String() string {
+	if p.total == 0 {
+		return ""
+	}
+	noun := "prose passes"
+	if p.total == 1 {
+		noun = "prose pass"
+	}
+	if p.failed > 0 {
+		return fmt.Sprintf("%d %s, %d failed", p.total, noun, p.failed)
+	}
+	return fmt.Sprintf("%d %s", p.total, noun)
+}
+
+// partitionJobs splits js into the jobs listed as rows (consults, reviews,
+// and running prose passes) and a count of finished prose passes.
+func partitionJobs(js []*jobs.Job) (listed []*jobs.Job, prose proseSummary) {
+	for _, j := range js {
+		if j.Kind == jobs.KindProse && j.Finished() {
+			prose.add(j)
+			continue
+		}
+		listed = append(listed, j)
+	}
+	return listed, prose
 }
 
 // printJobsTable prints jobs as klaus status and klaus jobs show them.

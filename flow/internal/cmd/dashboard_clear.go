@@ -17,6 +17,7 @@ import (
 type dashClear struct {
 	remove []string // run IDs
 	jobs   int
+	prose  int
 }
 
 // clearedMsg reports a clear's removals once they are done.
@@ -50,17 +51,33 @@ func (m dashboardModel) planClear(now time.Time) *dashClear {
 			c.remove = append(c.remove, d.state.ID)
 		}
 	}
-	for _, j := range m.recentJobList(now) {
+	listed, prose := m.recentJobView(now)
+	for _, j := range listed {
 		if j.Finished() {
 			c.jobs++
 		}
 	}
+	c.prose = prose.total
 	return c
 }
 
-// prompt is the one line that asks to confirm the clear.
-func (c *dashClear) prompt() string {
-	return fmt.Sprintf("  clear finished: remove %d runs and hide %d finished jobs? y/n", len(c.remove), c.jobs)
+// prompts returns the confirmation line in full and compact variants so the
+// y/n controls stay visible on narrow panes.
+func (c *dashClear) prompts() []string {
+	if c.prose > 0 {
+		noun := "prose passes"
+		if c.prose == 1 {
+			noun = "prose pass"
+		}
+		return []string{
+			fmt.Sprintf("  clear finished: remove %d runs and hide %d finished jobs, %d %s? y/n", len(c.remove), c.jobs, c.prose, noun),
+			fmt.Sprintf("  clear: %d runs, %d jobs, %d prose? y/n", len(c.remove), c.jobs, c.prose),
+		}
+	}
+	return []string{
+		fmt.Sprintf("  clear finished: remove %d runs and hide %d finished jobs? y/n", len(c.remove), c.jobs),
+		fmt.Sprintf("  clear: %d runs, %d jobs? y/n", len(c.remove), c.jobs),
+	}
 }
 
 // clearCmd removes the clear's runs as klaus cleanup does, leaving each

@@ -103,7 +103,7 @@ func TestDashboardFitLayoutDropsJobsBeforeRows(t *testing.T) {
 	prevJobs := nJobs
 	for h := 30; h >= 1; h-- {
 		m.height = h
-		items, bodyH := m.fitLayout(rows, nJobs)
+		items, bodyH := m.fitLayout(rows, nJobs, false)
 		count := map[chromeKind]int{}
 		for _, it := range items {
 			count[it.kind]++
@@ -299,5 +299,240 @@ func (l *teaLoop) until(want ...string) {
 		case <-deadline:
 			l.t.Fatalf("view never showed %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestDashboardProseJobsCountedNotListed(t *testing.T) {
+	now := time.Now()
+	at := func(d time.Duration) *time.Time { x := now.Add(-d); return &x }
+	runA := "20261017-1200-aaaa0001"
+	runB := "20261017-1201-bbbb0002"
+
+	// 34-job case: 1 finished consult + 33 finished prose passes (8 failed,
+	// spanning failed/timed out/interrupted/died), with 13 belonging to runA
+	// (3 failed) and 20 to runB (5 failed), plus 1 running prose pass on runA
+	// and 1 finished prose pass older than 3h on runA.
+	list := []*jobs.Job{
+		{ID: "prose-20261017-1205-run00001", Kind: jobs.KindProse, Run: runA, Backend: "agy", Model: "gemini-4",
+			Prompt: "rewrite docs/guide.md", Status: jobs.Running, StartedAt: now.Add(-30 * time.Second)},
+		{ID: "consult-20261017-1150-cons0001", Kind: jobs.KindConsult, Thread: "design", Backend: "codex", Model: "gpt-9",
+			Prompt: "Design the jobs table", Status: jobs.Succeeded, StartedAt: now.Add(-12 * time.Minute), FinishedAt: at(10 * time.Minute)},
+	}
+	failStatuses := []jobs.Status{jobs.Failed, jobs.TimedOut, jobs.Interrupted, jobs.Died}
+	for i := 0; i < 33; i++ {
+		owner := runB
+		status := jobs.Succeeded
+		if i < 13 {
+			owner = runA
+			if i < 3 {
+				status = failStatuses[i%len(failStatuses)]
+			}
+		} else if i-13 < 5 {
+			status = failStatuses[(i-13)%len(failStatuses)]
+		}
+		j := &jobs.Job{
+			ID:        "prose-20261017-1100-" + string(rune('a'+i/26)) + string(rune('a'+i%26)) + "0001",
+			Kind:      jobs.KindProse,
+			Run:       owner,
+			Backend:   "agy",
+			Prompt:    "rewrite README.md",
+			Status:    status,
+			StartedAt: now.Add(-time.Duration(15+i) * time.Minute),
+		}
+		if status != jobs.Died {
+			j.FinishedAt = at(time.Duration(14+i) * time.Minute)
+		}
+		list = append(list, j)
+	}
+	// Outside the 3h window: excluded from the header count, still counted on runA's footer.
+	list = append(list, &jobs.Job{
+		ID: "prose-20261017-0100-old00001", Kind: jobs.KindProse, Run: runA, Backend: "agy",
+		Prompt: "rewrite old.md", Status: jobs.Succeeded,
+		StartedAt: now.Add(-6 * time.Hour), FinishedAt: at(5 * time.Hour),
+	})
+
+	m := dashboardModel{
+		states: []*run.State{
+			{ID: runA, Type: "launch", Prompt: "long run", TmuxPane: strPtr("%1"),
+				CreatedAt: now.Add(-20 * time.Minute).Format(time.RFC3339), Worktree: "/wt-a", TargetRepo: strPtr("owner/app")},
+			{ID: runB, Type: "launch", Prompt: "second run", TmuxPane: strPtr("%2"),
+				CreatedAt: now.Add(-10 * time.Minute).Format(time.RFC3339), Worktree: "/wt-b", TargetRepo: strPtr("owner/app")},
+		},
+		tmuxDeps:  testDashboardTmuxDeps(),
+		ghStatus:  map[string]*prStatus{},
+		hideAfter: defaultHideFinishedAfter,
+	}
+	m = send(m, tea.WindowSizeMsg{Width: 140, Height: 30})
+	m = send(m, jobsLoadedMsg{jobs: list})
+
+	view := ansi.Strip(m.View())
+	if !strings.Contains(view, "jobs · 1 running · 1 finished · 33 prose passes, 8 failed") {
+		t.Fatalf("jobs header should count listed rows and finished prose passes:\n%s", view)
+	}
+	if !strings.Contains(view, "prose:0001") || !strings.Contains(view, "rewrite docs/guide.md") {
+		t.Errorf("running prose pass should be listed:\n%s", view)
+	}
+	if !strings.Contains(view, "consult:0001") || !strings.Contains(view, "Design the jobs table") {
+		t.Errorf("finished consult should be listed:\n%s", view)
+	}
+	if strings.Contains(view, "rewrite README.md") || strings.Contains(view, "rewrite old.md") {
+		t.Errorf("finished prose passes must not appear as rows:\n%s", view)
+	}
+
+	// Row B is newer so it is selected first; footer shows its 20 prose passes, 5 failed.
+	if !strings.Contains(view, "20 prose passes, 5 failed |") {
+		t.Errorf("selected runB footer missing its prose count:\n%s", view)
+	}
+	// Move selection to runA: 13 recent + 1 older = 14 finished prose passes, 3 failed (running pass not counted).
+	m = press(m, "j")
+	view = ansi.Strip(m.View())
+	if !strings.Contains(view, "14 prose passes, 3 failed |") {
+		t.Errorf("selected runA footer should count all its finished prose passes:\n%s", view)
+	}
+
+	// Tab selects only the 2 listed jobs (running prose pass, then consult).
+	m = press(m, "tab")
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "> prose:0001") {
+		t.Errorf("tab should land on running prose pass:\n%s", v)
+	}
+	m = press(m, "j")
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "> consult:0001") {
+		t.Errorf("j should move to the consult:\n%s", v)
+	}
+	// Another j stays clamped on consult:0001, never landing on a hidden prose pass.
+	m = press(m, "j")
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "> consult:0001") {
+		t.Errorf("j past last listed job must stay on consult:0001:\n%s", v)
+	}
+
+	// When the running prose pass finishes, only the consult remains listed
+	// and the header prose count increases to 34 (8 failed).
+	list[0].Status = jobs.Succeeded
+	list[0].FinishedAt = at(time.Second)
+	m = send(m, jobsLoadedMsg{jobs: list})
+	view = ansi.Strip(m.View())
+	if !strings.Contains(view, "jobs · 1 finished · 34 prose passes, 8 failed") {
+		t.Errorf("after running prose finishes, header should update:\n%s", view)
+	}
+	if strings.Contains(view, "rewrite docs/guide.md") {
+		t.Errorf("finished prose pass should leave the table:\n%s", view)
+	}
+	if !strings.Contains(view, "> consult:0001") {
+		t.Errorf("selection should stay on consult:0001:\n%s", view)
+	}
+}
+
+func TestDashboardOnlyFinishedProseJobs(t *testing.T) {
+	now := time.Now()
+	finished := now.Add(-5 * time.Minute)
+	m := dashboardModel{
+		states: []*run.State{
+			{ID: "20261017-1200-aaaa0001", Type: "launch", Prompt: "only run", TmuxPane: strPtr("%1"),
+				CreatedAt: now.Format(time.RFC3339), Worktree: "/wt", TargetRepo: strPtr("owner/app")},
+		},
+		tmuxDeps:  testDashboardTmuxDeps(),
+		ghStatus:  map[string]*prStatus{},
+		hideAfter: defaultHideFinishedAfter,
+	}
+	m = send(m, tea.WindowSizeMsg{Width: 140, Height: 20})
+	m = send(m, jobsLoadedMsg{jobs: []*jobs.Job{
+		{ID: "prose-20261017-1155-aaaa0001", Kind: jobs.KindProse, Run: "20261017-1200-aaaa0001",
+			Backend: "agy", Prompt: "rewrite README.md", Status: jobs.Succeeded,
+			StartedAt: now.Add(-6 * time.Minute), FinishedAt: &finished},
+	}})
+
+	view := ansi.Strip(m.View())
+	if !strings.Contains(view, "jobs · 1 prose pass") || strings.Contains(view, "failed") {
+		t.Errorf("header should show singular prose pass with no failed count:\n%s", view)
+	}
+	if strings.Contains(view, "tab jobs") {
+		t.Errorf("footer must not advertise tab jobs when no job rows are listed:\n%s", view)
+	}
+	if !strings.Contains(view, "1 prose pass |") {
+		t.Errorf("selected run footer should show its 1 prose pass:\n%s", view)
+	}
+
+	// Pressing tab does not focus the jobs section.
+	m = press(m, "tab")
+	if m.jobFocus {
+		t.Error("tab must not enter jobFocus when only finished prose passes exist")
+	}
+
+	// Pressing x notes the prose pass in the prompt; on a narrow pane it
+	// falls back to the compact variant so y/n stays visible. Confirming
+	// with y hides it from the header.
+	m = press(m, "x")
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "hide 0 finished jobs, 1 prose pass? y/n") {
+		t.Errorf("clear prompt should report prose count honestly:\n%s", v)
+	}
+	narrow := send(m, tea.WindowSizeMsg{Width: 60, Height: 20})
+	if v := ansi.Strip(narrow.View()); !strings.Contains(v, "clear: 0 runs, 0 jobs, 1 prose? y/n") {
+		t.Errorf("narrow clear prompt should keep y/n visible:\n%s", v)
+	}
+	m = press(m, "y")
+	if v := ansi.Strip(m.View()); strings.Contains(v, "jobs ·") {
+		t.Errorf("jobs header should disappear after clearing finished prose passes:\n%s", v)
+	}
+}
+
+func TestDashboardFooterCombinesApproveCommandAndProse(t *testing.T) {
+	now := time.Now()
+	finished := now.Add(-2 * time.Minute)
+	branch, sha := "fix-bug-12345678", strings.Repeat("a", 40)
+	m := dashboardModel{
+		states: []*run.State{
+			{ID: "20261017-1200-aaaa0001", Type: "launch", Prompt: "fix bug",
+				CreatedAt: now.Add(-10 * time.Minute).Format(time.RFC3339),
+				TargetRepo: strPtr("owner/app"), ChangeID: "chg-12345678",
+				PushedBranch: &branch, PushedSHA: &sha,
+				Valley: &run.Valley{Repo: "app", Handle: "abcd", Version: 1}},
+			{ID: "20261017-1150-aaaa0000", Type: "launch", Prompt: "initial attempt",
+				CreatedAt: now.Add(-20 * time.Minute).Format(time.RFC3339),
+				TargetRepo: strPtr("owner/app"), ChangeID: "chg-12345678"},
+		},
+		tmuxDeps:        testDashboardTmuxDeps(),
+		ghStatus:        map[string]*prStatus{},
+		approveTemplate: "valley approve {handle} --head {head}",
+		hideAfter:       defaultHideFinishedAfter,
+	}
+	m = send(m, tea.WindowSizeMsg{Width: 160, Height: 20})
+	m = send(m, jobsLoadedMsg{jobs: []*jobs.Job{
+		{ID: "prose-20261017-1158-aaaa0001", Kind: jobs.KindProse, Run: "20261017-1200-aaaa0001",
+			Backend: "agy", Status: jobs.Succeeded, StartedAt: now.Add(-3 * time.Minute), FinishedAt: &finished},
+		{ID: "prose-20261017-1159-aaaa0002", Kind: jobs.KindProse, Run: "20261017-1150-aaaa0000",
+			Backend: "agy", Status: jobs.Failed, StartedAt: now.Add(-3 * time.Minute), FinishedAt: &finished},
+	}})
+
+	view := ansi.Strip(m.View())
+	want := "approve: valley approve abcd --head " + sha + " · 2 prose passes, 1 failed"
+	if !strings.Contains(view, want) {
+		t.Errorf("footer missing %q:\n%s", want, view)
+	}
+}
+
+func TestDashboardJobsNotShownExcludesProse(t *testing.T) {
+	now := time.Now()
+	at := func(d time.Duration) *time.Time { x := now.Add(-d); return &x }
+	list := []*jobs.Job{
+		{ID: "consult-20261017-1200-aaaa0001", Kind: jobs.KindConsult, Backend: "codex", Prompt: "c1", Status: jobs.Running, StartedAt: now.Add(-2 * time.Minute)},
+		{ID: "consult-20261017-1155-bbbb0002", Kind: jobs.KindConsult, Backend: "codex", Prompt: "c2", Status: jobs.Succeeded, StartedAt: now.Add(-6 * time.Minute), FinishedAt: at(5 * time.Minute)},
+		{ID: "review-20261017-1150-cccc0003", Kind: jobs.KindReview, PR: "owner/app#1", Backend: "agy", Status: jobs.Succeeded, StartedAt: now.Add(-11 * time.Minute), FinishedAt: at(10 * time.Minute)},
+		{ID: "prose-20261017-1145-dddd0004", Kind: jobs.KindProse, Backend: "agy", Prompt: "p1", Status: jobs.Succeeded, StartedAt: now.Add(-16 * time.Minute), FinishedAt: at(15 * time.Minute)},
+		{ID: "prose-20261017-1140-eeee0005", Kind: jobs.KindProse, Backend: "agy", Prompt: "p2", Status: jobs.Failed, StartedAt: now.Add(-21 * time.Minute), FinishedAt: at(20 * time.Minute)},
+	}
+	m := dashboardModel{
+		states: []*run.State{{ID: "20261017-1200-0001", Type: "launch", Prompt: "active 01", TmuxPane: strPtr("%1"),
+			CreatedAt: now.Format(time.RFC3339), Worktree: "/wt", TargetRepo: strPtr("owner/app")}},
+		tmuxDeps:  testDashboardTmuxDeps(),
+		ghStatus:  map[string]*prStatus{},
+		hideAfter: defaultHideFinishedAfter,
+	}
+	// Height 7 leaves room for header, summary, 1 row, jobs header, 2 of 3 listed jobs, footer -> 1 not shown (not 3).
+	m = send(m, tea.WindowSizeMsg{Width: 120, Height: 7})
+	m = send(m, jobsLoadedMsg{jobs: list})
+	view := ansi.Strip(m.View())
+	assertFits(t, m.View(), 120, 7)
+	if !strings.Contains(view, "jobs · 1 running · 2 finished · 1 not shown · 2 prose passes, 1 failed") {
+		t.Errorf("short pane header counts wrong:\n%s", view)
 	}
 }

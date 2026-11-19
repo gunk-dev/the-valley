@@ -394,6 +394,148 @@ func TestStatusListsJobs(t *testing.T) {
 	}
 }
 
+func TestStatusCountsFinishedProsePasses(t *testing.T) {
+	bin := klausBinary(t)
+	e := newConsultEnv(t, bin, "session-status-prose")
+	store := jobs.NewStore(e.sessionDir())
+	add := func(j *jobs.Job, status jobs.Status, took, ago time.Duration) {
+		t.Helper()
+		if err := store.Start(j); err != nil {
+			t.Fatal(err)
+		}
+		if status == jobs.Running {
+			j.StartedAt = time.Now().Add(-took)
+		} else {
+			finished := time.Now().Add(-ago)
+			j.Status, j.FinishedAt, j.StartedAt = status, &finished, finished.Add(-took)
+		}
+		if err := store.Save(j); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Only finished prose passes: no table header, just the summary line.
+	add(&jobs.Job{ID: "prose-20261017-1000-aaaa0001", Kind: jobs.KindProse, Run: "20261017-0950-0001", Backend: "agy", Prompt: "rewrite README.md"}, jobs.Succeeded, 10*time.Second, 5*time.Minute)
+	add(&jobs.Job{ID: "prose-20261017-0100-old00001", Kind: jobs.KindProse, Run: "20261017-0050-0001", Backend: "agy", Prompt: "rewrite old.md"}, jobs.Failed, 10*time.Second, 10*time.Hour)
+	out, err := e.klaus(t, "status")
+	if err != nil {
+		t.Fatalf("status: %s, %v", out, err)
+	}
+	if strings.Contains(out, "JOB ID") || strings.Contains(out, "rewrite README.md") {
+		t.Errorf("status should not print a jobs table when only finished prose passes exist:\n%s", out)
+	}
+	if !strings.Contains(out, "1 prose pass (finished in the last 3h; klaus jobs --kind prose)") {
+		t.Errorf("status missing prose summary line:\n%s", out)
+	}
+
+	// Add 32 more recent finished prose passes (8 failed total) and 1 finished consult (the 34-job case).
+	failStatuses := []jobs.Status{jobs.Failed, jobs.TimedOut, jobs.Interrupted}
+	for i := 0; i < 32; i++ {
+		st := jobs.Succeeded
+		if i < 8 {
+			st = failStatuses[i%len(failStatuses)]
+		}
+		id := "prose-20261017-1100-" + string(rune('a'+i/26)) + string(rune('a'+i%26)) + "0001"
+		add(&jobs.Job{ID: id, Kind: jobs.KindProse, Run: "20261017-0950-0001", Backend: "agy", Prompt: "rewrite docs.md"}, st, 20*time.Second, time.Duration(10+i)*time.Minute)
+	}
+	add(&jobs.Job{ID: "consult-20261017-1150-cons0001", Kind: jobs.KindConsult, Thread: "design", Backend: "codex", Model: "gpt-9", Prompt: "Design the jobs table"}, jobs.Succeeded, time.Minute, 8*time.Minute)
+
+	out, err = e.klaus(t, "status")
+	if err != nil {
+		t.Fatalf("status: %s, %v", out, err)
+	}
+	if !strings.Contains(out, "consult-20261017-1150-cons0001") {
+		t.Errorf("status should list finished consult:\n%s", out)
+	}
+	if strings.Contains(out, "rewrite README.md") || strings.Contains(out, "rewrite docs.md") {
+		t.Errorf("status must not list finished prose passes as rows:\n%s", out)
+	}
+	if !strings.Contains(out, "33 prose passes, 8 failed (finished in the last 3h; klaus jobs --kind prose)") {
+		t.Errorf("status missing summary line for 33 prose passes, 8 failed:\n%s", out)
+	}
+
+	// A running prose pass IS listed alongside the consult, while finished ones stay counted below.
+	add(&jobs.Job{ID: "prose-20261017-1200-live0001", Kind: jobs.KindProse, Run: "20261017-1155-0002", Backend: "agy", Model: "gemini-4", Prompt: "rewrite guide.md"}, jobs.Running, 15*time.Second, 0)
+	out, err = e.klaus(t, "status")
+	if err != nil {
+		t.Fatalf("status: %s, %v", out, err)
+	}
+	if !strings.Contains(out, "prose-20261017-1200-live0001") || !strings.Contains(out, "consult-20261017-1150-cons0001") {
+		t.Errorf("status should list running prose pass and consult:\n%s", out)
+	}
+	if !strings.Contains(out, "33 prose passes, 8 failed (finished in the last 3h; klaus jobs --kind prose)") {
+		t.Errorf("status missing summary line with running prose pass:\n%s", out)
+	}
+}
+
+func TestJobsKindFlag(t *testing.T) {
+	bin := klausBinary(t)
+	e := newConsultEnv(t, bin, "session-jobs-kind")
+	store := jobs.NewStore(e.sessionDir())
+	add := func(j *jobs.Job, ago time.Duration) {
+		t.Helper()
+		if err := store.Start(j); err != nil {
+			t.Fatal(err)
+		}
+		finished := time.Now().Add(-ago)
+		j.Status, j.FinishedAt, j.StartedAt = jobs.Succeeded, &finished, finished.Add(-time.Minute)
+		if err := store.Save(j); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add(&jobs.Job{ID: "consult-20261017-1150-aaaa0001", Kind: jobs.KindConsult, Backend: "codex", Prompt: "consult prompt"}, 10*time.Minute)
+	add(&jobs.Job{ID: "review-20261017-1140-bbbb0002", Kind: jobs.KindReview, PR: "owner/app#7", Backend: "claude"}, 20*time.Minute)
+	add(&jobs.Job{ID: "prose-20261017-1130-cccc0003", Kind: jobs.KindProse, Run: "20261017-1120-0001", Backend: "agy", Prompt: "rewrite README.md"}, 30*time.Minute)
+	add(&jobs.Job{ID: "prose-20261016-0100-dddd0004", Kind: jobs.KindProse, Run: "20261016-0050-0001", Backend: "agy", Prompt: "rewrite old.md"}, 20*time.Hour)
+
+	// Unfiltered klaus jobs still lists all three recent kinds, including prose.
+	out, err := e.klaus(t, "jobs")
+	if err != nil {
+		t.Fatalf("jobs: %s, %v", out, err)
+	}
+	for _, want := range []string{"consult-20261017", "review-20261017", "prose-20261017"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("klaus jobs missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "prose-20261016") {
+		t.Errorf("klaus jobs without --all should omit old prose pass:\n%s", out)
+	}
+
+	// Single kind: prose, plus --all.
+	out, err = e.klaus(t, "jobs", "--kind", "prose")
+	if err != nil || !strings.Contains(out, "prose-20261017") || strings.Contains(out, "consult-20261017") || strings.Contains(out, "review-20261017") || strings.Contains(out, "prose-20261016") {
+		t.Errorf("jobs --kind prose: %s, %v", out, err)
+	}
+	out, err = e.klaus(t, "jobs", "--kind", "prose", "--all")
+	if err != nil || !strings.Contains(out, "prose-20261017") || !strings.Contains(out, "prose-20261016") || strings.Contains(out, "consult-20261017") {
+		t.Errorf("jobs --kind prose --all: %s, %v", out, err)
+	}
+
+	// Repeatable and comma-separated kinds.
+	for _, args := range [][]string{
+		{"jobs", "--kind", "consult", "--kind", "review"},
+		{"jobs", "--kind", "consult,review"},
+	} {
+		out, err = e.klaus(t, args...)
+		if err != nil || !strings.Contains(out, "consult-20261017") || !strings.Contains(out, "review-20261017") || strings.Contains(out, "prose-20261017") {
+			t.Errorf("%v: %s, %v", args, out, err)
+		}
+	}
+
+	// Invalid or empty kind (including alongside a valid kind) fails cleanly.
+	for _, args := range [][]string{
+		{"jobs", "--kind", "bogus"},
+		{"jobs", "--kind", ""},
+		{"jobs", "--kind", "prose", "--kind="},
+		{"jobs", "--kind", "consult,,review"},
+	} {
+		if out, err := e.klaus(t, args...); err == nil || !strings.Contains(out, "unknown job kind") {
+			t.Errorf("%v should fail, got: %s, %v", args, out, err)
+		}
+	}
+}
+
 // TestStatusShowsRunModels runs the real `klaus status` over runs launched
 // without a model, with one, and with a model the worker reported.
 func TestStatusShowsRunModels(t *testing.T) {

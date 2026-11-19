@@ -11,10 +11,12 @@ import (
 	"the-valley/flow/internal/jobs"
 )
 
-// The jobs section lists the session's consults and reviews below the run
-// rows, as klaus status does: every running job, then those that finished
-// within recentJobs. tab moves the selection between the runs and the jobs;
-// enter on a job opens its record and answer (showJob) in place of the list.
+// The jobs section lists the session's consults, reviews, and running prose
+// passes below the run rows, as klaus status does: every running job, then
+// consults and reviews that finished within recentJobs. Finished prose
+// passes within recentJobs are counted on the jobs header line. tab moves
+// the selection between the runs and the listed jobs; enter on a job opens
+// its record and answer (showJob) in place of the list.
 
 // jobsLoadedMsg carries the session's job records, newest first.
 type jobsLoadedMsg struct {
@@ -47,20 +49,41 @@ func loadJobsCmd(dir string) tea.Cmd {
 	}
 }
 
-// recentJobList is what the jobs section lists: the recent jobs, but none
-// that finished before the x key last cleared them.
-func (m dashboardModel) recentJobList(now time.Time) []*jobs.Job {
-	var out []*jobs.Job
+// recentJobView is what the jobs section shows: the listed recent jobs
+// (consults, reviews, and running prose passes) and a count of finished
+// prose passes, excluding any that finished before the x key last cleared
+// them.
+func (m dashboardModel) recentJobView(now time.Time) ([]*jobs.Job, proseSummary) {
+	var recent []*jobs.Job
 	for _, j := range jobs.Recent(m.jobs, now, recentJobs) {
 		if !j.Finished() || j.Settled().After(m.jobsClearedAt) {
-			out = append(out, j)
+			recent = append(recent, j)
 		}
 	}
-	return out
+	return partitionJobs(recent)
+}
+
+// rowProse counts finished prose passes belonging to any run on row r.
+func (m dashboardModel) rowProse(r dashRow) proseSummary {
+	if len(r.runs) == 0 || len(m.jobs) == 0 {
+		return proseSummary{}
+	}
+	ids := make(map[string]bool, len(r.runs))
+	for _, s := range r.runs {
+		ids[s.ID] = true
+	}
+	var p proseSummary
+	for _, j := range m.jobs {
+		if j.Kind == jobs.KindProse && j.Finished() && j.Run != "" && ids[j.Run] {
+			p.add(j)
+		}
+	}
+	return p
 }
 
 // renderJobsHeader renders the line above the job lines, counting the
-// running and finished jobs and any that don't fit.
+// running and finished listed jobs, any that don't fit, and the finished
+// prose passes in the window.
 func renderJobsHeader(v dashView) string {
 	running := 0
 	for _, j := range v.jobs {
@@ -77,6 +100,9 @@ func renderJobsHeader(v dashView) string {
 	}
 	if n := len(v.jobs) - v.jobsShown; n > 0 {
 		parts = append(parts, fmt.Sprintf("%d not shown", n))
+	}
+	if s := v.prose.String(); s != "" {
+		parts = append(parts, s)
 	}
 	return dimStyle.Render(strings.Join(parts, " · "))
 }

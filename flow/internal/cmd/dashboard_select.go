@@ -702,10 +702,12 @@ type dashView struct {
 	bodyH  int // rows that fit in the viewport
 	cursor int // index into rows of the selected row
 	offset int // index into rows of the first row in the viewport
-	// jobs are the jobs section's jobs; the first jobsShown fit the pane.
-	// jobFocus says one of those is selected, jobs[jobCursor], rather than
-	// a row.
+	// jobs are the jobs section's listed jobs; the first jobsShown fit the
+	// pane. prose counts finished prose passes in the window. jobFocus says
+	// one of those listed jobs is selected, jobs[jobCursor], rather than a
+	// row.
 	jobs      []*jobs.Job
+	prose     proseSummary
 	jobsShown int
 	jobCursor int
 	jobFocus  bool
@@ -726,8 +728,8 @@ func (m dashboardModel) resolveRows(all []dashRow, now time.Time) dashView {
 		}
 		v.rows = append(v.rows, r)
 	}
-	v.jobs = m.recentJobList(now)
-	v.chrome, v.bodyH = m.fitLayout(len(v.rows), len(v.jobs))
+	v.jobs, v.prose = m.recentJobView(now)
+	v.chrome, v.bodyH = m.fitLayout(len(v.rows), len(v.jobs), v.prose.total > 0)
 	for _, c := range v.chrome {
 		if c.kind == chromeJob {
 			v.jobsShown++

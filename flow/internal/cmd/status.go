@@ -129,9 +129,11 @@ dashboard runs, does the dispatching; status only reads.
 A line after them sums the session's cost, counting the runs klaus cleanup
 removed.
 
-After the runs, a jobs table lists the session's consults, reviews and prose passes (see
-klaus jobs): every one running, and those that finished in the last 3 hours,
-with how long each has run or took. It is left out when there are none.`,
+After the runs, a jobs table lists the session's consults, reviews, and running
+prose passes (see klaus jobs): every one running, and consults and reviews that
+finished in the last 3 hours, with how long each has run or took. Finished prose
+passes in the last 3 hours are counted on a single summary line under the table
+(total and failed). Both are left out when there are none.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		store, err := sessionStore()
 		if err != nil {
@@ -146,8 +148,9 @@ with how long each has run or took. It is left out when there are none.`,
 }
 
 // printRecentJobs prints, after a blank line, the jobs table of the
-// session's running jobs and those that finished within recentJobs; nothing
-// when there are none.
+// session's running jobs and recent consults and reviews, followed by a
+// single summary line of finished prose passes in recentJobs; nothing when
+// there are none.
 func printRecentJobs(w io.Writer, store run.StateStore, now time.Time) {
 	hds, ok := store.(*run.HomeDirStore)
 	if !ok {
@@ -158,9 +161,16 @@ func printRecentJobs(w io.Writer, store run.StateStore, now time.Time) {
 		fmt.Fprintf(os.Stderr, "warning: reading jobs: %v\n", err)
 		return
 	}
-	if list = jobs.Recent(list, now, recentJobs); len(list) > 0 {
-		fmt.Fprintln(w)
-		printJobsTable(w, list, now)
+	listed, prose := partitionJobs(jobs.Recent(list, now, recentJobs))
+	if len(listed) == 0 && prose.total == 0 {
+		return
+	}
+	fmt.Fprintln(w)
+	if len(listed) > 0 {
+		printJobsTable(w, listed, now)
+	}
+	if prose.total > 0 {
+		fmt.Fprintf(w, "%s (finished in the last 3h; klaus jobs --kind prose)\n", prose)
 	}
 }
 

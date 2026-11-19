@@ -128,15 +128,18 @@ over: the footer notes it ("a newer push 1a2b3c4 isn't ready"). While an agent r
 and the footer says which agent is working on it. Once it exits, the row
 goes back to where the PR or change stands.
 
-Below the run rows, a jobs section lists the session's consults, reviews and prose passes,
-as klaus status does: every running job, with how long it has run, and those
-that finished in the last 3 hours, with how long they took and how they
-ended (SUCCEEDED, FAILED, TIMED OUT, INTERRUPTED, or DIED when the job's klaus
-was killed without recording its end). It follows the job records as they
-change. Press tab to select a job: the footer says how it stands, with its
-error and where its raw output was saved, and enter opens its record and
-answer, as 'klaus jobs show' prints them; esc goes back. On a short pane the
-jobs lines go before any run row does.
+Below the run rows, a jobs section lists the session's consults, reviews, and
+running prose passes, as klaus status does: every running job, with how long it
+has run, and consults and reviews that finished in the last 3 hours, with how
+long they took and how they ended (SUCCEEDED, FAILED, TIMED OUT, INTERRUPTED, or
+DIED when the job's klaus was killed without recording its end). Finished prose
+passes in the last 3 hours are counted on the jobs header line (total and
+failed), and each selected run row's footer includes that row's own finished
+prose passes. It follows the job records as they change. Press tab to select a
+listed job: the footer says how it stands, with its error and where its raw
+output was saved, and enter opens its record and answer, as 'klaus jobs show'
+prints them; esc goes back. On a short pane the jobs lines go before any run
+row does.
 
 Done rows older than an hour are hidden until you press h; the line above the
 list says how many are hidden. A row the dashboard watched finish stays for

@@ -211,7 +211,9 @@ the model the worker reported, else the one launched with, else `(default model)
 
 Prints the runs table; a line for each run that changed its clone's shared git files; the failed
 valley checks and the restack conflicts on changes klaus owns; a `Session cost` line that includes
-removed runs; then the session's jobs (running, and finished in the last 3 hours).
+removed runs; then the session's running jobs and consults and reviews that finished in the last 3
+hours. When prose passes finished in the same period, a summary line below the jobs table gives
+their total and any failures (use `klaus jobs --kind prose` to see individual passes).
 
 | Column            | Values                                                                       |
 | ----------------- | ---------------------------------------------------------------------------- |
@@ -281,8 +283,11 @@ or `SUBMIT` row (`submit:`): `{repo}` (the repository as the row names it), `{br
 placeholders go unquoted. A row lacking a placeholder's value, a `DRAFT` row, or a row with an agent
 running shows none.
 
-**Jobs.** Below the rows, the session's jobs: `RUNNING`, and those finished in the last 3 hours
-(`SUCCEEDED`, `FAILED`, `TIMED OUT`, `INTERRUPTED`, `DIED`), re-read every 30 seconds.
+**Jobs.** The jobs section lists `RUNNING` jobs and consults and reviews that finished in the last 3
+hours (`SUCCEEDED`, `FAILED`, `TIMED OUT`, `INTERRUPTED`, `DIED`). It refreshes every 30 seconds.
+The header summarises prose passes that finished in the same period. Select a run row to see its
+finished prose passes in the footer. Each summary gives the total and any failures and appears only
+when there are passes to count. Job row counts and `tab` selection cover only job rows.
 
 **Restart.** Every 30 seconds the dashboard resolves `klaus` on `PATH`; when it names a different
 file that runs `--version`, the footer says `klaus updated to <version>; restarting`, and after 10
@@ -327,16 +332,19 @@ into summaries; `--all` shows every event, `--json` lists them. A superseded run
 
 ### klaus jobs
 
-`klaus jobs` lists running jobs and those finished in the last 3 hours (`--all`: every record kept).
-`klaus jobs show <id>` prints a record and its answer (`--answer`: only the answer); `<id>` is a job
-ID, a unique ending of one, or a panel ID. A job record (`jobs/<run_id>.json`) holds `kind`
-(`consult`, `review` or `prose`), `thread`, `turn`, `role`, `backend`, `model`, `effort`, `dir`,
-`repo`, `commit` (or a review's `pr`), the `prompt` excerpt, `started_at`, `finished_at`, the klaus
-`pid` and its start time from `/proc/<pid>/stat`, `panel`, and `status`: `running`, `succeeded`,
-`failed`, `timed out` or `interrupted`, with a short `error`. A `running` record whose process is
-gone reads `died`. A one-shot consult's answer is `<run_id>.answer` beside the record, a failed
-one's raw output `<run_id>.raw`; a thread's answer is in its log. Records finished over 7 days ago
-are removed when a job starts.
+`klaus jobs` lists running jobs and jobs that finished in the last 3 hours, including prose passes.
+Use `--all` to list all retained records. Filter with `--kind`, using `consult`, `review`, or
+`prose`. Repeat the flag or separate kinds with commas.
+
+`klaus jobs show <id>` prints a record and its answer. Use `--answer` for just the answer. The ID
+can be a job ID, a unique suffix of a job ID, or a panel ID. A job record (`jobs/<run_id>.json`)
+holds `kind` (`consult`, `review` or `prose`), `thread`, `turn`, `role`, `backend`, `model`,
+`effort`, `dir`, `repo`, `commit` (or a review's `pr`), the `prompt` excerpt, `started_at`,
+`finished_at`, the klaus `pid` and its start time from `/proc/<pid>/stat`, `panel`, and `status`:
+`running`, `succeeded`, `failed`, `timed out` or `interrupted`, with a short `error`. A `running`
+record whose process is gone reads `died`. A one-shot consult's answer is `<run_id>.answer` beside
+the record, a failed one's raw output `<run_id>.raw`; a thread's answer is in its log. Records
+finished over 7 days ago are removed when a job starts.
 
 ### klaus consult
 

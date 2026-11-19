@@ -82,7 +82,7 @@ func dropRank(k chromeKind) int {
 // and the number of run rows that fit in the pane. On a short pane it drops
 // chrome, least useful first, until a few rows fit, so rows are dropped
 // last. An unknown height (0) shows everything.
-func (m dashboardModel) fitLayout(nRows, nJobs int) ([]chromeItem, int) {
+func (m dashboardModel) fitLayout(nRows, nJobs int, jobsHeader bool) ([]chromeItem, int) {
 	items := []chromeItem{{kind: chromeHeader, top: true}, {kind: chromeSource, top: true}}
 	if len(m.sandboxHosts) > 0 {
 		items = append(items, chromeItem{kind: chromeSandbox, top: true})
@@ -92,7 +92,7 @@ func (m dashboardModel) fitLayout(nRows, nJobs int) ([]chromeItem, int) {
 		chromeItem{kind: chromeBlank, top: true},
 		chromeItem{kind: chromeBlank},
 	)
-	if nJobs > 0 {
+	if nJobs > 0 || jobsHeader {
 		items = append(items, chromeItem{kind: chromeJobs})
 		for i := 0; i < nJobs; i++ {
 			items = append(items, chromeItem{kind: chromeJob, idx: i})
@@ -496,7 +496,7 @@ func (m dashboardModel) renderFooter(v dashView, width int) string {
 		fmt.Sprintf("  j/k pgup/pgdn g/G · %s · a approve · d discuss · o open%s · x clear · q quit", showKey, jobsKey),
 	}
 	if m.clearing != nil {
-		variants = []string{m.clearing.prompt()}
+		variants = m.clearing.prompts()
 	}
 	style := func(f string) string { return dimStyle.Render(f) }
 	// The notes on the selected row, each part in its style, go before the
@@ -506,7 +506,7 @@ func (m dashboardModel) renderFooter(v dashView, width int) string {
 		style lipgloss.Style
 	}
 	var notes []part
-	if len(v.rows) > 0 {
+	if len(v.rows) > 0 && m.clearing == nil {
 		r := v.rows[v.cursor]
 		if verb, cmd := m.approveCommand(r); cmd != "" {
 			notes = append(notes, part{verb + ": ", dimStyle}, part{cmd, cyanStyle})
@@ -520,6 +520,12 @@ func (m dashboardModel) renderFooter(v dashView, width int) string {
 				notes = append(notes, part{" · ", dimStyle})
 			}
 			notes = append(notes, part{"a newer push " + shortSHA(r.unplaced) + " isn't ready", yellowStyle})
+		}
+		if p := m.rowProse(r); p.total > 0 {
+			if len(notes) > 0 {
+				notes = append(notes, part{" · ", dimStyle})
+			}
+			notes = append(notes, part{p.String(), dimStyle})
 		}
 	}
 	if len(notes) > 0 {

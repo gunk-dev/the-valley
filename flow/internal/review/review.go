@@ -44,12 +44,13 @@ type ReviewResult struct {
 // Haiku has 200k context; we cap the diff well under that.
 const maxDiffBytes = 80_000
 
-// ReviewDiff runs a peer review on the diff between the current branch and the given base branch.
-func ReviewDiff(dir string, cfg ReviewConfig, baseBranch string) (*ReviewResult, error) {
-	if baseBranch == "" {
-		baseBranch = "main"
+// ReviewDiff runs a peer review on what HEAD changes since its merge base
+// with base.
+func ReviewDiff(dir string, cfg ReviewConfig, base string) (*ReviewResult, error) {
+	if base == "" {
+		base = "main"
 	}
-	diff, err := getDiff(dir, baseBranch)
+	diff, err := getDiff(dir, base)
 	if err != nil {
 		return nil, fmt.Errorf("getting diff: %w", err)
 	}
@@ -57,21 +58,25 @@ func ReviewDiff(dir string, cfg ReviewConfig, baseBranch string) (*ReviewResult,
 		return &ReviewResult{Summary: "No changes to review."}, nil
 	}
 
-	return callReviewInDir(dir, promptDiff(diff, maxDiffBytes), cfg)
+	return callReviewInDir(dir, promptDiff(dir, diff, maxDiffBytes), cfg)
 }
 
-// promptDiff is a diff as a reviewer is sent it: valid UTF-8, with any file
-// that isn't text named but left out (git.TextDiff), cut to max bytes.
-func promptDiff(diff string, max int) string {
-	diff = git.TextDiff(diff)
+// promptDiff is a diff of the repository at dir, if any, as a reviewer is
+// sent it: text, with any file that isn't text named with its size but left
+// out (git.TextDiff), cut to max bytes.
+func promptDiff(dir, diff string, max int) string {
+	diff = git.TextDiff(context.Background(), dir, diff)
 	if len(diff) > max {
 		return git.TruncateText(diff, max) + "\n\n[... diff truncated due to size ...]"
 	}
 	return diff
 }
 
-func getDiff(dir, baseBranch string) (string, error) {
-	cmd := exec.Command("git", "diff", baseBranch+"...HEAD")
+// getDiff diffs the committed bytes: the host's git config can neither
+// colour the diff nor run an external diff or textconv on what the change
+// holds.
+func getDiff(dir, base string) (string, error) {
+	cmd := exec.Command("git", "diff", "--no-color", "--no-ext-diff", "--no-textconv", base+"...HEAD")
 	cmd.Dir = dir
 	var out bytes.Buffer
 	cmd.Stdout = &out

@@ -25,14 +25,14 @@ func TestPromptDiff(t *testing.T) {
 	}{
 		{"valid text is untouched", readme + code, 1 << 20, readme + code},
 		{"a file that isn't text keeps its header, the others are untouched", readme + key + code, 1 << 20,
-			readme + keyHeader + git.NotText + "\n" + code},
+			readme + keyHeader + git.NotText(-1) + "\n" + code},
 		{"a path that isn't UTF-8 is marked, its hunks kept", badName, 1 << 20,
 			"diff --git a/caf\uFFFD.txt b/caf\uFFFD.txt\nindex 6666666..7777777 100644\n--- a/caf\uFFFD.txt\n+++ b/caf\uFFFD.txt\n@@ -1 +1 @@\n-a\n+b\n"},
 		{"truncation inside a multi-byte character", "+déjà", 3, "+d" + truncated},
-		{"truncation after sanitizing", key, len(keyHeader) + 4, keyHeader + git.NotText[:4] + truncated},
+		{"truncation after sanitizing", key, len(keyHeader) + 4, keyHeader + git.NotText(-1)[:4] + truncated},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := promptDiff(tc.diff, tc.max)
+			got := promptDiff("", tc.diff, tc.max)
 			if !utf8.ValidString(got) {
 				t.Errorf("promptDiff returned invalid UTF-8: %q", got)
 			}
@@ -43,9 +43,11 @@ func TestPromptDiff(t *testing.T) {
 	}
 }
 
-// A changed file git treats as text but that isn't UTF-8 reaches the
-// reviewer CLI named, its content left out, and the prompt valid UTF-8.
-func TestReviewDiffSendsValidUTF8(t *testing.T) {
+// A changed file git diffs as text but that isn't UTF-8, or holds a NUL byte
+// past where git looks for one, reaches the reviewer CLI named with its
+// size, its content left out, and the prompt is text. A textconv the clone
+// configures for it is not run.
+func TestReviewDiffSendsText(t *testing.T) {
 	dir := t.TempDir()
 	run := func(args ...string) {
 		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...)
@@ -60,12 +62,15 @@ func TestReviewDiffSendsValidUTF8(t *testing.T) {
 		}
 	}
 	run("init", "-q", "-b", "main")
+	run("config", "diff.sealed.textconv", "false")
+	write(".gitattributes", "*.enc diff=sealed\n")
 	write("main.go", "package old\n")
 	run("add", "-A")
 	run("commit", "-qm", "base")
 	run("checkout", "-qb", "work")
 	write("main.go", "package main\n")
-	write("key.enc", "\xff\xfe\x80sealed\n\x9a\x01\n") // no NUL byte, so git diffs it as text
+	write("key.enc", "\xff\xfe\x80sealed\n\x9a\x01\n")    // no NUL byte, so git diffs it as text
+	write("dump.txt", strings.Repeat("x", 9000)+"\x00\n") // git looks for NUL in the first 8000 bytes only
 	run("add", "-A")
 	run("commit", "-qm", "change")
 
@@ -84,10 +89,10 @@ func TestReviewDiffSendsValidUTF8(t *testing.T) {
 		t.Fatal(err)
 	}
 	prompt := string(data)
-	if !utf8.ValidString(prompt) {
-		t.Fatalf("the reviewer got invalid UTF-8:\n%q", prompt)
+	if !utf8.ValidString(prompt) || strings.IndexByte(prompt, 0) >= 0 {
+		t.Fatalf("the reviewer got what isn't text:\n%q", prompt)
 	}
-	for _, want := range []string{"+++ b/key.enc\n" + git.NotText + "\n", "+package main"} {
+	for _, want := range []string{"+++ b/key.enc\n" + git.NotText(13) + "\n", "+++ b/dump.txt\n" + git.NotText(9002) + "\n", "+package main"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("the reviewer's prompt lacks %q:\n%s", want, prompt)
 		}

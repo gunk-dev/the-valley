@@ -574,6 +574,12 @@ then the linters (`pre_review.linters`, else detected), then the peer review wit
 [prose pass](#configuration-keys). It exits 1, saying the delivery should be blocked, on a forbidden
 term, a lint failure, or findings at or above `pre_review.block_on`.
 
+Forbidden terms, peer review and the prose pass each read the change since its merge base with
+`origin/<default_branch>` (the local branch only when the clone has no origin copy), as committed:
+no textconv or external diff runs on it. A file that is not text (not valid UTF-8, or holding a NUL
+byte) reaches the reviewer and the prose writer by name, without its content, and with its size
+unless git itself takes it for binary.
+
 ## Configuration
 
 Configuration layers: built-in defaults, then the host config `~/.klaus/config.json`, then the

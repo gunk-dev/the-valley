@@ -16,10 +16,11 @@ import (
 	"the-valley/flow/internal/run"
 )
 
-// startProsePass runs _pre-review's prose pass beside the peer review. The
-// function it returns waits for the pass and prints its report. The pass
-// never fails _pre-review.
-func startProsePass(ctx context.Context, dir string, cfg config.Config, author backend.Kind, houseRules string) func(w io.Writer) {
+// startProsePass runs _pre-review's prose pass, on what HEAD changes in dir
+// since its merge base with base, beside the peer review. The function it
+// returns waits for the pass and prints its report. The pass never fails
+// _pre-review.
+func startProsePass(ctx context.Context, dir, base string, cfg config.Config, author backend.Kind, houseRules string) func(w io.Writer) {
 	pc := cfg.Prose()
 	if !*pc.Enabled {
 		return func(w io.Writer) { fmt.Fprintln(w, "Prose rewrite: off (pre_review.prose.enabled).") }
@@ -28,7 +29,7 @@ func startProsePass(ctx context.Context, dir string, cfg config.Config, author b
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runProsePass(ctx, &out, dir, cfg, pc, author, houseRules)
+		runProsePass(ctx, &out, dir, base, cfg, pc, author, houseRules)
 	}()
 	return func(w io.Writer) {
 		<-done
@@ -37,7 +38,7 @@ func startProsePass(ctx context.Context, dir string, cfg config.Config, author b
 	}
 }
 
-func runProsePass(ctx context.Context, w io.Writer, dir string, cfg config.Config, pc config.ProseConfig, author backend.Kind, houseRules string) {
+func runProsePass(ctx context.Context, w io.Writer, dir, base string, cfg config.Config, pc config.ProseConfig, author backend.Kind, houseRules string) {
 	// A sandbox host has no session to record the pass in.
 	var store *jobs.Store
 	if os.Getenv(runEventsEnv) != runEventsOutput {
@@ -50,7 +51,7 @@ func runProsePass(ctx context.Context, w io.Writer, dir string, cfg config.Confi
 	}
 	job := &jobs.Job{ID: eventID("prose"), Kind: jobs.KindProse, Dir: dir, Run: os.Getenv(runIDEnv)}
 	r := prose.Run(ctx, prose.Options{
-		Dir: dir, Base: defaultBranchRef(dir, cfg.DefaultBranch), Author: author,
+		Dir: dir, Base: base, Author: author,
 		Order: pc.Order, Patterns: pc.Paths, MaxInput: pc.MaxInputBytes,
 		Timeout:    time.Duration(pc.TimeoutSeconds) * time.Second,
 		HouseRules: houseRules,

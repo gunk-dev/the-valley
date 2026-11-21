@@ -54,13 +54,17 @@ var preReviewCmd = &cobra.Command{
 		fmt.Println("=== Pre-PR Review ===")
 		fmt.Println()
 
+		// Every pass reads what HEAD changes since its merge base with the
+		// default branch as origin last held it, which the worktree started
+		// from, so a local default branch behind origin's adds no landed
+		// commits to what is reviewed.
+		base := defaultBranchRef(dir, cfg.DefaultBranch)
+
 		// Forbidden terms go first, so a diff that adds one is never sent
 		// to the peer reviewer, which then reviews the diff they checked.
-		reviewBase := cfg.DefaultBranch
 		if len(forbidden) > 0 {
-			reviewBase = defaultBranchRef(dir, cfg.DefaultBranch)
 			fmt.Println("Forbidden terms:")
-			hits, err := scanForbiddenTerms(dir, reviewBase, "HEAD", forbidden)
+			hits, err := scanForbiddenTerms(dir, base, "HEAD", forbidden)
 			if err != nil {
 				return fmt.Errorf("checking forbidden terms: %w", err)
 			}
@@ -139,13 +143,13 @@ var preReviewCmd = &cobra.Command{
 		reviewStart := time.Now()
 		reg, _ := project.Load()
 		houseRules := loadHouseRules(cmd.Context(), dir, cfg, reg, cmd.ErrOrStderr()).Text
-		printProse := startProsePass(cmd.Context(), dir, cfg, author, houseRules)
+		printProse := startProsePass(cmd.Context(), dir, base, cfg, author, houseRules)
 		result, err := review.ReviewDiff(dir, review.ReviewConfig{
 			Backend:      string(kind),
 			Model:        model,
 			MaxFixRounds: cfg.PreReviewMaxFixRounds(),
 			HouseRules:   houseRules,
-		}, reviewBase)
+		}, base)
 		if err != nil {
 			printProse(os.Stdout)
 			return fmt.Errorf("running peer review: %w", err)

@@ -232,11 +232,11 @@ func collect(ctx context.Context, o Options, r *Result) (*input, error) {
 		if name == "" || !IsProse(name, o.Patterns) {
 			continue
 		}
-		hunks, err := git(ctx, o.Dir, "diff", "-U8", "--no-color", "--no-ext-diff", o.Base+"...HEAD", "--", ":(literal)"+name)
+		hunks, err := git(ctx, o.Dir, "diff", "-U8", "--no-color", "--no-ext-diff", "--no-textconv", o.Base+"...HEAD", "--", ":(literal)"+name)
 		if err != nil {
 			return nil, err
 		}
-		hunks = kgit.TextDiff(hunks)
+		hunks = kgit.TextDiff(ctx, o.Dir, hunks)
 		if diff.Len()+len(hunks) > o.MaxInput {
 			r.Omitted = append(r.Omitted, name)
 			continue

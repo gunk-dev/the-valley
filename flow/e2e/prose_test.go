@@ -201,8 +201,8 @@ func TestPreReviewProseRewrite(t *testing.T) {
 	}
 	for _, f := range []string{"agy.write.stdin", "claude.review.stdin"} {
 		got := h.readE2E(f)
-		if !utf8.ValidString(got) || !strings.Contains(got, "+++ b/docs/legacy.md\n"+git.NotText+"\n") {
-			t.Errorf("%s isn't valid UTF-8 naming docs/legacy.md without its content:\n%q", f, got)
+		if !utf8.ValidString(got) || !strings.Contains(got, "+++ b/docs/legacy.md\n"+git.NotText(7)+"\n") {
+			t.Errorf("%s isn't valid UTF-8 naming docs/legacy.md and its size without its content:\n%q", f, got)
 		}
 	}
 	if check := h.readE2E("codex.check.stdin"); !strings.Contains(check, "only from main") || !strings.Contains(check, "Install the tool before running it.") {

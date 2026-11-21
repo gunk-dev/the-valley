@@ -186,7 +186,7 @@ func carryMode(g git, c comparison, policy func() (*composed.Model, error)) (mod
 		return "", false, err
 	}
 	ctx := context.Background()
-	paths, err := derive.Diff(ctx, g.dir, g.env, c.base, c.head)
+	paths, err := derive.Diff(ctx, g.at(), g.env, c.base, c.head)
 	if err != nil {
 		return "", false, failure(err.Error())
 	}
@@ -199,7 +199,7 @@ func carryMode(g git, c comparison, policy func() (*composed.Model, error)) (mod
 	}
 	var landed []string
 	for i := 0; i+1 < len(c.landings); i++ {
-		p, err := derive.Diff(ctx, g.dir, g.env, c.landings[i+1], c.landings[i])
+		p, err := derive.Diff(ctx, g.at(), g.env, c.landings[i+1], c.landings[i])
 		if err != nil {
 			return "", false, failure(err.Error())
 		}

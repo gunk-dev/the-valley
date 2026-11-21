@@ -67,8 +67,8 @@ func writeHandleCache(g git, repos []listed, h handleMap) {
 		if err != nil || dir == "" {
 			return
 		}
-		if !filepath.IsAbs(dir) && g.dir != "" {
-			dir = filepath.Join(g.dir, dir)
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(g.at(), dir)
 		}
 		dir = filepath.Join(dir, "valley")
 		if os.MkdirAll(dir, 0o755) != nil {

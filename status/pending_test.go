@@ -16,7 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"the-valley/change"
 	"the-valley/note"
+	"the-valley/rebase"
 	"the-valley/telemetry"
 )
 
@@ -831,5 +833,48 @@ func TestEvidenceReadsTheSignersAsItsUseSays(t *testing.T) {
 	if why != "" || unsigned != "" || walked == nil || walked != listedP || name != "integrator" || reads() != 6 {
 		t.Errorf("a listing read the signers %d times, not once more: transfers %q, the walk %p (%s), the evidence %p (%s)",
 			reads()-5, name, walked, why, listedP, unsigned)
+	}
+}
+
+// A listing reads the same from any directory of a checkout. The ready
+// change's head is bound to a landing, and origin holds attestation refs,
+// so pending verifies its landing with the host's published signers. Run
+// from a subdirectory, it reads them as it does from the root, and prints
+// what it prints there.
+func TestPendingReadsTheSameFromASubdirectory(t *testing.T) {
+	dir := t.TempDir()
+	_, head := policyProject(t, dir, 1)
+	id := strings.Repeat("p", 32)
+	head("ready-1", id)
+	origin := filepath.Join(dir, "origin.git")
+	in := bareGit(t, origin)
+	bound := in("", "rev-parse", "refs/heads/ready-1")
+	landing := change.Landing{Landed: in("", "rev-parse", "main"), Request: change.RequestName(id), Head: bound}
+	record := in(fmt.Sprintf("100644 blob %s\t%s\n", in(string(landing.Format()), "hash-object", "-w", "--stdin"), change.LandingFile), "mktree")
+	in("", "update-ref", rebase.LandingPrefix+bound,
+		in("", "-c", "user.name=integrator", "-c", "user.email=integrator@example.org", "commit-tree", record, "-m", "landing"))
+	in("", "update-ref", attestationRefs+strings.Repeat("ab", 32)+"/00000001", in("", "mktree"))
+
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// pending is what the listing printed from a directory, its ages left
+	// out, since a row's age ticks.
+	ages := regexp.MustCompile(`(?m) +[0-9]+[smhd]$`)
+	pending := func(from string) string {
+		t.Helper()
+		t.Chdir(from)
+		status, out, errs := commandHere(t, "pending")
+		return fmt.Sprintf("exit %d\n%s\nstderr:\n%s", status, ages.ReplaceAllString(out, ""), errs)
+	}
+	unpublished := pending(root)
+	publishSigners(t, origin, "integrator")
+	want := pending(root)
+	if want == unpublished {
+		t.Fatalf("pending printed the same with the signers published as with none:\n%s", want)
+	}
+	if got := pending(filepath.Join(root, "src")); got != want {
+		t.Errorf("from src/, pending printed:\n%s\nand from the checkout's root:\n%s", got, want)
 	}
 }

@@ -59,8 +59,17 @@ func runReplay(g git, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 1 && args[0] != "" {
 		dir = args[0]
 	}
+	// The directory is read from where the person is: git, given no
+	// repository's directory, runs at the top level of the checkout it
+	// is started in (at).
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		fmt.Fprintf(stderr, "valley: %s\n", err)
+		return 1
+	}
+	there := git{env: g.env, stderr: g.stderr, dir: abs}
 	in := func(args ...string) (string, error) {
-		return g.output(true, append([]string{"-C", dir}, args...)...)
+		return there.output(true, args...)
 	}
 	if _, err := in("rev-parse", "--git-dir"); err != nil {
 		fmt.Fprintf(stderr, "valley: not a git repository: %s\n", dir)

@@ -398,7 +398,7 @@ func pushStatus(out, ref string) string {
 // child's group, which the parent kills whole.
 func gitIn(ctx context.Context, g git, group bool, args ...string) (stdout, stderr string, err error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env, cmd.Dir = g.env, g.dir
+	cmd.Env, cmd.Dir = g.env, g.at()
 	if group {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }

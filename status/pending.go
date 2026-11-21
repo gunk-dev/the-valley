@@ -934,7 +934,7 @@ func (s *snapshot) checks(head string) string {
 		return "requires ? (the policy did not derive)"
 	}
 	processStarted()
-	paths, err := derive.Diff(context.Background(), s.g.dir, s.g.env, base, head)
+	paths, err := derive.Diff(context.Background(), s.g.at(), s.g.env, base, head)
 	if err != nil {
 		return "requires ? (the policy did not derive)"
 	}

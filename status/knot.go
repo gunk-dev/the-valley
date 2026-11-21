@@ -428,7 +428,7 @@ func (r remote) blobs(oids []string) (map[string][]byte, error) {
 	}
 	processStarted()
 	cmd := exec.Command("git", "cat-file", "--batch")
-	cmd.Env, cmd.Dir = r.g.env, r.g.dir
+	cmd.Env, cmd.Dir = r.g.env, r.g.at()
 	cmd.Stdin = strings.NewReader(strings.Join(oids, "\n") + "\n")
 	out, err := cmd.StdoutPipe()
 	if err != nil {
@@ -1049,7 +1049,7 @@ func maps(m map[string][]byte) map[string][]byte {
 func (r remote) push(commit, old string) (refused string, err error) {
 	cmd := exec.Command("git", "push", "--porcelain", "--quiet", "--force-with-lease="+knot.Ref+":"+old,
 		"origin", commit+":"+knot.Ref)
-	cmd.Env, cmd.Dir = r.g.env, r.g.dir
+	cmd.Env, cmd.Dir = r.g.env, r.g.at()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err == nil {

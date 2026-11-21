@@ -1310,7 +1310,7 @@ func (a *approval) derive(root, tip, base, head string) (res *derive.Result, lab
 	if err != nil {
 		return nil, "", "", false, err
 	}
-	paths, err := derive.Diff(context.Background(), g.dir, g.env, base, head)
+	paths, err := derive.Diff(context.Background(), g.at(), g.env, base, head)
 	if err != nil {
 		return nil, "", "", false, fmt.Errorf("%v; nothing derived", err)
 	}

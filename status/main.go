@@ -53,6 +53,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"the-valley/rebase"
@@ -161,6 +162,12 @@ func run(args []string, stdout, stderr io.Writer, end func(int)) int {
 	if len(args) > 0 {
 		verb, args = args[0], args[1:]
 	}
+	// git runs at the checkout's top level (at), and a checkout whose top
+	// level git cannot say is refused rather than read from here.
+	if _, err := topLevel(g.env); err != nil {
+		fmt.Fprintf(stderr, "valley: %s\n", err)
+		return 1
+	}
 	// What this run verifies a transfer statement with (signers.go). Only
 	// the verbs that read how far a version has landed take the flags.
 	verification = &signerSource{g: g, stderr: stderr}
@@ -247,13 +254,85 @@ func run(args []string, stdout, stderr io.Writer, end func(int)) int {
 type git struct {
 	env    []string
 	stderr io.Writer // where git's own diagnostics go, unless quiet
-	dir    string    // the repository's directory; "" for the current one
+	dir    string    // the repository's directory; "" for the checkout the process runs in
+}
+
+// at is the directory git runs in for g: its repository's directory, or
+// for the checkout the process runs in, the top level of its work tree.
+// git reads some paths against the directory it runs in: ls-tree lists
+// only what a tree holds under it, a pathspec names a path under it, and
+// diff.relative narrows a diff to it. Every path valley gives git or reads
+// from it is from the root of a tree, so git runs at the top level, and a
+// command reads the same from any directory of the checkout. Outside a
+// work tree, as in a bare repository, at is "", the current directory.
+// run refuses a verb in a checkout whose top level git cannot say, so a
+// git that reads from a subdirectory fails closed.
+//
+// Programs other than git run in g.dir: a path they take, such as a
+// key's, is the person's, and reads from where the person is.
+func (g git) at() string {
+	if g.dir != "" {
+		return g.dir
+	}
+	top, _ := topLevel(g.env)
+	return top
+}
+
+// topLevels is what topLevel found for each directory, so git is asked
+// once per directory a process runs in.
+var topLevels = struct {
+	sync.Mutex
+	of map[string]foundTop
+}{of: map[string]foundTop{}}
+
+type foundTop struct {
+	top string
+	err error
+}
+
+// topLevel is the top level of the work tree the current directory is in,
+// or "" when it is in none: in a bare repository, in a git directory, or
+// in no repository at all. It is an error when git says the directory is
+// in a work tree and does not say where its top level is.
+func topLevel(env []string) (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("could not read the current directory: %v", err)
+	}
+	topLevels.Lock()
+	defer topLevels.Unlock()
+	f, found := topLevels.of[cwd]
+	if !found {
+		f.top, f.err = askTopLevel(env)
+		topLevels.of[cwd] = f
+	}
+	return f.top, f.err
+}
+
+// askTopLevel asks git for the top level of the work tree here, and when
+// git gives none, whether here is in a work tree at all.
+func askTopLevel(env []string) (string, error) {
+	ask := func(args ...string) (string, error) {
+		processStarted()
+		cmd := exec.Command("git", args...)
+		cmd.Env = env
+		out, err := cmd.Output()
+		return strings.TrimSuffix(string(out), "\n"), err
+	}
+	top, err := ask("rev-parse", "--show-toplevel")
+	if err == nil {
+		return top, nil
+	}
+	if inside, ierr := ask("rev-parse", "--is-inside-work-tree"); ierr == nil && inside == "true" {
+		return "", fmt.Errorf("could not find the top level of this checkout: git rev-parse --show-toplevel: %v", err)
+	}
+	return "", nil
 }
 
 // engine is g as the rebase engine runs git: in the same repository and
 // environment, with git's own diagnostics on the same stderr.
 func (g git) engine() rebase.Git {
-	return rebase.Git{Dir: g.dir, Env: g.env, Stderr: g.stderr, Phase: phase, Started: processStarted}
+	return rebase.Git{Dir: g.at(), Env: g.env, Stderr: g.stderr, Phase: phase, Started: processStarted}
 }
 
 // gitEnvironment is the caller's environment with replacement refs off.
@@ -278,8 +357,13 @@ func gitEnvironment(inherited []string) []string {
 	return append(kept, "GIT_NO_REPLACE_OBJECTS=1")
 }
 
-// command is git run with args in g's repository and environment.
-func (g git) command(args ...string) *exec.Cmd { return g.program("git", args...) }
+// command is git run with args in g's repository and environment, at
+// the top level of its work tree (at).
+func (g git) command(args ...string) *exec.Cmd {
+	cmd := g.program("git", args...)
+	cmd.Dir = g.at()
+	return cmd
+}
 
 // program is the program name run with args in g's repository directory
 // and environment, the current directory's when g names none.

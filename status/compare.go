@@ -411,7 +411,7 @@ func compareWith(g git, h *history, tip string, ref reference, n int, verbose bo
 	case i0 < i1:
 		return withheld(fmt.Sprintf("v%d's base %s is above v%d's base %s on main", old, short(b0), a.version, short(b1)))
 	}
-	repo := delta.Repo{Dir: g.dir, Env: g.env}
+	repo := delta.Repo{Dir: g.at(), Env: g.env}
 	d0, err := delta.Between(repo, b0, h0)
 	if err != nil {
 		return withheld(fmt.Sprintf("v%d's files do not read as valley-delta-v1: %v", old, err))
@@ -1007,7 +1007,7 @@ func readCommits(g git, oids []string) ([]commitText, error) {
 		return nil, nil
 	}
 	cmd := exec.Command("git", "cat-file", "--batch")
-	cmd.Env, cmd.Dir = g.env, g.dir
+	cmd.Env, cmd.Dir = g.env, g.at()
 	cmd.Stdin = strings.NewReader(strings.Join(oids, "\n") + "\n")
 	out, err := cmd.Output()
 	if err != nil {

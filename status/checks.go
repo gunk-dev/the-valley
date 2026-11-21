@@ -139,7 +139,7 @@ options:
 		return err
 	}
 	ctx := context.Background()
-	paths, err := derive.Diff(ctx, g.dir, g.env, base, head)
+	paths, err := derive.Diff(ctx, g.at(), g.env, base, head)
 	if err != nil {
 		return failure(err.Error() + "; nothing derived")
 	}
@@ -370,7 +370,7 @@ func policyModel(schema, instance, project string, pinned bool) (*composed.Model
 // commits, given as object IDs, under a policy read.
 func deriveUnder(g git, model *composed.Model, base, head string) (jsonChecks, error) {
 	ctx := context.Background()
-	paths, err := derive.Diff(ctx, g.dir, g.env, base, head)
+	paths, err := derive.Diff(ctx, g.at(), g.env, base, head)
 	if err != nil {
 		return jsonChecks{}, failure(err.Error() + "; nothing derived")
 	}

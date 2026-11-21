@@ -652,7 +652,7 @@ func blobs(g git, objects []string) ([][]byte, error) {
 	}
 	cmd := exec.Command("git", "cat-file", "--batch")
 	cmd.Env = g.env
-	cmd.Dir = g.dir
+	cmd.Dir = g.at()
 	cmd.Stdin = strings.NewReader(strings.Join(objects, "\n") + "\n")
 	stdout, err := cmd.Output()
 	if err != nil {

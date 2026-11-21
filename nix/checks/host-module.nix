@@ -56,6 +56,7 @@ let
     unservedRestackerHost
     keylessRestackerHost
     telemetryHost
+    onMainHost
     ;
 
   # The web publisher's module (nix/web-publisher.nix) beside the host
@@ -221,6 +222,34 @@ let
     ];
   };
 
+  # The onMain bindings the module must refuse: a project the host does not
+  # serve, a unit bound twice, a name too long for a user's, unit names
+  # that would need quoting, and a bound unit that restarts.
+  unservedOnMainHost = onMainHost.extendModules {
+    modules = [ { services.valley.onMain.deploy.project = lib.mkForce "nowhere"; } ];
+  };
+  boundTwiceOnMainHost = onMainHost.extendModules {
+    modules = [ { services.valley.onMain.docs.unit = lib.mkForce "converge.service"; } ];
+  };
+  longNameOnMainHost = onMainHost.extendModules {
+    modules = [
+      {
+        services.valley.onMain.a-name-of-seventeen = {
+          project = "open";
+          unit = "long.service";
+        };
+      }
+    ];
+  };
+  onMainUnitNamedHost =
+    unit:
+    onMainHost.extendModules {
+      modules = [ { services.valley.onMain.docs.unit = lib.mkForce unit; } ];
+    };
+  restartingOnMainHost = onMainHost.extendModules {
+    modules = [ { systemd.services.converge.serviceConfig.Restart = "on-failure"; } ];
+  };
+
   # mirrorHost with a second mirror on mirror-pilot, which already has one.
   addedMirrorHost = mirrorHost.extendModules {
     modules = [
@@ -253,6 +282,7 @@ let
     ++ narrowedWorkerHost.config.assertions
     ++ restackerHost.config.assertions
     ++ telemetryHost.config.assertions
+    ++ onMainHost.config.assertions
     ++ defaultRestackerHost.config.assertions
     ++ buildSliceHost.config.assertions
     ++ webPublisherHost.config.assertions
@@ -397,6 +427,41 @@ let
       host = collidingTelemetryHost;
       says = "source names must be unique, and localSources or remoteSources repeats one: worker";
       why = "a local source named as one of the module's own would make the catalog name two sources alike";
+    }
+    {
+      host = unservedOnMainHost;
+      says = "services.valley.onMain.deploy.project names nowhere, which this host declaration does not serve";
+      why = "a bridge for a project the host does not serve would follow a repository that is not there";
+    }
+    {
+      host = boundTwiceOnMainHost;
+      says = "services.valley.onMain binds converge.service more than once";
+      why = "a unit bound twice would read two bridges' environment files, and run for two projects' tips";
+    }
+    {
+      host = onMainUnitNamedHost "docs\\x2d.service";
+      says = "services.valley.onMain.docs.unit is \"docs\\\\x2d.service\": name a service whole";
+      why = "a unit name with a backslash would be read as an escape wherever the name is written";
+    }
+    {
+      host = onMainUnitNamedHost "-docs.service";
+      says = "services.valley.onMain.docs.unit is \"-docs.service\": name a service whole";
+      why = "a unit name with a leading hyphen would be read as an option by a command given it";
+    }
+    {
+      host = onMainUnitNamedHost "docs@app.service";
+      says = "services.valley.onMain.docs.unit is \"docs@app.service\": name a service whole";
+      why = "a template's instance would be rendered as a unit of its own, without the template's command";
+    }
+    {
+      host = restartingOnMainHost;
+      says = "services.valley.onMain.deploy: converge.service sets Restart=on-failure. A failed run must stay failed";
+      why = "a bound unit that restarts would run a failed tip again, which only the next tip or the operator may do";
+    }
+    {
+      host = longNameOnMainHost;
+      says = "services.valley.onMain.a-name-of-seventeen: a binding's name is a lower-case letter, then up to 15";
+      why = "a binding's name longer than a user's name can carry would fail the system's build later, with no word of onMain";
     }
     {
       host = noInstanceWebPublisherHost;
@@ -1025,6 +1090,95 @@ let
     }
     || !(lib.any (s: s.name == "worker") sources);
 
+  # Each onMain binding runs its bridge as a user of its own, outside the
+  # git group, which only its unit is given. The unit sees the data
+  # directory as an empty read-only file system with the one repository
+  # bound into it read-only, writes nothing but its runtime directory,
+  # trusts that repository alone, and has the host's keys out of reach. It
+  # is given no grant: a path unit starts the bound unit while the bridge's
+  # request exists. The bound unit's first command, run as root, consumes
+  # the request and writes the unit's environment from the bridge's commit
+  # file into a directory only root writes; the unit reads that file after
+  # its own, and keeps the start limit the host gives it. A host with no
+  # binding renders none of it, and telemetry catalogues the three units of
+  # each binding.
+  onMainRenderedWithoutBinding =
+    lib.any (n: lib.hasPrefix "valley-on-main-" n) (
+      lib.attrNames telemetryHost.config.systemd.services
+      ++ lib.attrNames telemetryHost.config.systemd.paths
+      ++ lib.attrNames telemetryHost.config.users.users
+    )
+    || !(lib.any (s: s.name == "on-main" && !s.enabled && s.units == [ ]) telemetryHost.config.services.valley.telemetry.catalog.sources);
+
+  onMainMisrendered =
+    let
+      cfg = onMainHost.config;
+      unit = cfg.systemd.services.valley-on-main-deploy;
+      service = unit.serviceConfig;
+      account = cfg.users.users.valley-on-main-deploy;
+      path = cfg.systemd.paths.valley-on-main-deploy;
+      bound = cfg.systemd.units."converge.service".text;
+      source = lib.filter (s: s.name == "on-main") cfg.services.valley.telemetry.catalog.sources;
+    in
+    service.User or null != "valley-on-main-deploy"
+    || service.Group or null != "valley-on-main-deploy"
+    || service.SupplementaryGroups or [ ] != [ "git" ]
+    || account.group != "valley-on-main-deploy"
+    || account.extraGroups != [ ]
+    || !account.isSystemUser
+    || !(lib.hasSuffix "/bin/onmain watch --repo /srv/git/open.git --commit-file /run/valley-on-main-deploy/commit --request-file /run/valley-on-main-deploy/request" service.ExecStart)
+    || service.RuntimeDirectory or null != "valley-on-main-deploy"
+    || service.ProtectSystem or null != "strict"
+    || service ? ReadWritePaths
+    || service.TemporaryFileSystem or null != "/srv/git:ro"
+    || service.BindReadOnlyPaths or [ ] != [ "/srv/git/open.git" ]
+    || service.InaccessiblePaths or [ ] != [ "-/run/agenix/valley-git-ssh-key" ]
+    || service.Restart or "no" != "no"
+    || unit.environment.GIT_CONFIG_COUNT or null != "2"
+    || unit.environment.GIT_CONFIG_VALUE_0 or null != ""
+    || unit.environment.GIT_CONFIG_VALUE_1 or null != "/srv/git/open.git"
+    || !(builtins.elem "valley-init.service" unit.after)
+    || !(builtins.elem "multi-user.target" unit.wantedBy)
+    || cfg.security.polkit.enable
+    || path.pathConfig != {
+      PathExists = "/run/valley-on-main-deploy/request";
+      Unit = "converge.service";
+    }
+    || !(builtins.elem "multi-user.target" path.wantedBy)
+    || cfg.systemd.paths.valley-on-main-docs.pathConfig.Unit or null != "docs.service"
+    || cfg.systemd.services.converge.serviceConfig.EnvironmentFile != [
+      "/etc/converge.env"
+      "-/run/valley-on-main/deploy.environment"
+    ]
+    || cfg.systemd.services.docs.serviceConfig.EnvironmentFile != [ "-/run/valley-on-main/docs.environment" ]
+    || (
+      let
+        first = lib.head cfg.systemd.services.converge.serviceConfig.ExecStartPre;
+      in
+      !(lib.hasPrefix "+/nix/store/" first)
+      || !(lib.hasSuffix "/bin/onmain environment --repo /srv/git/open.git --commit-file /run/valley-on-main-deploy/commit --request-file /run/valley-on-main-deploy/request --out /run/valley-on-main/deploy.environment" first)
+    )
+    || !(builtins.elem "d /run/valley-on-main 0755 root root - -" cfg.systemd.tmpfiles.rules)
+    || lib.hasInfix "StartLimit" bound
+    || cfg.systemd.services.docs.serviceConfig.ExecStart or null == null
+    || source != [
+      {
+        name = "on-main";
+        description = "the onMain bridges, their path units and the units they start";
+        enabled = true;
+        location = "local";
+        units = [
+          "valley-on-main-deploy.service"
+          "valley-on-main-deploy.path"
+          "converge.service"
+          "valley-on-main-docs.service"
+          "valley-on-main-docs.path"
+          "docs.service"
+        ];
+        not_instrumented = [ "no producer records: lifecycle and output only" ];
+      }
+    ];
+
   restackerMisrendered =
     let
       unit = restackerHost.config.systemd.services."valley-restacker@";
@@ -1384,6 +1538,10 @@ in
       throw "valley module-eval: restacker machinery rendered for a host that never enabled it"
     else if restackerMisrendered then
       throw "valley module-eval: each restacker controller must run valley-restacker run for its project as its own account outside the git group, with its own 0700 state directory as the only persistent path it may write, pushing over this host's sshd as its principal with the key systemd hands it as a credential, checking the host's own key, and reading the floor from the instance repository"
+    else if onMainRenderedWithoutBinding then
+      throw "valley module-eval: onMain machinery rendered for a host that binds no unit: no bridge, path unit or user may appear until a host binds one, and the on-main telemetry source is catalogued disabled with no unit"
+    else if onMainMisrendered then
+      throw "valley module-eval: each onMain bridge must run onmain for its project's repository, commit file and request file as a user of its own outside the git group, the git group given to its unit alone, seeing the data directory as an empty read-only file system with that one repository bound in read-only, writing only its runtime directory, trusting that repository alone, with the host's keys out of reach, no restart and no polkit grant; a path unit per binding must start the bound unit while the bridge's request exists; each bound unit's first command must consume the request and write its environment as root from its bridge's commit file into a directory only root writes, and the unit must read that file after its own and keep the host's start limit; and telemetry must catalogue each bridge, its path unit and its unit as the on-main source"
     else if telemetrySourceMisrendered then
       throw "valley module-eval: a unit the host lists in telemetry.localSources must be catalogued as an enabled local source with exactly those units, beside the module's own"
     else if webPublisherRenderedWithoutEnable then

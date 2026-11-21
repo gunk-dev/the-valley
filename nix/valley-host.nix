@@ -1449,6 +1449,43 @@ let
   declaredKeysFile = pkgs.writeText "valley-declared-keys" (
     lib.concatLines config.users.users.${cfg.user}.openssh.authorizedKeys.keys
   );
+
+  # The onMain bindings (services.valley.onMain). Each runs a bridge
+  # (../onmain) under a unit and a user of the same name, and a path unit of
+  # that name that starts the bound unit. The bridge writes the commit to
+  # run and its request in its runtime directory, which only its user can
+  # write. The bound unit's environment file is root's, in a directory only
+  # root can write: systemd imports every assignment in such a file, so the
+  # bridge's user never writes one.
+  onMainBridge = name: "valley-on-main-${name}";
+  onMainCommit = name: "/run/${onMainBridge name}/commit";
+  onMainRequest = name: "/run/${onMainBridge name}/request";
+  onMainEnvironmentDir = "/run/valley-on-main";
+  onMainEnvironment = name: "${onMainEnvironmentDir}/${name}.environment";
+  onMainRepo = b: "${toString cfg.dataDir}/${b.project}.git";
+
+  # A bound unit's name: a service named whole, in characters that stand in
+  # a unit file and on a command line without quoting. No @, so no
+  # template's instance: the module would render one as a unit of its own,
+  # without the template's command.
+  onMainUnitName = "[A-Za-z0-9_.:][A-Za-z0-9_.:-]*[.]service";
+  onMainService = b: config.systemd.services.${lib.removeSuffix ".service" b.unit};
+
+  # Every bridge, path unit and bound unit, for telemetry's on-main source.
+  onMainUnits = lib.concatLists (
+    lib.mapAttrsToList (name: b: [
+      "${onMainBridge name}.service"
+      "${onMainBridge name}.path"
+      b.unit
+    ]) cfg.onMain
+  );
+
+  # Units bound by more than one binding.
+  onMainBoundTwice = lib.attrNames (
+    lib.filterAttrs (_: names: lib.length names > 1) (
+      lib.groupBy (name: cfg.onMain.${name}.unit) (lib.attrNames cfg.onMain)
+    )
+  );
 in
 {
   # Telemetry (./telemetry.nix), given what this module derives from the
@@ -1464,6 +1501,7 @@ in
         attestPackage
         integratorPackage
         restackerPackage
+        onMainUnits
         ;
     })
   ];
@@ -2221,6 +2259,65 @@ in
       };
     };
 
+    onMain = lib.mkOption {
+      type = lib.types.attrsOf (
+        lib.types.submodule {
+          options = {
+            project = lib.mkOption {
+              type = lib.types.str;
+              example = "app";
+              description = "The project whose main is followed: one this host serves.";
+            };
+            unit = lib.mkOption {
+              type = lib.types.str;
+              example = "converge.service";
+              description = ''
+                The service started for each new tip, which the host
+                declares itself in {option}`systemd.services`, with its
+                command, user, credentials, sandbox and timeout. Name it
+                whole, with `.service`, in letters, digits, `_`, `.`, `:`
+                and hyphens after the first character; a template's
+                instance is refused. It must not set `Restart`: a failed
+                run stays failed.
+              '';
+            };
+          };
+        }
+      );
+      default = { };
+      example = lib.literalExpression ''{ deploy = { project = "app"; unit = "converge.service"; }; }'';
+      description = ''
+        Units of the host's own, each started when a project's main moves.
+        Each binding runs a bridge, `valley-on-main-<name>.service`, as a
+        user of its own of that name, which reads the repository, and a
+        path unit, `valley-on-main-<name>.path`, which starts the bound
+        unit. The name is a lower-case letter, then up to 15 lower-case
+        letters, digits or hyphens.
+
+        The bridge converges on the latest tip. When main names a commit
+        it has not requested, it writes the commit and a request file in
+        its runtime directory, and the path unit starts the unit while a
+        request exists and the unit is not running. The module adds a
+        first `ExecStartPre` to the unit, run as root, that removes the
+        request and writes the unit's environment from the commit:
+        `VALLEY_REPOSITORY`, the repository's path, and `VALLEY_COMMIT`,
+        the commit. Moves made during a run become one run at the newest
+        tip. Every start of the bridge requests the current tip, so a unit
+        must tolerate running again for a commit it has already run. A
+        failed run is left failed until main moves or the operator starts
+        the unit.
+
+        Make the unit a oneshot without `RemainAfterExit`: the path unit
+        starts it again only once it has stopped. The unit's own start
+        limit applies, and a start it refuses stops the path unit until
+        the operator resets the unit and restarts the path unit. The
+        bridge reads the repository directory that existed when it
+        started, so restart the bridge after replacing a repository, as a
+        restore does. Observers read the units through telemetry, as the
+        source `on-main`.
+      '';
+    };
+
     # The identity registry compiler (dcr-b87f6e8): the step between the
     # instance's declared registry and the two gates that read what it
     # compiles to. Machine options only — whether this host compiles, and
@@ -2393,10 +2490,18 @@ in
         defaultText = lib.literalExpression "(import ./packages.nix { inherit pkgs lib; }).pushreason";
         description = "The reason a failed mirror push is logged with, which each mirror pusher runs.";
       };
+
+      onmain = lib.mkOption {
+        type = lib.types.package;
+        internal = true;
+        default = flakePackages.onmain;
+        defaultText = lib.literalExpression "(import ./packages.nix { inherit pkgs lib; }).onmain";
+        description = "The bridge each services.valley.onMain binding runs.";
+      };
     };
   };
 
-  config = lib.mkIf cfg.enable {
+  config = lib.mkIf cfg.enable (lib.mkMerge [ {
     assertions = [
       {
         assertion = cfg.authorizedKeys != [ ];
@@ -2581,7 +2686,33 @@ in
           message = "services.valley.restacker.enable needs services.openssh.enable: the restacker reaches this host's repositories through its sshd.";
         }
       ]
-    );
+    )
+    ++ lib.concatLists (
+      lib.mapAttrsToList (name: b: [
+        {
+          assertion = builtins.match "[a-z][a-z0-9-]{0,15}" name != null;
+          message = "services.valley.onMain.${name}: a binding's name is a lower-case letter, then up to 15 lower-case letters, digits or hyphens, because its bridge's unit and user are named ${onMainBridge "<name>"}, and a user's name holds at most 31 characters.";
+        }
+        {
+          assertion = gitProjects ? ${b.project};
+          message = "services.valley.onMain.${name}.project names ${b.project}, which this host declaration does not serve: the bridge follows main in that repository, so the host has to hold it.";
+        }
+        {
+          assertion = builtins.match onMainUnitName b.unit != null;
+          message = "services.valley.onMain.${name}.unit is ${builtins.toJSON b.unit}: name a service whole, ending in .service, in letters, digits, _, ., : and hyphens after the first character, which need no quoting in a unit file. A template's instance is refused: the module would render it as a unit of its own, without the template's command.";
+        }
+        {
+          assertion = toString (onMainService b).serviceConfig.Restart or "no" == "no";
+          message = "services.valley.onMain.${name}: ${b.unit} sets Restart=${toString (onMainService b).serviceConfig.Restart or ""}. A failed run must stay failed until main moves or the operator starts the unit, so a bound unit does not restart.";
+        }
+      ]) cfg.onMain
+    )
+    ++ [
+      {
+        assertion = onMainBoundTwice == [ ];
+        message = "services.valley.onMain binds ${lib.concatStringsSep ", " onMainBoundTwice} more than once. Each binding starts its unit with an environment file of its own, so two would start one unit for two projects' tips, each run reading both files. Bind each unit once.";
+      }
+    ];
 
     # The worker's signer counts in the worker's projects and no others
     # (oc-e092038). On a host that sets neither list, the worker builds for
@@ -3532,5 +3663,166 @@ in
         ];
       };
     };
-  };
+  }
+
+  # The onMain bindings (services.valley.onMain): for each, a bridge that
+  # requests a run of the host's own unit when the project's main moves, a
+  # path unit that starts it, and the wiring that unit needs. The module
+  # does not generate the bound unit: the host declares it, and the module
+  # adds the step that writes its environment and the environment file to
+  # it.
+  #
+  # The bridge watches the repository's ref storage itself, with inotify:
+  # a path unit's PathChanged= holds no watch while the unit it started
+  # runs, so a move during a run would wait for the next move (see
+  # identityInputs). It turns each move into a request file, which is a
+  # level: PathExists=, as for the worker's due, looks for the file again
+  # when the unit stops, so a request made during a run starts the next
+  # one. The bridge starts nothing itself, so it needs no grant.
+  (lib.mkIf (cfg.onMain != { }) {
+    # Each bridge's user, in no group but its own. The git group, which
+    # reads the repositories, is given to the bridge's unit alone.
+    users.users = lib.mapAttrs' (
+      name: _:
+      lib.nameValuePair (onMainBridge name) {
+        isSystemUser = true;
+        group = onMainBridge name;
+        description = "The valley onMain bridge ${name}";
+      }
+    ) cfg.onMain;
+    users.groups = lib.mapAttrs' (name: _: lib.nameValuePair (onMainBridge name) { }) cfg.onMain;
+
+    systemd.tmpfiles.rules = [ "d ${onMainEnvironmentDir} 0755 root root - -" ];
+
+    # Each binding's path unit starts its bound unit while the bridge's
+    # request exists and the unit is not running. The unit's first command
+    # removes the request (onmain/main.go, writeEnvironment).
+    systemd.paths = lib.mapAttrs' (
+      name: b:
+      lib.nameValuePair (onMainBridge name) {
+        description = "Start ${b.unit} when the onMain bridge ${name} requests a run";
+        wantedBy = [ "multi-user.target" ];
+        pathConfig = {
+          PathExists = onMainRequest name;
+          Unit = b.unit;
+        };
+      }
+    ) cfg.onMain;
+
+    systemd.services = lib.mkMerge [
+      (lib.mapAttrs' (
+        name: b:
+        lib.nameValuePair (onMainBridge name) {
+          description = "Request a run of ${b.unit} when ${b.project}'s main moves";
+          wantedBy = [ "multi-user.target" ];
+          after = [ "valley-init.service" ];
+          unitConfig.RequiresMountsFor = cfg.dataDir;
+          # git refuses a repository its caller does not own. An empty
+          # entry resets what the system's configuration trusts, and one
+          # exact entry follows, as for the web publisher.
+          environment = {
+            GIT_CONFIG_COUNT = "2";
+            GIT_CONFIG_KEY_0 = "safe.directory";
+            GIT_CONFIG_VALUE_0 = "";
+            GIT_CONFIG_KEY_1 = "safe.directory";
+            GIT_CONFIG_VALUE_1 = onMainRepo b;
+          };
+          # No Restart: a bridge stops only when its watch cannot be set up
+          # on the repository or the repository cannot be read as files ref
+          # storage, and each start requests a run again. The operator
+          # restarts it once the fault is fixed.
+          serviceConfig = {
+            ExecStart = lib.escapeShellArgs [
+              (lib.getExe cfg.packages.onmain)
+              "watch"
+              "--repo"
+              (onMainRepo b)
+              "--commit-file"
+              (onMainCommit name)
+              "--request-file"
+              (onMainRequest name)
+            ];
+            User = onMainBridge name;
+            Group = onMainBridge name;
+            SupplementaryGroups = [ cfg.group ];
+            # Kept when the bridge stops, so a start of the unit by hand
+            # still finds the commit, until the host reboots.
+            RuntimeDirectory = onMainBridge name;
+            RuntimeDirectoryPreserve = true;
+            UMask = "0022";
+            # The data directory is an empty, read-only file system here
+            # with the one repository bound into it, read-only: the git
+            # group reads every repository, and writes the integrated
+            # ones. The keys the host module is given are out of reach. The
+            # bind holds the repository directory that existed when the
+            # bridge started, so a repository replaced at its path, as by a
+            # restore, is followed once the bridge is restarted.
+            ProtectSystem = "strict";
+            TemporaryFileSystem = "${toString cfg.dataDir}:ro";
+            BindReadOnlyPaths = [ (onMainRepo b) ];
+            InaccessiblePaths = map (p: "-${toString p}") (
+              lib.filter (p: p != null) [
+                cfg.integrator.signingKeyFile
+                cfg.restacker.sshKeyFile
+                cfg.backup.sshKeyFile
+                cfg.backup.passwordFile
+                cfg.backup.repositoryFile
+              ]
+            );
+            NoNewPrivileges = true;
+            ProtectHome = true;
+            PrivateTmp = true;
+            PrivateDevices = true;
+            PrivateNetwork = true;
+            ProtectClock = true;
+            ProtectHostname = true;
+            ProtectKernelLogs = true;
+            ProtectKernelModules = true;
+            ProtectKernelTunables = true;
+            ProtectControlGroups = true;
+            ProtectProc = "invisible";
+            RestrictAddressFamilies = [ "AF_UNIX" ];
+            RestrictNamespaces = true;
+            RestrictRealtime = true;
+            RestrictSUIDSGID = true;
+            LockPersonality = true;
+            CapabilityBoundingSet = "";
+            SystemCallArchitectures = "native";
+            SystemCallFilter = [ "@system-service" ];
+          };
+        }
+      ) cfg.onMain)
+      # The bound units. Their first ExecStartPre=, run as root, removes the
+      # bridge's request, reads its commit file, accepts it only as one
+      # commit ID, and writes the environment file with the repository this
+      # module names. systemd reads an environment file again for each
+      # command it starts, so the unit's command reads the values just
+      # written. The file is added after any the host names, so its values
+      # are the ones the unit reads, and it may be missing for that first
+      # command. The unit's start limit is the host's.
+      (lib.mapAttrs' (
+        name: b:
+        lib.nameValuePair (lib.removeSuffix ".service" b.unit) {
+          serviceConfig.ExecStartPre = lib.mkBefore [
+            "+${
+              lib.escapeShellArgs [
+                (lib.getExe cfg.packages.onmain)
+                "environment"
+                "--repo"
+                (onMainRepo b)
+                "--commit-file"
+                (onMainCommit name)
+                "--request-file"
+                (onMainRequest name)
+                "--out"
+                (onMainEnvironment name)
+              ]
+            }"
+          ];
+          serviceConfig.EnvironmentFile = lib.mkAfter [ "-${onMainEnvironment name}" ];
+        }
+      ) cfg.onMain)
+    ];
+  })
+  ]);
 }

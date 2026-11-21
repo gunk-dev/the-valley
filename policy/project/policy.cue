@@ -31,6 +31,7 @@ project: {
 		"exactjson-unit",
 		"pushpolicy-unit",
 		"pushreason-unit",
+		"onmain-unit",
 		"change-unit",
 		"knot-unit",
 		"knot-agree",
@@ -85,6 +86,7 @@ project: {
 		"bus-e2e",
 		"ssh-e2e",
 		"publish-e2e",
+		"onmain-e2e",
 		"worker-e2e",
 		"telemetry-unit",
 		"telemetry-e2e",
@@ -106,16 +108,17 @@ project: {
 	}
 
 	// The integrator's scenarios take about a minute, and ssh-e2e,
-	// publish-e2e, worker-e2e, telemetry-e2e, restack-host-e2e and
-	// web-publisher-e2e boot
-	// NixOS machines. web-reader-browser-e2e boots no machine, but its
-	// closure holds Chromium, and it runs a browser in about 2 GiB.
+	// publish-e2e, onmain-e2e, worker-e2e, telemetry-e2e, restack-host-e2e
+	// and web-publisher-e2e boot NixOS machines. web-reader-browser-e2e
+	// boots no machine, but its closure holds Chromium, and it runs a
+	// browser in about 2 GiB.
 	// flow-e2e runs over a hundred scenarios, each on its own tmux server,
 	// in about a minute.
 	// Every other check here takes seconds once its packages are built.
 	checks: "integrator-e2e": cost:         "slow"
 	checks: "ssh-e2e": cost:                "slow"
 	checks: "publish-e2e": cost:            "slow"
+	checks: "onmain-e2e": cost:             "slow"
 	checks: "worker-e2e": cost:             "slow"
 	checks: "telemetry-e2e": cost:          "slow"
 	checks: "restack-host-e2e": cost:       "slow"
@@ -287,6 +290,15 @@ project: {
 		paths: "pushreason/**":      true
 		requires: "pushreason-unit": true
 		requires: "mirror-e2e":      true
+	}
+
+	// The bridge that requests a run of a host's own unit when a project's main
+	// moves. onmain-e2e runs it on a NixOS machine, from the unit a host
+	// renders.
+	classes: onmain: {
+		paths: "onmain/**":      true
+		requires: "onmain-unit": true
+		requires: "onmain-e2e":  true
 	}
 
 	// The identity registry compiler, and the registries it is driven over.
@@ -616,7 +628,8 @@ project: {
 	// The NixOS module and what its end-to-end checks run. The hook checks
 	// follow the scripts out of the hosts in nix/checks/hosts.nix, which
 	// are made of the three declarations named here; ssh-e2e, publish-e2e,
-	// worker-e2e and restack-host-e2e run the module in NixOS machines.
+	// onmain-e2e, worker-e2e and restack-host-e2e run the module in NixOS
+	// machines.
 	// worker-e2e follows main after a landing and gates nothing.
 	classes: "host-module": {
 		paths: "nix/valley-host.nix":          true
@@ -632,6 +645,7 @@ project: {
 		requires: "identity-e2e":              true
 		requires: "ssh-e2e":                   true
 		requires: "publish-e2e":               true
+		requires: "onmain-e2e":                true
 		follows: "worker-e2e":                 true
 		requires: "restack-host-e2e":          true
 		requires: "valley-changes":            true
@@ -784,6 +798,7 @@ project: {
 		"approval.nix": ["approval-unit"]
 		"integrator.nix": ["integrator-unit", "integrator-e2e"]
 		"signers.nix": ["signers-e2e"]
+		"onmain.nix": ["onmain-unit", "onmain-e2e"]
 		"sigverify.nix": ["sigverify-unit", "sigverify-e2e"]
 		"web.nix": ["web-unit", "web-server-unit", "web-reader-state-crash", "web-receiver-unit", "web-image", "readaccess-unit"]
 		"schema.nix": ["cue-vet", "attest-schema", "identity-schema"]

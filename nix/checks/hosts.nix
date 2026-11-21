@@ -12,8 +12,8 @@
 }:
 let
   # The stand-ins: the integrator, the identity compiler, valleyhook, the
-  # restacker and pushreason, each a script with the program's name that
-  # fails if anything runs it.
+  # restacker, pushreason and the onMain bridge, each a script with the
+  # program's name that fails if anything runs it.
   # A host rendered over them renders the same units, hooks and scripts,
   # with the stand-ins' store paths where the programs' would be. None of
   # them changes when a program does, so a check that reads only what the
@@ -25,7 +25,7 @@ let
       echo "${name}: a stand-in the module checks render hosts over, which runs nothing" >&2
       exit 1
     '';
-  stubs = lib.genAttrs [ "integrator" "identity" "valleyhook" "pushreason" ] stub // {
+  stubs = lib.genAttrs [ "integrator" "identity" "valleyhook" "pushreason" "onmain" ] stub // {
     restacker = stub "valley-restacker";
   };
 
@@ -352,6 +352,39 @@ in
           }
         ];
       };
+    };
+  };
+
+  # Two units of the host's own, each started when a project's main moves,
+  # one bound unit naming an environment file of its own, with the
+  # collector on to catalogue them.
+  onMainHost = mkHost {
+    services.valley = {
+      config = ../../examples/hosts/protected.cue;
+      backup.sshKeyFile = "/run/agenix/valley-git-ssh-key";
+      onMain = {
+        deploy = {
+          project = "open";
+          unit = "converge.service";
+        };
+        docs = {
+          project = "sealed";
+          unit = "docs.service";
+        };
+      };
+      telemetry = {
+        enable = true;
+        observers = [ "operator" ];
+      };
+    };
+    systemd.services.converge = {
+      serviceConfig.Type = "oneshot";
+      serviceConfig.EnvironmentFile = "/etc/converge.env";
+      script = "true";
+    };
+    systemd.services.docs = {
+      serviceConfig.Type = "oneshot";
+      script = "true";
     };
   };
 

@@ -453,6 +453,19 @@ rec {
     meta.mainProgram = "pushreason";
   };
 
+  # The bridge behind a host's services.valley.onMain binding (../onmain):
+  # it starts one unit when a project's main moves. Go, standard library
+  # only. The git it reads the repository with is compiled in, as
+  # sigverify's is, so no PATH changes which git that is. Its tests run
+  # against real git.
+  onmain = goModule {
+    pname = "valley-onmain";
+    dir = ../onmain;
+    ldflags = [ "-X main.gitProgram=${lib.getExe pkgs.git}" ];
+    tests.nativeCheckInputs = [ pkgs.git ];
+    meta.mainProgram = "onmain";
+  };
+
   # The pre-receive hook's policy (valleyhook/): what a push may write to a
   # project a valley host serves. It validates a push to the plan graph
   # with the one reading of a graph the CLI shares (../knot), reads a

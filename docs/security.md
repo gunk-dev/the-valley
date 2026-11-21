@@ -295,6 +295,38 @@ gives the worker no access to the repositories on disk, and the worker stays out
 group. A forged or repeated mark costs one pass that reads every project and builds nothing new. The
 unauthenticated bus starts no pass: nothing consumes it.
 
+## A move of main starts one unit
+
+A host's `services.valley.onMain` bindings start services of the host's own when a project's `main`
+moves (`implemented`, see
+[A host's own unit when main moves](architecture.md#a-hosts-own-unit-when-main-moves)). The host's
+NixOS configuration declares each binding, and the operator changes it there.
+
+Each binding's bridge runs as a Unix user of its own, `valley-on-main-<name>`, which holds no grant
+over any unit: the system manager refuses it a start, stop or restart of its bound service, or of
+any other. It can only write a commit file and a request file in its runtime directory; the system
+manager's path unit starts the bound service while the request exists. The integrator, the worker,
+the restacker and the git user gain nothing.
+
+The bridge runs in the git group, which reads every repository and writes the integrated ones. Its
+unit sees the data directory as an empty read-only file system, with only its repository bound in
+read-only, and the host's key files are out of reach.
+
+The bridge's user never writes the service's environment. systemd imports every assignment in an
+environment file, so a user that could write one would choose the service's loader and interpreter
+settings, and the service may run as root. The service's first command, run as root, removes the
+request, accepts the commit file only as one commit ID, without following a symbolic link, and
+writes the environment file into `/run/valley-on-main/`, which only root can write. The repository
+path in it is the module's. So a compromised bridge can only have its bound service started, for a
+commit it chooses, as often as the service's start limit allows. A service that deploys should check
+that the commit is one it expects. The bridge reads no event from the bus, which is unauthenticated:
+a forged event starts nothing.
+
+Checked by `onmain-e2e`, where the bridge's user and the git user are refused a start of the bound
+service, and the bridge's user another service, a stop and a restart, and where an assignment the
+bridge's user adds to the commit file fails the service's start without starting it again. Checked
+also by `onmain-unit`, which refuses every commit file but one commit ID, and by `module-eval`.
+
 ## Who can read telemetry
 
 Telemetry is read and reported over the git user's SSH route, by principals the host names

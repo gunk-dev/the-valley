@@ -121,6 +121,10 @@ let
         (source "mirrors" "the publish queues and their drains" (published != [ ]) (
           map (p: "valley-publish@${p}.service") published ++ map (p: "valley-publish@${p}.path") published
         ) { not_instrumented = [ "no producer records: lifecycle and output only" ]; })
+        (source "on-main" "the onMain bridges, their path units and the units they start" (derived.onMainUnits != [ ])
+          derived.onMainUnits
+          { not_instrumented = [ "no producer records: lifecycle and output only" ]; }
+        )
         (source "bus" "the NATS bus" cfg.bus.enable [
           "valley-bus.service"
           "valley-bus-init.service"

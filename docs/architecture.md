@@ -41,6 +41,8 @@ The parts are:
 - `valley-telemetry`, which collects host and workstation diagnostics (`telemetry/`);
 - `pushreason`, which makes git's output for a failed mirror push into the line the host logs
   (`pushreason/`);
+- `onmain`, which passes each new tip of a project's `main` to a service of the host's own
+  (`onmain/`);
 - `approval`, which writes and verifies `the-valley/approval/v1` statements and signs them with a
   software key or YubiKey PIV slot (`approval/`, **implemented**). Storage and approval gates are
   **not built**;
@@ -630,6 +632,62 @@ in `schema/events.cue`: `ref-updated`, `integration-succeeded` and `request-stal
 authentication, so any local process can publish a forged event. Nothing treats an event as
 authoritative: the only subscriber is `valley tail`, and the integrator reads git directly. A forged
 event can mislead someone reading the bus, but it changes no state.
+
+### A host's own unit when main moves
+
+A host can start a service of its own when a project's `main` moves, such as one that deploys the
+landed commit (`services.valley.onMain`, **deployment choice**). Each binding names a project the
+host serves and a service the host declares itself, with its own command, user, credentials, sandbox
+and timeout. Evaluation refuses a project the host does not serve, a service bound twice, a service
+name that needs quoting or names a template's instance, and a service that sets `Restart=`
+(`nix/valley-host.nix`). Checked by `module-eval`.
+
+Each binding runs a bridge, `valley-on-main-<name>.service`, which runs `onmain` (`onmain/`,
+**implemented**), and a path unit, `valley-on-main-<name>.path`. The bridge converges on the latest
+tip rather than acting once per move. When `main` names a commit other than the one it last
+requested, it replaces a commit file with that commit and then creates a request file, both in its
+runtime directory. The path unit, with `PathExists=` on the request file, starts the service while
+the file exists and the service is not running. The module adds a first `ExecStartPre=` to the
+service, run as root, which removes the request, reads the commit file, and writes the service's
+environment file: `VALLEY_REPOSITORY`, the repository's path, and `VALLEY_COMMIT`, the full commit.
+systemd reads an environment file again for each command it starts, so the service's command reads
+the values just written. The module adds the file to the service's `EnvironmentFile=` after any
+files the host names, so its values win.
+
+The handoff loses no tip. The bridge writes the commit before the request, and the first command
+removes the request before it reads the commit. So a commit written before that read is the one the
+run uses, and a commit written after it leaves a request behind. A path unit holds no watch while
+the service runs, but looks for the file again when the service stops, failed or not, and starts the
+next run. Moves made during a run leave one request and the newest commit, so they become one run at
+the newest tip. The bridge keeps the tip it last requested in memory alone. So every start of the
+bridge, at boot, on a changed unit or by hand, requests the current tip once, and a service must
+tolerate running again for a commit it has already run. Checked by `onmain-unit` and `onmain-e2e`.
+
+A failed run leaves the service failed, and nothing retries it: the request was removed before
+anything that can fail. The next run comes from the next tip, or from the operator starting the
+service, which runs the commit last requested. The service keeps the start limit the host gives it.
+A start that limit refuses also stops the path unit, and later requests wait until the operator
+resets the service and restarts the path unit. The service should be a oneshot without
+`RemainAfterExit`, because the path unit starts it again only once it has stopped.
+
+The bridge watches git's files ref storage with inotify. It watches `refs/heads/`, where git
+replaces `main`'s loose ref by a rename or deletes it, and the repository directory, where git
+replaces `packed-refs`. A path unit cannot follow these moves, because `PathChanged=` holds no watch
+while the service it started runs. The watch is in place before the bridge first reads `main`, and
+the bridge rereads `main` after every notification. When the kernel drops events, or a watched
+directory goes or appears, the bridge recreates the watch and rereads `main`. Where `refs/heads/` or
+`refs/` is absent, as in a repository whose refs are all packed, it watches the nearest directory
+that exists until the missing one appears. The bridge's unit binds the repository directory that
+existed when the bridge started, so the operator restarts the bridge after replacing a repository,
+as a restore does. A repository in reftable storage is refused when the bridge starts. The bridge
+has no `Restart=`. It stops only when it cannot read the repository's ref storage or cannot watch
+the repository directory, and each start requests a run again. The operator restarts it once the
+fault is fixed.
+
+Observers read the three units of every binding through telemetry, as the source `on-main`. The
+bridge's journal names each commit it requests, the service's journal and state say how each run
+ended, and `valley telemetry read --source on-main --logs` reads them. What the bridge's user may do
+is in [A move of main starts one unit](security.md#a-move-of-main-starts-one-unit).
 
 ## The integrator
 

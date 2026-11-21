@@ -43,6 +43,10 @@
 #                    the hooks the module renders, run against real git, the
 #                    formats they read, the mirror pusher's reason, and the
 #                    init script that wires them
+#   onmain.nix       onmain-unit, onmain-e2e — the bridge that requests a
+#                    run of a host's own unit when a project's main moves,
+#                    over real git, and its wiring in a NixOS machine: the
+#                    path unit, the environment file and the start limit
 #   approval.nix     approval-unit — approval statements, their signing
 #                    and verification, and the PIV session signer
 #   identity.nix     identity-unit, identity-e2e — the compiler's unit
@@ -195,6 +199,7 @@ import ./checks/host-module.nix args
 // import ./checks/restack.nix args
 // import ./checks/signers.nix args
 // import ./checks/hooks.nix args
+// import ./checks/onmain.nix args
 // import ./checks/approval.nix args
 // import ./checks/identity.nix args
 // import ./checks/sigverify.nix args

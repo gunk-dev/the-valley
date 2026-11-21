@@ -818,6 +818,51 @@ passes through: the reason is for diagnosis, and whoever can read the host's jou
 telemetry can read it. The publisher sends `main` and tags, not the plan graph or other project
 storage. A mirror is not a backup of the valley.
 
+### Run a service when main moves
+
+A host can run a service of its own when a project's `main` moves, such as one that deploys the
+landed commit (`deployment choice`). Declare the service as usual, and bind it to the project:
+
+```nix
+systemd.services.converge = {
+  serviceConfig = { Type = "oneshot"; TimeoutStartSec = "30min"; };
+  script = ''
+    echo "deploying $VALLEY_COMMIT from $VALLEY_REPOSITORY"
+  '';
+};
+services.valley.onMain.deploy = { project = "demo"; unit = "converge.service"; };
+```
+
+When `main` names a new commit, the host starts the service with `VALLEY_REPOSITORY` and
+`VALLEY_COMMIT` in its environment. Moves made while it runs become one run at the newest commit,
+once it has stopped. The service also runs again for the current commit whenever the host boots or
+the bridge restarts, so make it safe to repeat. Make it a oneshot without `RemainAfterExit`, and
+give it a timeout, because the next run waits for it. Leave out `Restart=`, which evaluation
+refuses.
+
+Nothing retries a failed run automatically; it stays failed until `main` moves again. Read why, and
+retry it by hand:
+
+```sh
+sudo journalctl -u valley-on-main-deploy -u converge -n 50 --no-pager
+sudo systemctl start converge
+```
+
+A start by hand runs the commit the host last requested. An observer reads the units with
+`valley telemetry read --source on-main --logs`.
+
+The service's start limit applies, by default five starts in ten seconds. When it refuses a start,
+the binding's path unit stops too, and later commits wait. Raise the limit (`startLimitBurst`) for a
+project that lands faster, and resume with:
+
+```sh
+sudo systemctl reset-failed converge
+sudo systemctl restart valley-on-main-deploy.path
+```
+
+After replacing the repository, as a restore does, restart the bridge so that it follows the new
+one: `sudo systemctl restart valley-on-main-deploy`.
+
 ### Back up and test a restore
 
 Backups preserve the whole data directory. Add an offsite policy to `valley.cue`:

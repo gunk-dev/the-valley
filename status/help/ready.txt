@@ -15,10 +15,17 @@ usage: valley ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp]
                    `app nxvp v2 ready`.
                    the change id is --change, else the head commit's jj
                    change-id header, else a Change-Id: trailer in its
-                   message, else a new one, which is printed. a header and
-                   a trailer that disagree are refused. so is a change
-                   whose commits from its merge base with origin/main hold
-                   a merge, or that has more than one merge base.
+                   message, else the sole live (ready or draft, unlanded)
+                   change on origin whose active version is on this branch,
+                   else a new one, which is printed. when the branch names
+                   the change, ready prints one line naming its handle;
+                   more than one live change on the branch is refused,
+                   asking for --change. a header and a trailer that
+                   disagree are refused. so is a change whose commits from
+                   its merge base with origin/main hold a merge, or that
+                   has more than one merge base. when the merge base is
+                   behind origin/main and main touches any path the change
+                   touches, ready warns on stderr and still proceeds.
                      --if-active SHA
                                   add the version only while the change
                                   is ready at an active version whose head

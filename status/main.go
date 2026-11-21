@@ -184,7 +184,7 @@ func run(args []string, stdout, stderr io.Writer, end func(int)) int {
 	case "status":
 		return runStatus(g, args, stdout, stderr)
 	case "ready":
-		err = runReady(g, args, stdout)
+		err = runReady(g, args, stdout, stderr)
 	case "unready":
 		err = runUnready(g, args, stdout, stderr)
 	case "withdraw":

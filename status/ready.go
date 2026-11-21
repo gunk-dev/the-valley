@@ -6,9 +6,13 @@
 // otherwise the branch's head on origin; either way it must be on origin
 // already. ready creates the change's record at v1, or adds the next
 // version to the record there, and pushes the record ref with a lease on
-// the value it read. A change that is a draft or withdrawn, readied at the
-// head of its active version, is ready again at that version, and gains no
-// new one.
+// the value it read. When --change is not given and the head carries no
+// change ID, ready reuses the sole live (ready or draft, unlanded) change
+// whose active version is on that branch, refusing if more than one is. A
+// change that is a draft or withdrawn, readied at the head of its active
+// version, is ready again at that version, and gains no new one. When the
+// head's merge base is behind origin/main and main touches any path the
+// change touches, ready warns on stderr and still proceeds.
 //
 // --if-active <sha> adds the version only while the change is ready at an
 // active version whose head is <sha>. The record ref is pushed leased on
@@ -41,6 +45,7 @@ import (
 	"strings"
 
 	"the-valley/change"
+	"the-valley/derive"
 	"the-valley/rebase"
 )
 
@@ -94,18 +99,19 @@ func parseReadyArgs(args []string) (readyArgs, error) {
 	return a, nil
 }
 
-func runReady(g git, args []string, w io.Writer) error {
+func runReady(g git, args []string, stdout, stderr io.Writer) error {
 	a, err := parseReadyArgs(args)
 	if err != nil {
 		return err
 	}
-	_, err = ready(g, a, w)
+	_, err = ready(g, a, stdout, stderr)
 	return err
 }
 
 // ready writes the record a asks for, prints the handle and version it
-// made ready, and returns that version's number.
-func ready(g git, a readyArgs, w io.Writer) (int, error) {
+// made ready, warns on stderr if main has moved onto a path the change
+// touches, and returns that version's number.
+func ready(g git, a readyArgs, stdout, stderr io.Writer) (int, error) {
 	if !g.succeeds(true, "rev-parse", "--git-dir") {
 		return 0, failure("not a git repository")
 	}
@@ -131,7 +137,11 @@ func ready(g git, a readyArgs, w io.Writer) (int, error) {
 		return 0, failure("--stamp starts a new change, so it takes no --if-active")
 	}
 
-	o, err := listOrigin(g, append([]string{"refs/heads/" + recordTarget, "refs/heads/" + a.branch}, recordPatterns...)...)
+	patterns := append([]string{"refs/heads/" + recordTarget, "refs/heads/" + a.branch}, recordPatterns...)
+	if a.id == "" {
+		patterns = append([]string{"refs/heads/" + recordTarget, "refs/heads/" + a.branch}, inventoryPatterns...)
+	}
+	o, err := listOrigin(g, patterns...)
 	if err != nil {
 		return 0, err
 	}
@@ -169,7 +179,7 @@ func ready(g git, a readyArgs, w io.Writer) (int, error) {
 	if err := checkRange(g, tip, head); err != nil {
 		return 0, err
 	}
-	id, generated, err := changeID(g, head, a.id)
+	id, matched, generated, err := changeID(g, o, head, a.branch, a.id)
 	if err != nil {
 		return 0, err
 	}
@@ -177,7 +187,9 @@ func ready(g git, a readyArgs, w io.Writer) (int, error) {
 	ref := change.Ref(recordTarget, id)
 	old := o.refs[ref]
 	var before *change.Record
-	if old != "" {
+	if matched != nil {
+		before = matched.record
+	} else if old != "" {
 		if err := fetch(g, old); err != nil {
 			return 0, err
 		}
@@ -246,10 +258,14 @@ func ready(g git, a readyArgs, w io.Writer) (int, error) {
 	if err := pushRecord(g, id, old, commit); err != nil {
 		return 0, err
 	}
-	fmt.Fprintf(w, "%s %s v%d ready\n", project(g), handle, version.N)
-	if generated && !a.stamp {
-		fmt.Fprintf(w, "The change ID %s is new. Ready a later head of this change with --change %s, or carry the ID in the head with --stamp.\n", id, id)
+	fmt.Fprintf(stdout, "%s %s v%d ready\n", project(g), handle, version.N)
+	switch {
+	case generated && !a.stamp:
+		fmt.Fprintf(stdout, "The change ID %s is new. Ready a later head of this change with --change %s, or carry the ID in the head with --stamp.\n", id, id)
+	case matched != nil:
+		fmt.Fprintf(stdout, "Using change %s: branch %s already has it.\n", handle, a.branch)
 	}
+	warnStaleBase(g, tip, head, handle, stderr)
 	return version.N, nil
 }
 
@@ -393,33 +409,132 @@ func checkRange(g git, tip, head string) error {
 
 // changeID is the change's ID: --change when given, then the head
 // commit's change-id header, as jj writes it, then a Change-Id trailer in
-// its message, and otherwise a new ID. Both the header and the trailer are
-// read whatever the source, and either one malformed, or the two
-// disagreeing, is refused. IDs on the other commits of the change are
-// their own provenance and are not read.
-func changeID(g git, head, flag string) (id string, generated bool, err error) {
+// its message, then the sole live (ready or draft, unlanded) change on
+// origin whose active version is on branch, and otherwise a new ID. Both
+// the header and the trailer are read whatever the source, and either one
+// malformed, or the two disagreeing, is refused. More than one live change
+// on branch is refused, naming each and asking for --change. IDs on the
+// other commits of the change are their own provenance and are not read.
+// When the ID came from a live change on branch, matched is that record.
+func changeID(g git, o origin, head, branch, flag string) (id string, matched *recorded, generated bool, err error) {
 	header, trailer, err := headIDs(g, head)
 	if err != nil {
-		return "", false, err
+		return "", nil, false, err
 	}
 	switch {
 	case header != "" && trailer != "" && header != trailer:
-		return "", false, failure(fmt.Sprintf("%s has the change-id header %s and the Change-Id trailer %s, and they must agree", short(head), header, trailer))
+		return "", nil, false, failure(fmt.Sprintf("%s has the change-id header %s and the Change-Id trailer %s, and they must agree", short(head), header, trailer))
 	case flag != "":
 		if !change.ValidID(flag) {
-			return "", false, failure("--change takes a change ID, 32 letters from k to z, and " + flag + " is not one")
+			return "", nil, false, failure("--change takes a change ID, 32 letters from k to z, and " + flag + " is not one")
 		}
-		return flag, false, nil
+		return flag, nil, false, nil
 	case header != "":
-		return header, false, nil
+		return header, nil, false, nil
 	case trailer != "":
-		return trailer, false, nil
+		return trailer, nil, false, nil
 	}
-	id, err = change.NewID()
+	live, err := liveOnBranch(g, o, branch)
 	if err != nil {
-		return "", false, failure("could not make a change ID: " + err.Error())
+		return "", nil, false, err
 	}
-	return id, true, nil
+	switch len(live) {
+	case 1:
+		return live[0].id, &live[0], false, nil
+	case 0:
+		id, err = change.NewID()
+		if err != nil {
+			return "", nil, false, failure("could not make a change ID: " + err.Error())
+		}
+		return id, nil, true, nil
+	default:
+		var names []string
+		for _, n := range live {
+			names = append(names, fmt.Sprintf("%s (%s)", o.handle(n.id), n.id))
+		}
+		return "", nil, false, failure(fmt.Sprintf("the changes %s all have their active version on %s; name one with --change <id>",
+			strings.Join(names, ", "), branch))
+	}
+}
+
+// liveOnBranch is every change origin holds a record of whose active
+// version is on branch, that has not landed and is not withdrawn (so it is
+// ready or a draft). o must list inventoryPatterns.
+func liveOnBranch(g git, o origin, branch string) ([]recorded, error) {
+	found, err := unlandedOn(g, o, branch)
+	if err != nil {
+		return nil, err
+	}
+	var live []recorded
+	for _, n := range found {
+		if n.record.State != change.Withdrawn {
+			live = append(live, n)
+		}
+	}
+	return live, nil
+}
+
+// warnStaleBase warns on stderr when head's merge base with tip (origin/main
+// as fetched) is behind tip and both sides touch any common path, since a
+// restack is likely to conflict. A failure to compute the warning is ignored
+// so ready still succeeds.
+func warnStaleBase(g git, tip, head, handle string, stderr io.Writer) {
+	base, err := g.output(true, "merge-base", tip, head)
+	if err != nil || !isObjectID(base) || base == tip {
+		return
+	}
+	ctx := context.Background()
+	processStarted()
+	changePaths, err := derive.Diff(ctx, g.at(), g.env, base, head)
+	if err != nil || len(changePaths) == 0 {
+		return
+	}
+	processStarted()
+	mainPaths, err := derive.Diff(ctx, g.at(), g.env, base, tip)
+	if err != nil || len(mainPaths) == 0 {
+		return
+	}
+	overlap := commonPaths(changePaths, mainPaths)
+	if len(overlap) == 0 {
+		return
+	}
+	fmt.Fprintf(stderr, "valley: warning: base is behind origin/%s (both touch %s); a restack is likely to conflict\n",
+		recordTarget, formatPathList(overlap))
+	fmt.Fprintf(stderr, "  run: valley rebase %s (or git rebase origin/%s, push, and valley ready)\n",
+		handle, recordTarget)
+}
+
+// commonPaths returns the sorted intersection of two sorted path slices.
+func commonPaths(a, b []string) []string {
+	var out []string
+	for i, j := 0, 0; i < len(a) && j < len(b); {
+		switch {
+		case a[i] < b[j]:
+			i++
+		case a[i] > b[j]:
+			j++
+		default:
+			out = append(out, a[i])
+			i++
+			j++
+		}
+	}
+	return out
+}
+
+// formatPathList renders up to three paths for human output, followed by a
+// count of the remaining paths when there are more.
+func formatPathList(paths []string) string {
+	const limit = 3
+	shown := make([]string, 0, min(limit, len(paths)))
+	for _, p := range paths[:min(limit, len(paths))] {
+		shown = append(shown, readable(p))
+	}
+	s := strings.Join(shown, ", ")
+	if len(paths) > limit {
+		return fmt.Sprintf("%s and %d more", s, len(paths)-limit)
+	}
+	return s
 }
 
 // headIDs reads the change IDs a commit carries: the change-id header in

@@ -196,8 +196,9 @@ valley ready
 valley status kqxm
 ```
 
-The new head becomes the next version of the same change. If you make a new commit without its
-trailer or header, use `valley ready --change <full-change-id>` after pushing it.
+The new head becomes the next version of the same change. On the same branch, `valley ready` keeps
+the live change even without a header or trailer; on a different branch, use
+`valley ready --change <full-change-id>` after pushing it.
 
 ### Withdraw or revoke an approval
 

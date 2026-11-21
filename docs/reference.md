@@ -119,16 +119,20 @@ valley ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp] [<bran
     `--head` or `--if-active`.
   - `--head <sha>`: Marks a specific commit `<sha>` ready instead of `origin/<branch>`. `<sha>` must
     already be an ancestor of `origin/<branch>`.
-  - `--change <id>`: Specifies the 32-letter Change ID explicitly. Required when the commit has
-    neither a `jj` `change-id` commit header nor a `Change-Id:` trailer and should update an
-    existing change.
+  - `--change <id>`: Selects a change by its 32-letter ID. Use it to choose among several live
+    changes on a branch, or to update a change from another branch or revive a withdrawn change when
+    the head carries no ID.
   - `--if-active <sha>`: Full commit object ID. Adds the new version only if the change is currently
     `ready` and its active version's head is `<sha>`.
 - **Behavior:**
   - Requires `git config valley.principal` to be set to a valid principal name.
-  - Resolves the Change ID from `--change`, the commit's `change-id` header (`jj`), or the commit's
-    `Change-Id:` message trailer, or generates a new ID. Refuses if a header, trailer, or `--change`
-    disagree, or if multiple `Change-Id:` trailers carry different IDs.
+  - Takes the ID from `--change`, the head's `change-id` header (`jj`), or its `Change-Id:` trailer,
+    in that order. Even with `--change`, the command refuses malformed or repeated headers or
+    trailers, or a header and trailer that disagree.
+  - With no ID from the flag or head, looks on `origin` for unlanded `ready` or `draft` changes
+    whose active version names the branch. It uses a sole match. With several matches, it lists them
+    and asks for `--change`. With no match, it generates a new ID, so a branch name can be reused
+    after its change lands or is withdrawn.
   - Refuses if the commit is already an ancestor of `origin/main`, has no merge base or multiple
     merge bases with `origin/main`, or includes a merge commit in `base..head`.
   - If the change has no record on `origin`, creates `v1` (`state: "ready"`, `seq: 1`, `active: 1`).
@@ -137,7 +141,12 @@ valley ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp] [<bran
     already `ready` at the active version's head, refuses because the head has not changed.
     Otherwise, appends `v(N+1)` (`state: "ready"`, `seq + 1`, `active: N+1`).
   - Pushes `refs/the-valley/changes/main/<id>` with `--force-with-lease` on the prior record commit
-    and prints `<repo> <handle> v<n> ready`.
+    and prints `<repo> <handle> v<n> ready`. A second line names the handle for a branch match or
+    shows the ID generated without `--stamp`.
+  - If the change and the fetched `origin/main` differ from their merge base on any of the same
+    paths, warns on `stderr` that a restack is likely to conflict. The warning gives a rebase
+    command, shows up to three paths and counts the rest. The command still exits `0`. If Git cannot
+    compute the overlap, the command skips the warning.
 
 ### `valley unready`
 

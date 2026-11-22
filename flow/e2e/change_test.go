@@ -345,7 +345,7 @@ exit 0
 			if res.ExitCode == 0 {
 				t.Fatalf("launch should refuse\nstdout:\n%s", res.Stdout)
 			}
-			for _, want := range []string{tc.want, "klaus cleanup --force " + live.ID, "--force-takeover launches past it, but never removes a worktree"} {
+			for _, want := range []string{tc.want, "valley flow cleanup --force " + live.ID, "--force-takeover launches past it, but never removes a worktree"} {
 				if !strings.Contains(res.Stderr, want) {
 					t.Errorf("stderr missing %q:\n%s", want, res.Stderr)
 				}
@@ -361,7 +361,7 @@ exit 0
 
 	res := h.RunKlaus("launch", "--repo", "widget", "--change", first.ID, "--force-takeover", "take it over")
 	want := "--change: branch " + first.Branch + " is checked out in run " + live.ID + "'s worktree " + live.Worktree +
-		" (with uncommitted changes); klaus never removes a worktree, even with --force-takeover: save that work, then clean that run up (klaus cleanup " + live.ID + ", with --force while its agent runs) and launch again"
+		" (with uncommitted changes); flow never removes a worktree, even with --force-takeover: save that work, then clean that run up (valley flow cleanup " + live.ID + ", with --force while its agent runs) and launch again"
 	if res.ExitCode == 0 || !strings.Contains(res.Stderr, want) {
 		t.Fatalf("--force-takeover should refuse, saying %q: exit %d\nstdout:\n%s\nstderr:\n%s", want, res.ExitCode, res.Stdout, res.Stderr)
 	}

@@ -894,7 +894,7 @@ func reviewFixPrompt(leadIn, prNumber string) string {
 			"Address each comment in the code, then push your fixes.\n"+
 			"After pushing, reply to EACH review comment that you haven't already replied to with a concise (1-2 sentence) explanation of what you changed. "+
 			"If a comment was intentionally not addressed, reply explaining why it was discounted.\n"+
-			"End every reply body with the line %s so klaus doesn't mistake your reply for new review feedback. Never start a reply with %s or copy a %s line into it; link to the original comment instead of quoting such lines.\n"+
+			"End every reply body with the line %s so flow doesn't mistake your reply for new review feedback. Never start a reply with %s or copy a %s line into it; link to the original comment instead of quoting such lines.\n"+
 			"Use this exact command to reply to an inline comment, substituting the comment id and your explanation:\n"+
 			"  gh api repos/{owner}/{repo}/pulls/%s/comments/{commentId}/replies -f body='<explanation> %s'\n"+
 			"A conversation comment has no reply thread; reply with a new PR comment that quotes or links the original:\n"+

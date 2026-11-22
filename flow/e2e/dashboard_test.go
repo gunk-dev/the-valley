@@ -207,7 +207,7 @@ func TestDashboardScreenStaysWhole(t *testing.T) {
 		switch {
 		case len(lines) != 7:
 			return fmt.Sprintf("%d lines, want 7", len(lines))
-		case !strings.Contains(lines[0], "klaus dashboard"):
+		case !strings.Contains(lines[0], "flow dashboard"):
 			return "the header isn't the first line"
 		case !strings.Contains(lines[1], "polling: 30s"):
 			return "the source line isn't the second line"

@@ -47,7 +47,7 @@ func trackChange(ctx context.Context, proj, id string, store run.StateStore, sta
 	case dir == "" && proj == "":
 		return nil, fmt.Errorf("no project for change %s: name it as <project>:%s, use --repo, or set a session target", id, id)
 	case dir == "":
-		return nil, fmt.Errorf("no checkout of %s on this machine: register it with klaus project add", proj)
+		return nil, fmt.Errorf("no checkout of %s on this machine: register it with valley flow project add", proj)
 	}
 	l, ok := listings[dir]
 	if !ok {

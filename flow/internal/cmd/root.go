@@ -21,13 +21,13 @@ const helperName = "valley-flow"
 var rootCmd = &cobra.Command{
 	Use:   "klaus",
 	Short: "Multi-agent orchestrator for Claude Code, Codex, and agy",
-	Long: `klaus orchestrates parallel coding agents using git worktrees and tmux panes.
+	Long: `flow orchestrates parallel coding agents using git worktrees and tmux panes.
 
 It launches autonomous agents in isolated worktrees, manages their lifecycle,
 streams and formats their output, and tracks run state.
 
-Running 'klaus' with no arguments resumes the most recent coordinator session.
-If no session exists, a new one is created. Use 'klaus new' to explicitly start
+Running 'valley flow' with no arguments resumes the most recent coordinator session.
+If no session exists, a new one is created. Use 'valley flow new' to explicitly start
 a fresh session.`,
 	Version: version,
 	RunE: func(cmd *cobra.Command, args []string) error {

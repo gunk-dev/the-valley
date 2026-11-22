@@ -513,7 +513,7 @@ func (m dashboardModel) renderFooter(v dashView, width int) string {
 		} else if len(r.running) > 0 && (r.prNum != "" || r.changeID != "") {
 			notes = append(notes, part{runningNote(r), yellowStyle})
 		} else if r.review {
-			notes = append(notes, part{"awaiting review: once it passes, ", dimStyle}, part{"klaus ready " + r.change.Handle + " --head " + shortSHA(r.change.Head), cyanStyle})
+			notes = append(notes, part{"awaiting review: once it passes, ", dimStyle}, part{"valley flow ready " + r.change.Handle + " --head " + shortSHA(r.change.Head), cyanStyle})
 		}
 		if r.unplaced != "" {
 			if len(notes) > 0 {

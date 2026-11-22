@@ -424,7 +424,7 @@ func TestStatusCountsFinishedProsePasses(t *testing.T) {
 	if strings.Contains(out, "JOB ID") || strings.Contains(out, "rewrite README.md") {
 		t.Errorf("status should not print a jobs table when only finished prose passes exist:\n%s", out)
 	}
-	if !strings.Contains(out, "1 prose pass (finished in the last 3h; klaus jobs --kind prose)") {
+	if !strings.Contains(out, "1 prose pass (finished in the last 3h; valley flow jobs --kind prose)") {
 		t.Errorf("status missing prose summary line:\n%s", out)
 	}
 
@@ -450,7 +450,7 @@ func TestStatusCountsFinishedProsePasses(t *testing.T) {
 	if strings.Contains(out, "rewrite README.md") || strings.Contains(out, "rewrite docs.md") {
 		t.Errorf("status must not list finished prose passes as rows:\n%s", out)
 	}
-	if !strings.Contains(out, "33 prose passes, 8 failed (finished in the last 3h; klaus jobs --kind prose)") {
+	if !strings.Contains(out, "33 prose passes, 8 failed (finished in the last 3h; valley flow jobs --kind prose)") {
 		t.Errorf("status missing summary line for 33 prose passes, 8 failed:\n%s", out)
 	}
 
@@ -463,7 +463,7 @@ func TestStatusCountsFinishedProsePasses(t *testing.T) {
 	if !strings.Contains(out, "prose-20261017-1200-live0001") || !strings.Contains(out, "consult-20261017-1150-cons0001") {
 		t.Errorf("status should list running prose pass and consult:\n%s", out)
 	}
-	if !strings.Contains(out, "33 prose passes, 8 failed (finished in the last 3h; klaus jobs --kind prose)") {
+	if !strings.Contains(out, "33 prose passes, 8 failed (finished in the last 3h; valley flow jobs --kind prose)") {
 		t.Errorf("status missing summary line with running prose pass:\n%s", out)
 	}
 }

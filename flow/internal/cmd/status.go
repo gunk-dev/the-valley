@@ -53,7 +53,7 @@ says the change stands:
 
   awaiting-review       a draft finalize left for review, as it does when
                         ready_at_finalize is off; approve refuses it until
-                        'klaus ready' marks it ready once its review passes
+                        'valley flow ready' marks it ready once its review passes
   awaiting-approval     ready and waiting for you to approve it
   approved              approved: the integrator hasn't decided, or judged it
                         stale only because its checks are still running (CI
@@ -82,7 +82,7 @@ its change (the same change ID in the same repo) is running: a follow-up
 (--pr, --resume-from or a pipeline fix) is still pushing to it, so there is
 nothing to approve yet.
 
-A valley change added with klaus track shows where the valley's listing
+A valley change added with valley flow track shows where the valley's listing
 says its active version stands, by the statuses above (awaiting-approval,
 approved, integrated, draft, withdrawn and so on), with its title as the
 prompt; it reads tracking while the valley can't be asked. A tracked PR
@@ -111,26 +111,26 @@ checks. CI reads - while the change isn't ready, or the valley lists no
 checks (one from before it listed them). The checks don't change the
 status: a ready change reads awaiting-approval whatever they say, since you
 may approve it before they finish, and it lands once both hold. The
-dashboard dispatches a run to fix a failed head of a change klaus owns (see
-klaus failed-checks).
+dashboard dispatches a run to fix a failed head of a change flow owns (see
+valley flow failed-checks).
 
 A valley's restacker rebases ready changes onto main after each landing,
-and reports a rebase that conflicts. For a change klaus owns (its record's
+and reports a rebase that conflicts. For a change flow owns (its record's
 owner is the repo's valley.principal), CONFLICTS reads restack while the
 conflict stands, and a list after the table says where each stands: a
-resolution run due, dispatched (attempt n of 3), being launched (klaus
+resolution run due, dispatched (attempt n of 3), being launched (flow
 hasn't yet seen the run start), waiting out the cooldown, a run already
 working on the change, stopped after 3 runs, not dispatched (and why: the
 change couldn't be returned to draft, or the launch failed, perhaps after
 starting its worker), or left alone (the conflict is in a change below it,
-or the change sits on other changes). klaus restack-conflicts, which the
+or the change sits on other changes). valley flow restack-conflicts, which the
 dashboard runs, does the dispatching; status only reads.
 
-A line after them sums the session's cost, counting the runs klaus cleanup
+A line after them sums the session's cost, counting the runs valley flow cleanup
 removed.
 
 After the runs, a jobs table lists the session's consults, reviews, and running
-prose passes (see klaus jobs): every one running, and consults and reviews that
+prose passes (see valley flow jobs): every one running, and consults and reviews that
 finished in the last 3 hours, with how long each has run or took. Finished prose
 passes in the last 3 hours are counted on a single summary line under the table
 (total and failed). Both are left out when there are none.`,
@@ -170,7 +170,7 @@ func printRecentJobs(w io.Writer, store run.StateStore, now time.Time) {
 		printJobsTable(w, listed, now)
 	}
 	if prose.total > 0 {
-		fmt.Fprintf(w, "%s (finished in the last 3h; klaus jobs --kind prose)\n", prose)
+		fmt.Fprintf(w, "%s (finished in the last 3h; valley flow jobs --kind prose)\n", prose)
 	}
 }
 
@@ -407,7 +407,7 @@ func runStatuses(ctx context.Context, store run.StateStore, states []*run.State,
 
 	if len(restackList) > 0 {
 		fmt.Fprintln(out)
-		fmt.Fprintln(out, "Restack conflicts on changes klaus owns:")
+		fmt.Fprintln(out, "Restack conflicts on changes flow owns:")
 		for _, v := range restackList {
 			fmt.Fprintf(out, "  %s\n", v)
 		}

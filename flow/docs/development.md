@@ -1,9 +1,9 @@
-# Developing klaus
+# Developing flow
 
-klaus is the Go module `the-valley/flow` in `flow/`, with its entry point in `cmd/klaus` and its
-packages under `internal/`. Changes to it are changes of this repository and follow its rules
-([AGENTS.md](../../AGENTS.md)): one commit per change, build output in a scratch directory outside
-the tree.
+flow, the agent-run client that `valley flow` runs, is the Go module `the-valley/flow` in `flow/`,
+with its entry point in `cmd/klaus` and its packages under `internal/`. Changes to it are changes of
+this repository and follow its rules ([AGENTS.md](../../AGENTS.md)): one commit per change, build
+output in a scratch directory outside the tree.
 
 ## Building
 
@@ -15,11 +15,11 @@ The flake's `packages.x86_64-linux.klaus` (Linux x86_64 only) builds `cmd/klaus`
 stamped through `-X the-valley/flow/internal/cmd.version=<v>`: the CLI version of
 `nix/packages.nix`, `0.1.0-<short commit>`, with `-dirty` for a tree with uncommitted changes, or
 `0.1.0-unknown` when nix knows no commit. The package's source holds no tests and no prose, and the
-package runs no tests: the checks below do. It depends on none of the programs klaus runs.
+package runs no tests: the checks below do. It depends on none of the programs flow runs.
 
 ## Testing
 
-klaus's tests run only through nix checks, each built on its own in the build sandbox:
+flow's tests run only through nix checks, each built on its own in the build sandbox:
 
 ```bash
 nix build --option sandbox true --no-link .#checks.x86_64-linux.flow-build
@@ -76,9 +76,9 @@ does; the `go-dependencies` check enforces this. No vendor directory or `go.work
 | `internal/draft`                                                  | budget pause                                               |
 | `internal/review`, `internal/prose`                               | linters, peer and cross-model review; the prose pass       |
 | `internal/consult`, `internal/jobs`                               | consults; job records                                      |
-| `internal/event`, `internal/report`                               | the event log; `klaus report time`                         |
+| `internal/event`, `internal/report`                               | the event log; `valley flow report time`                   |
 | `internal/project`, `internal/projectsync`, `internal/houserules` | the registry; syncing; house rules                         |
-| `internal/selfupdate`                                             | `klaus self-update`                                        |
+| `internal/selfupdate`                                             | `valley flow self-update`                                  |
 
 Pure-logic packages are unit-tested directly; wrappers around git and tmux are tested against
 temporary repositories and private tmux servers.
@@ -105,12 +105,12 @@ lives in. Three layers prevent that:
 against a real, isolated tmux server and real git repositories: pane creation, the
 `worker | tee | _format-stream; _finalize` pipeline, worktree lifecycle and run state.
 
-| Concern   | Isolation                                                                                                                                                                             |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| tmux      | a private server per test on `tmux -S <tmpdir>/tmux.sock`; klaus reaches it through `$TMUX`; its panes get a per-test `TMUX_TMPDIR` and no `KLAUS_TMUX_SOCKET`; killed in `t.Cleanup` |
-| state     | `HOME` is a per-test temporary directory, so `~/.klaus` lands under it                                                                                                                |
-| externals | a per-test bin directory first on `PATH` holds klaus and fake `claude` and `gh`; git, tmux and (where a scenario asks for it) `valley` stay real                                      |
-| git       | a sandbox repository with a bare local `origin`, so pushes need no network                                                                                                            |
+| Concern   | Isolation                                                                                                                                                                            |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| tmux      | a private server per test on `tmux -S <tmpdir>/tmux.sock`; flow reaches it through `$TMUX`; its panes get a per-test `TMUX_TMPDIR` and no `KLAUS_TMUX_SOCKET`; killed in `t.Cleanup` |
+| state     | `HOME` is a per-test temporary directory, so `~/.klaus` lands under it                                                                                                               |
+| externals | a per-test bin directory first on `PATH` holds klaus and fake `claude` and `gh`; git, tmux and (where a scenario asks for it) `valley` stay real                                     |
+| git       | a sandbox repository with a bare local `origin`, so pushes need no network                                                                                                           |
 
 A unique socket and HOME per test let tests run in parallel. In the check there is no network, no
 terminal and no `/usr/bin/env`: `WriteStub` runs a `#!/usr/bin/env bash` stub under the `bash` on

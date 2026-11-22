@@ -174,10 +174,10 @@ func held(c Conflict, failing string, ch valley.Change, byID map[string]valley.C
 		if listed && f.Owner == principal {
 			return "the conflict is in " + name + ", a change below it, which is resolved first", "left-alone: conflict in a change below"
 		}
-		return "the conflict is in " + name + ", a change below it that klaus doesn't own", "left-alone: conflict in a change below"
+		return "the conflict is in " + name + ", a change below it that flow doesn't own", "left-alone: conflict in a change below"
 	}
 	if len(c.layers) > 0 && c.layers[0].ChangeID != c.ChangeID || len(ch.Includes) > 0 {
-		return "it sits on other changes; klaus resolves a conflict only in a change that sits on main", "left-alone: sits on other changes"
+		return "it sits on other changes; flow resolves a conflict only in a change that sits on main", "left-alone: sits on other changes"
 	}
 	return "", ""
 }
@@ -311,7 +311,7 @@ func Prompt(c Conflict) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "The valley's restacker could not rebase change %s of %s onto %s: the rebase conflicts in this change's own commits.\n\n", name, repo, target)
-	b.WriteString("klaus read, before launching this run:\n")
+	b.WriteString("flow read, before launching this run:\n")
 	fmt.Fprintf(&b, "- the change: version %d, head %s", c.Version, c.Head)
 	if plainName.MatchString(c.Branch) {
 		fmt.Fprintf(&b, ", branch %s", c.Branch)

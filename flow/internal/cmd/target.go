@@ -13,13 +13,13 @@ import (
 var targetCmd = &cobra.Command{
 	Use:   "target [name | owner/repo]",
 	Short: "Set or show the session-level default target repo",
-	Long: `Sets a session-level default repo so that 'klaus launch' without --repo
+	Long: `Sets a session-level default repo so that 'valley flow launch' without --repo
 uses this target. Useful when the coordinator session is not inside a git repo.
 
-  klaus target owner/repo   Set the default target repo
-  klaus target my-project   Set target using a registered project name
-  klaus target              Show the current target repo
-  klaus target --clear      Remove the default target repo`,
+  valley flow target owner/repo   Set the default target repo
+  valley flow target my-project   Set target using a registered project name
+  valley flow target              Show the current target repo
+  valley flow target --clear      Remove the default target repo`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		store, err := sessionStore()
@@ -50,7 +50,7 @@ uses this target. Useful when the coordinator session is not inside a git repo.
 			}
 			if repo == "" {
 				fmt.Fprintln(cmd.OutOrStdout(), "No target repo set.")
-				fmt.Fprintln(cmd.OutOrStdout(), "Usage: klaus target owner/repo")
+				fmt.Fprintln(cmd.OutOrStdout(), "Usage: valley flow target owner/repo")
 			} else {
 				fmt.Fprintln(cmd.OutOrStdout(), repo)
 			}

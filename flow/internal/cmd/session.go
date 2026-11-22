@@ -31,10 +31,10 @@ var sessionCmd = &cobra.Command{
 The coordinator runs in an isolated worktree, keeping the base repo clean on
 the default branch. Must be run inside a tmux session.
 
-Use 'klaus new' to explicitly start a fresh session.
+Use 'valley flow new' to explicitly start a fresh session.
 
 If run outside a git repository, creates a scratch workspace and uses
-~/.klaus/config.json for configuration. Use 'klaus launch --repo owner/repo'
+~/.klaus/config.json for configuration. Use 'valley flow launch --repo owner/repo'
 from inside the session to target specific repositories.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runSession(cmd, false)
@@ -47,8 +47,7 @@ var newSessionCmd = &cobra.Command{
 	Long: `Creates a new isolated worktree and starts a fresh interactive coordinator session
 with no prior conversation context.
 
-This is the same as the old default behavior of 'klaus' — use this when you
-want to start clean instead of resuming the most recent session.`,
+Use this when you want to start clean instead of resuming the most recent session.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runSession(cmd, true)
 	},
@@ -59,7 +58,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	tmuxClient := tmux.NewExecClient()
 
 	if !tmux.InSession() {
-		return fmt.Errorf("klaus session must be run inside a tmux session")
+		return fmt.Errorf("valley flow session must be run inside a tmux session")
 	}
 
 	continueFlag, _ := cmd.Flags().GetBool("continue")
@@ -181,7 +180,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 			return parseErr
 		}
 		if backendFlag != "" && kind != previousKind {
-			return fmt.Errorf("session %s uses %s; use klaus new --backend %s for a new conversation", id, previousKind, kind)
+			return fmt.Errorf("session %s uses %s; use valley flow new --backend %s for a new conversation", id, previousKind, kind)
 		}
 		kind = previousKind
 		if workerFlag == "" && prevState.AgentBackend != "" {
@@ -367,7 +366,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	}
 
 	if kind != backend.Claude {
-		sessionPrompt += "\n\nBackend note: You are running " + string(kind) + ". Use klaus status and klaus logs to inspect workers. Do not assume Claude-specific memory or conversation replay."
+		sessionPrompt += "\n\nBackend note: You are running " + string(kind) + ". Use valley flow status and valley flow logs to inspect workers. Do not assume Claude-specific memory or conversation replay."
 	}
 	// Configure tmux window for better situational awareness
 	currentPane := os.Getenv("TMUX_PANE")
@@ -391,7 +390,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 
 	fmt.Println()
 	fmt.Printf("Starting interactive %s session...\n", kind)
-	fmt.Println("  Use 'klaus launch' from inside to spawn workers.")
+	fmt.Println("  Use 'valley flow launch' from inside to spawn workers.")
 	fmt.Println()
 
 	// Launch dashboard in a bottom pane before starting the coordinator.
@@ -485,7 +484,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	if inRepo {
 		fmt.Printf("  Worktree preserved at: %s\n", worktree)
 	}
-	fmt.Printf("  To clean up: klaus cleanup %s\n", id)
+	fmt.Printf("  To clean up: valley flow cleanup %s\n", id)
 	if coordinatorErr != nil {
 		return fmt.Errorf("%s coordinator exited: %w", kind, coordinatorErr)
 	}

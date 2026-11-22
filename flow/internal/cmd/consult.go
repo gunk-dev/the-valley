@@ -34,10 +34,10 @@ func newConsultCmd() *cobra.Command {
 as plain text. Defaults to the first installed backend other than KLAUS_BACKEND,
 using consult.order and per-backend model/effort defaults.
 
-Use --thread NAME for a persistent conversation in the current Klaus session
+Use --thread NAME for a persistent conversation in the current flow session
 (or the most recent session outside a pane). Its backend, model, effort, role,
 and directory are retained; conflicting overrides are rejected. --list shows
-these threads. One-shot questions also work without a Klaus session.
+these threads. One-shot questions also work without a flow session.
 
 --file inlines attachments (200KB total), each under a header with its path,
 so the partner needn't open them; for agy, which can't open a path outside its
@@ -53,19 +53,19 @@ shared by a panel, is removed when it ends. The prompt's first line names the
 commit read ("Workspace: <project> at origin/<branch> <commit>"), and the
 thread, the consult:started event and the job record keep it. When the fetch
 fails, a thread reads its last snapshot, with a warning naming its commit; with
-no snapshot yet, the consult fails. klaus cleanup --all removes threads'
+no snapshot yet, the consult fails. valley flow cleanup --all removes threads'
 snapshots. --panel queries all
 installed model families other than the caller concurrently and groups their
 answers by backend. Panel answers are buffered to keep each response together.
 Each backend has a 10-minute deadline; use --timeout to change it. Timed-out
 members report "timed out" while other members finish.
 
-Inside a Klaus session each backend call emits consult:started and
-consult:completed events (see klaus watch) sharing a consult-... run ID, and
-leaves a job record under that ID (see klaus jobs): klaus status and the
+Inside a flow session each backend call emits consult:started and
+consult:completed events (see valley flow watch) sharing a consult-... run ID, and
+leaves a job record under that ID (see valley flow jobs): valley flow status and the
 dashboard list it while it runs and after it ends. A one-shot consult's
 answer is saved beside the record, and a thread's stays in its log; either
-way 'klaus jobs show <id> --answer' prints it.`,
+way 'valley flow jobs show <id> --answer' prints it.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: runConsult,
 	}
@@ -74,7 +74,7 @@ way 'klaus jobs show <id> --answer' prints it.`,
 	f.String("model", "", "Model identifier (default: backends.<kind>.model)")
 	f.String("effort", "", "Reasoning effort (default: backends.<kind>.effort)")
 	f.String("role", "", "partner, critic, reviewer, or a verbatim system prompt (default: consult.default_role)")
-	f.String("thread", "", "Continue a named conversation in the current or most recent Klaus session")
+	f.String("thread", "", "Continue a named conversation in the current or most recent flow session")
 	f.String("dir", "", "Read-only workspace, read as it stands (default: cwd, or saved thread directory)")
 	f.String("repo", "", "Registered local project to read, as a fresh snapshot of origin's default branch")
 	f.StringArray("file", nil, "Inline a file in the prompt; repeatable, 200KB total")

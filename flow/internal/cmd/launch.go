@@ -32,15 +32,15 @@ var launchCmd = &cobra.Command{
 tmux pane, and tracks the run state. Must be run inside a tmux session.
 
 The agent's pane goes into a detached tmux session (klaus-agents-<session-id>),
-so your window is never split — watch agents with the dashboard, 'klaus status',
-and 'klaus logs'. Because the tmux server owns that session, agents keep running
+so your window is never split — watch agents with the dashboard, 'valley flow status',
+and 'valley flow logs'. Because the tmux server owns that session, agents keep running
 if the coordinator exits. Set agent_display to "pane" in .klaus/config.json to
 split the current window instead.
 
 A local worker runs without $TMUX or $TMUX_PANE, with TMUX_TMPDIR set to its
 run's own empty directory (tmux/<run-id> in the session directory), so a tmux
 command it runs, 'tmux kill-server' included, can't reach the server the
-agents' panes and your session live on. klaus commands it runs still reach
+agents' panes and your session live on. flow commands it runs still reach
 that server through KLAUS_TMUX_SOCKET. It also gets KLAUS_SCRATCH, its run's
 own directory outside the worktree (scratch/<run-id> in the session
 directory) for build output and other scratch files; finalize removes it with
@@ -56,16 +56,16 @@ Just before the agent starts, launch snapshots the files the clone shares
 across its worktrees and that decide what git does there: its config (less
 the branch tracking git push -u writes), info/attributes and hooks. Finalize
 compares them; on a difference it emits agent:shared-git-changed naming the
-files, and klaus status shows the run needs-attention with a line naming
+files, and valley flow status shows the run needs-attention with a line naming
 them. A worker can't be kept from writing them: it runs as you.
 
 The prompt comes either from the positional argument or from --prompt-file
 <path>; exactly one of the two is required. Prefer --prompt-file for long or
 technical prompts: in zsh a backtick inside a double-quoted argument is command
 substitution, so code spans in a shell-quoted prompt are silently mangled before
-klaus ever sees them. File contents are used verbatim.
+flow ever sees them. File contents are used verbatim.
 
-Either way klaus saves the prompt to prompts/<run-id>.md in the session
+Either way flow saves the prompt to prompts/<run-id>.md in the session
 directory, kept as the record of the brief, and every worker reads it on stdin,
 so a prompt of any length fits. agy, which has no system prompt flag, reads the
 system prompt ahead of it, from prompts/<run-id>.input.md. If what still goes
@@ -85,14 +85,14 @@ On a valley project, --issue takes a knot from the project's plan graph
 instead of a GitHub issue: its ID (oc-, bd-, ida- or qn- and 7 hex digits),
 or <project>:<id> for a knot in another project's graph on the same valley.
 The repo must deliver to a valley, as finalize decides it, whose 'valley help'
-lists knot; klaus reads and writes knots only through 'valley knot'. Launch
+lists knot; flow reads and writes knots only through 'valley knot'. Launch
 reads the knot, which must be an active outcome or bug, names the branch from
 its title, and appends the knot, its parent chain and its comments to the
 brief in a delimited "Project notes (untrusted)" block, as data the agent is
 told never to take as instructions. Just before the agent starts it claims the
 knot for the run ('valley knot claim <id> --run <run-id>'). A knot claimed by
-a run that is still running, or by a run klaus doesn't know, is refused; the
-claim of a run klaus knows has ended is released and taken over. At finalize,
+a run that is still running, or by a run flow doesn't know, is refused; the
+claim of a run flow knows has ended is released and taken over. At finalize,
 a run whose pushed head the valley took links its change to the knot ('valley
 knot link <id> --change valley:<repo>/<change-id>'); a run that failed,
 paused or pushed nothing the valley took comments on the knot instead. Either
@@ -111,7 +111,7 @@ found, or a gh call fails, launch warns and the agent requests no review.
 Use --pr to push fixes to an existing PR's branch instead of creating a new
 PR. The agent will commit and push to the PR branch directly. This is also
 how you resume a budget-paused PR: relaunch against the paused PR and the
-follow-up picks up from the WIP commit klaus left on the branch. When the
+follow-up picks up from the WIP commit flow left on the branch. When the
 follow-up agent's _finalize runs, the 'klaus:budget-paused' label is cleared
 automatically.
 
@@ -151,7 +151,7 @@ the replay: line says so.
 (below), refuse while a run in any session is still running on the branch
 they would work on, or on the change they continue (for --pr, the change of
 the run that opened the PR), in the target repo, naming that run. Wait for
-it to finish, or stop it and clean it up ('klaus cleanup --force <run>',
+it to finish, or stop it and clean it up ('valley flow cleanup --force <run>',
 which removes its worktree with any uncommitted work), then launch again.
 Launch never removes a worktree to make way: while one has the branch
 checked out, whether a run's or your own checkout, it refuses, naming it
@@ -187,7 +187,7 @@ finding and auditing; they grant nothing.
 
 A pre-commit hook in the same worktree runs the project's formatter and
 stages the formatted files again: the format command line from the project's
-klaus config, else 'nix fmt' when the flake has a formatter for the current
+flow config, else 'nix fmt' when the flake has a formatter for the current
 system, else nothing.
 
 A run that keeps an existing change in a repo that delivers to a valley
@@ -226,13 +226,13 @@ A --pr, --change or --resume-from run that continues a branch records, as
 took_over, the runs of its change that needed attention and whose pushed
 heads its starting head contains (the takes on: line names them), and
 finalize adds those whose pushed heads the head a run left on origin
-contains. Such a run carries their attention from then on: klaus status
+contains. Such a run carries their attention from then on: valley flow status
 shows them superseded once it is running or finished, and if it in turn
 ended needing attention or failing, it shows needs-attention itself, even
 once its PR is merged, closed or out of reach. A --resume-from run on a new
 branch takes nothing on.
 
-For a budget-paused PR, and for any --change run, klaus continues the
+For a budget-paused PR, and for any --change run, flow continues the
 conversation of the most recent run on it by default (trajectory replay),
 avoiding a cold re-exploration of the repo. Only that run counts: an older
 conversation never saw the work after it. A Claude run restores a Claude
@@ -263,9 +263,9 @@ timer's launch: lowercase letters, digits and hyphens. It is recorded on the
 run and its events (dispatch_reason). Without it the reason is launch,
 pr-follow-up (--pr), budget-resume (--pr on a budget-paused PR),
 change-follow-up (--change) or resume (--resume-from); the pipeline's fix
-agents pass ci-fix, review-fix, review-comment-fix or conflict-fix, and klaus
-restack-conflicts passes restack-conflict. 'klaus report time' sums runs and
-follow-ups by reason.
+agents pass ci-fix, review-fix, review-comment-fix or conflict-fix, and
+valley flow restack-conflicts passes restack-conflict. 'valley flow report time'
+sums runs and follow-ups by reason.
 
 A dispatcher that checked a change before launching a run on it passes what
 it checked, and launch starts no worker unless the change still stands so.
@@ -281,7 +281,7 @@ the change to draft and set everything else up, just before the worker
 starts. It fails closed: a valley or origin it can't ask, runs it can't read
 to find a live holder, a change that isn't as expected, and a 'valley
 unready' that fails or that the valley on PATH doesn't offer each fail the
-launch. klaus restack-conflicts launches each resolution run this way.
+launch. valley flow restack-conflicts launches each resolution run this way.
 
 --run-id names the run, in the form run IDs take (YYYYMMDD-HHMM- and 8 hex
 digits), for a dispatcher that records the run before launching it; launch
@@ -336,7 +336,7 @@ are synced back after completion. Use --local to force local execution, or
 		tmuxClient := tmux.NewExecClient()
 
 		if !tmux.InSession() {
-			return fmt.Errorf("klaus launch must be run inside a tmux session")
+			return fmt.Errorf("valley flow launch must be run inside a tmux session")
 		}
 
 		if replayFlag && noReplay {
@@ -389,7 +389,7 @@ are synced back after completion. Use --local to force local execution, or
 		repoRef, projectLocalPath := resolveRepoTarget(repoRef, sessionTarget, reg)
 
 		if hostRoot == "" && repoRef == "" && projectLocalPath == "" {
-			return fmt.Errorf("no target repo — use --repo owner/repo, 'klaus target owner/repo', or 'klaus project add' to register a project")
+			return fmt.Errorf("no target repo — use --repo owner/repo, 'valley flow target owner/repo', or 'valley flow project add' to register a project")
 		}
 
 		hostCfg, err := config.Load(hostRoot)
@@ -1207,7 +1207,7 @@ are synced back after completion. Use --local to force local execution, or
 		fmt.Printf("  backend:  %s\n", kind)
 		fmt.Printf("  log:      %s\n", logFile)
 		fmt.Println()
-		fmt.Printf("Agent %s is running. Use 'klaus status' to check progress.\n", id)
+		fmt.Printf("Agent %s is running. Use 'valley flow status' to check progress.\n", id)
 		launchSucceeded = true
 		return nil
 	},
@@ -1274,7 +1274,7 @@ func checkNoLiveHolder(ctx context.Context, tc tmux.Client, branch, prURL string
 	case s.Branch == branch:
 		what = "branch " + branch
 	}
-	return fmt.Errorf("run %s is still working on %s; wait for it to finish, or stop it and clean it up (klaus cleanup --force %s, which discards its uncommitted work) and launch again; --force-takeover launches past it, but never removes a worktree that has the branch checked out", s.ID, what, s.ID)
+	return fmt.Errorf("run %s is still working on %s; wait for it to finish, or stop it and clean it up (valley flow cleanup --force %s, which discards its uncommitted work) and launch again; --force-takeover launches past it, but never removes a worktree that has the branch checked out", s.ID, what, s.ID)
 }
 
 // snapshotSharedGit records the files worktree's clone shares across its
@@ -1294,7 +1294,7 @@ func snapshotSharedGit(ctx context.Context, worktree string) *run.SharedGit {
 // launch, before the pane's shell starts.
 func checkWorkerPath(kind backend.Kind, worktree string) error {
 	if err := kind.CheckPath(os.Getenv("PATH"), worktree); err != nil {
-		return fmt.Errorf("%w; a worker gets the PATH klaus launch runs with, so launch it with one that has the command", err)
+		return fmt.Errorf("%w; a worker gets the PATH valley flow launch runs with, so launch it with one that has the command", err)
 	}
 	return nil
 }
@@ -1692,7 +1692,7 @@ func init() {
 	launchCmd.Flags().String("host", "", "Override sandbox host (ignores config sandbox_host)")
 	launchCmd.Flags().String("resume-from", "", "Resume from a previous agent's session (run ID); without --pr, --change or --branch, continue the branch it pushed without a PR when nothing took its change further")
 	launchCmd.Flags().String("change", "", "Continue an existing change in a repo without PRs, named by run ID, change ID or valley handle: work on its branch and keep its change ID, on any backend; Claude replays the latest run's stored conversation, Codex forks its own session on the same machine, agy starts fresh; not with --pr or --branch")
-	launchCmd.Flags().Bool("force-takeover", false, "With --pr, --change or a --resume-from that continues its run's branch, launch even while another run is still working on the branch or change, and discard commits on the local branch that origin lacks; never removes a worktree that has the branch checked out (klaus cleanup that run first)")
+	launchCmd.Flags().Bool("force-takeover", false, "With --pr, --change or a --resume-from that continues its run's branch, launch even while another run is still working on the branch or change, and discard commits on the local branch that origin lacks; never removes a worktree that has the branch checked out (valley flow cleanup that run first)")
 	launchCmd.Flags().String("branch", "", "Name of the new run's branch (default: <slug>-<run-id tail>, the slug taken from the --issue title or the prompt's first '# ' heading or line); not with --pr or --change")
 	launchCmd.Flags().Bool("replay", false, "Force trajectory replay for --pr or --change (continue the prior conversation, bypassing the size threshold, and for --pr the budget-paused check)")
 	launchCmd.Flags().Bool("no-replay", false, "Disable trajectory replay for --pr or --change; dispatch a fresh agent instead")

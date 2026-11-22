@@ -233,7 +233,7 @@ func pendingRestart(t *testing.T, b *binCheck, newStore, version string) dashboa
 	m = next.(dashboardModel)
 	next, cmd := m.update(binUpdateMsg{path: newStore, version: version})
 	m = next.(dashboardModel)
-	if m.binNotice != "klaus updated to "+version+"; restarting" {
+	if m.binNotice != "flow updated to "+version+"; restarting" {
 		t.Errorf("notice = %q", m.binNotice)
 	}
 	if isQuit(cmd) {
@@ -293,7 +293,7 @@ func TestDashboardRestartRechecksPath(t *testing.T) {
 		if !quit || !m.restarting || m.restart == nil || m.restart.path != second || m.restart.version != "0.4.1-3333333" {
 			t.Fatalf("quit=%v restarting=%v restart=%+v; want a restart onto %s, 0.4.1-3333333", quit, m.restarting, m.restart, second)
 		}
-		if m.binNotice != "klaus updated to 0.4.1-3333333; restarting" {
+		if m.binNotice != "flow updated to 0.4.1-3333333; restarting" {
 			t.Errorf("notice = %q, want the version restarted onto", m.binNotice)
 		}
 	})

@@ -72,10 +72,10 @@ var webhookCmd = &cobra.Command{
 	Short: "Manage GitHub webhooks for registered projects",
 	Long: `Check and configure GitHub webhooks for registered projects.
 
-Webhooks allow Klaus to receive push notifications from GitHub via github-relay
+Webhooks allow flow to receive push notifications from GitHub via github-relay
 instead of polling. Each project's repo needs a webhook pointing at the relay URL.
 
-Configure relay_url and secret_file in your klaus config webhook section:
+Configure relay_url and secret_file in your flow config webhook section:
 
   {
     "webhook": {
@@ -115,7 +115,7 @@ func runWebhookCheck(cmd *cobra.Command, _ []string, deps WebhookDeps) error {
 		return err
 	}
 	if cfg.Webhook == nil || cfg.Webhook.RelayURL == "" {
-		return fmt.Errorf("webhook.relay_url is not configured; add it to your klaus config")
+		return fmt.Errorf("webhook.relay_url is not configured; add it to your flow config")
 	}
 
 	statuses, err := checkAllProjects(cfg.Webhook.RelayURL, deps)
@@ -124,7 +124,7 @@ func runWebhookCheck(cmd *cobra.Command, _ []string, deps WebhookDeps) error {
 	}
 
 	if len(statuses) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "No projects registered. Use 'klaus project add' to register one.")
+		fmt.Fprintln(cmd.OutOrStdout(), "No projects registered. Use 'valley flow project add' to register one.")
 		return nil
 	}
 
@@ -146,10 +146,10 @@ func runWebhookSetup(cmd *cobra.Command, args []string, deps WebhookDeps) error 
 		return err
 	}
 	if cfg.Webhook == nil || cfg.Webhook.RelayURL == "" {
-		return fmt.Errorf("webhook.relay_url is not configured; add it to your klaus config")
+		return fmt.Errorf("webhook.relay_url is not configured; add it to your flow config")
 	}
 	if cfg.Webhook.SecretFile == "" {
-		return fmt.Errorf("webhook.secret_file is not configured; add it to your klaus config")
+		return fmt.Errorf("webhook.secret_file is not configured; add it to your flow config")
 	}
 
 	secretBytes, err := deps.ReadFile(cfg.Webhook.SecretFile)
@@ -167,7 +167,7 @@ func runWebhookSetup(cmd *cobra.Command, args []string, deps WebhookDeps) error 
 	}
 	projects := reg.List()
 	if len(projects) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "No projects registered. Use 'klaus project add' to register one.")
+		fmt.Fprintln(cmd.OutOrStdout(), "No projects registered. Use 'valley flow project add' to register one.")
 		return nil
 	}
 

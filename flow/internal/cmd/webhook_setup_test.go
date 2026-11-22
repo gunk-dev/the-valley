@@ -126,7 +126,7 @@ func TestWebhookCheck_NoRelayURL(t *testing.T) {
 	webhookCheckCmd.SetErr(&buf)
 
 	err := runWebhookCheck(webhookCheckCmd, nil, deps)
-	if err == nil || err.Error() != "webhook.relay_url is not configured; add it to your klaus config" {
+	if err == nil || err.Error() != "webhook.relay_url is not configured; add it to your flow config" {
 		t.Errorf("expected relay_url error, got: %v", err)
 	}
 }
@@ -150,7 +150,7 @@ func TestWebhookCheck_NoProjects(t *testing.T) {
 	if err := runWebhookCheck(webhookCheckCmd, nil, deps); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out := buf.String(); out != "No projects registered. Use 'klaus project add' to register one.\n" {
+	if out := buf.String(); out != "No projects registered. Use 'valley flow project add' to register one.\n" {
 		t.Errorf("unexpected output: %q", out)
 	}
 }

@@ -144,7 +144,7 @@ func TestCoordinatorBackendSelection(t *testing.T) {
 			if kind == "agy" && !strings.Contains(string(argv), "--add-dir\n.\n") {
 				t.Fatal("agy coordinator missing explicit workspace")
 			}
-			if !strings.Contains(string(argv), "klaus launch") {
+			if !strings.Contains(string(argv), "valley flow launch") {
 				t.Fatalf("coordinator instructions missing: %s", argv)
 			}
 			// Resume must keep the saved backend, even though the configured default is Claude.

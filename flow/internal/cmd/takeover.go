@@ -97,13 +97,13 @@ func occupantError(branch, path, work string, owner *run.State) error {
 		what += " (with " + work + ")"
 	}
 	if owner == nil {
-		return fmt.Errorf("branch %s is checked out in %s, which no klaus run registered; klaus never removes it: check another branch out there, or remove it yourself", branch, what)
+		return fmt.Errorf("branch %s is checked out in %s, which no flow run registered; flow never removes it: check another branch out there, or remove it yourself", branch, what)
 	}
 	free := "clean that run up first"
 	if work != "" {
 		free = "save that work, then clean that run up"
 	}
-	return fmt.Errorf("branch %s is checked out in run %s's worktree %s; klaus never removes a worktree, even with --force-takeover: %s (klaus cleanup %s, with --force while its agent runs) and launch again", branch, owner.ID, what, free, owner.ID)
+	return fmt.Errorf("branch %s is checked out in run %s's worktree %s; flow never removes a worktree, even with --force-takeover: %s (valley flow cleanup %s, with --force while its agent runs) and launch again", branch, owner.ID, what, free, owner.ID)
 }
 
 // worktreeOwner returns the run whose recorded worktree is path, or nil.

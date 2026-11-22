@@ -177,17 +177,17 @@ func TestRenderSessionPromptDefault(t *testing.T) {
 	if !strings.Contains(prompt, "test-repo") {
 		t.Error("prompt should contain repo name")
 	}
-	if !strings.Contains(prompt, "klaus launch") {
-		t.Error("prompt should contain klaus launch instruction")
+	if !strings.Contains(prompt, "valley flow launch") {
+		t.Error("prompt should contain valley flow launch instruction")
 	}
-	if !strings.Contains(prompt, "klaus status") {
-		t.Error("prompt should contain klaus status instruction")
+	if !strings.Contains(prompt, "valley flow status") {
+		t.Error("prompt should contain valley flow status instruction")
 	}
-	if !strings.Contains(prompt, "klaus logs") {
-		t.Error("prompt should contain klaus logs instruction")
+	if !strings.Contains(prompt, "valley flow logs") {
+		t.Error("prompt should contain valley flow logs instruction")
 	}
-	if !strings.Contains(prompt, "klaus cleanup") {
-		t.Error("prompt should contain klaus cleanup instruction")
+	if !strings.Contains(prompt, "valley flow cleanup") {
+		t.Error("prompt should contain valley flow cleanup instruction")
 	}
 	if strings.Contains(prompt, "- **Approve and merge** PRs") {
 		t.Error("prompt should not instruct coordinator to approve PRs")
@@ -195,8 +195,8 @@ func TestRenderSessionPromptDefault(t *testing.T) {
 	if !strings.Contains(prompt, "PR approval is strictly a human operator task") {
 		t.Error("prompt should state that PR approval is strictly a human operator task")
 	}
-	if !strings.Contains(prompt, "Never run `klaus approve`") {
-		t.Error("prompt should instruct coordinator to never run klaus approve")
+	if !strings.Contains(prompt, "Never run `valley flow approve`") {
+		t.Error("prompt should instruct coordinator to never run valley flow approve")
 	}
 }
 
@@ -707,8 +707,8 @@ func TestRenderSessionPromptWithProjects(t *testing.T) {
 	if !strings.Contains(prompt, "klaus (/home/user/src/klaus)") {
 		t.Error("prompt should contain project listing")
 	}
-	if !strings.Contains(prompt, "klaus launch --repo <name>") {
-		t.Error("prompt should mention 'klaus launch --repo <name>'")
+	if !strings.Contains(prompt, "valley flow launch --repo <name>") {
+		t.Error("prompt should mention 'valley flow launch --repo <name>'")
 	}
 }
 

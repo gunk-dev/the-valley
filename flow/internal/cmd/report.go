@@ -15,7 +15,7 @@ import (
 
 var reportCmd = &cobra.Command{
 	Use:   "report",
-	Short: "Report on klaus's runs from the session event logs",
+	Short: "Report on flow's runs from the session event logs",
 }
 
 var reportTimeCmd = &cobra.Command{
@@ -38,7 +38,7 @@ per repository and overall:
   APPROVAL    time from a PR's last run to its first approval
   FOLLOW-UPS  runs that continued a change (CI, review and conflict fixes,
               --pr, --change, budget resumes), per change
-  CONSULT     klaus consult time; REVIEW, klaus review time
+  CONSULT     valley flow consult time; REVIEW, valley flow review time
   COST        agent cost where the backend reports it (Claude)
 
 Runs that share a change ID in a repo, or a PR, are one change, so a PR's
@@ -46,7 +46,7 @@ runs from before change IDs join its later ones, and a Change-Id copied into
 another repo is another change. A run's repo is its repo_key: owner/repo,
 valley:<name>, or the repo's short name; every name a run's events give its
 repo counts, so a renamed repo's runs stay one change. Events from before
-klaus recorded phases count a run's agent time from agent:started to its last
+flow recorded phases count a run's agent time from agent:started to its last
 event, with no setup or finalize time, and a run with no recorded dispatch
 reason counts as "unknown".
 

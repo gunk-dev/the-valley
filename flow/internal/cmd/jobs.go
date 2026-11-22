@@ -25,15 +25,15 @@ func newJobsCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "jobs",
 		Short: "List running and recent consults, reviews and prose passes",
-		Long: `Lists the read-only background jobs of the current Klaus session (or the
-most recent session outside a pane): each klaus consult backend call, one per
-member of a --panel, each klaus review, and each prose pass of a worker's
+		Long: `Lists the read-only background jobs of the current flow session (or the
+most recent session outside a pane): each valley flow consult backend call, one per
+member of a --panel, each valley flow review, and each prose pass of a worker's
 _pre-review, with the run's ID under THREAD/PR. Running jobs come first, then the
 jobs that finished in the last 3 hours, newest first; --all lists every
 record kept, and --kind filters by kind (consult, review or prose).
 
 STATUS is running, succeeded, failed, timed out or interrupted, as the job
-recorded it, or died: the job's klaus process is gone (it was killed with
+recorded it, or died: the job's flow process is gone (it was killed with
 SIGKILL, or the machine restarted) without recording an end.
 
 Records live in ~/.klaus/sessions/<session-id>/jobs/<id>.json. A consult's
@@ -41,7 +41,7 @@ ID is the run_id of its consult:started and consult:completed events, and a
 review's that of its review:started and review:completed events. Records of
 jobs that finished more than 7 days ago are removed when a new job starts.
 
-Use 'klaus jobs show <id>' to read a job's answer.`,
+Use 'valley flow jobs show <id>' to read a job's answer.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			kinds, err := parseJobKinds(rawKinds)

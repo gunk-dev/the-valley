@@ -1,51 +1,55 @@
-# klaus reference
+# flow reference
 
-The complete surface of klaus: commands and flags, configuration, environment, files, trailers, the
-data ref, events, and the constraints the code enforces. The [guide](./guide.md) tells the everyday
-story; the [design](./design.md) explains the mechanisms.
+The complete surface of flow, the agent-run client that `valley flow` runs: commands and flags,
+configuration, environment, files, trailers, the data ref, events, and the constraints the code
+enforces. `valley flow` runs a separate program, `valley-flow`, installed with its package; without
+it on `PATH`, `valley flow` prints one line and exits 127. The [guide](./guide.md) tells the
+everyday story; the [design](./design.md) explains the mechanisms.
 
 In this reference, **GitHub work** is a GitHub pull request <!-- prose-allow: vocabulary --> that an
-agent opened or that klaus tracks, and `<pr>` names one by number, URL or `owner/repo#N`. A
+agent opened or that flow tracks, and `<pr>` names one by number, URL or `owner/repo#N`. A
 **change** is a valley change; its **handle** is the shortest unique prefix of its change ID.
 
 ## Commands
 
-| Command                               | Purpose                                                       |
-| ------------------------------------- | ------------------------------------------------------------- |
-| `klaus`, `klaus session`, `klaus new` | Resume or start an interactive coordinator session            |
-| `klaus launch`                        | Launch an autonomous agent run                                |
-| `klaus status`                        | Every run of the session, then running and recent jobs        |
-| `klaus dashboard`                     | Live TUI of runs, changes and jobs; runs the pipeline         |
-| `klaus logs <run-id>`                 | A run's output                                                |
-| `klaus watch`                         | Stream the session's events, or wait for the next ones        |
-| `klaus notifications`                 | Events since the last check, summarised (alias `notif`)       |
-| `klaus jobs [show <id>]`              | Consults, reviews and prose passes                            |
-| `klaus consult`                       | Ask another model a read-only question                        |
-| `klaus review <pr>`                   | Second-opinion review of GitHub work by another model family  |
-| `klaus approve`, `klaus merge`        | Approve GitHub work; merge it in order                        |
-| `klaus ready <run-id\|handle>`        | Mark a valley change ready once its review passes             |
-| `klaus track`, `klaus untrack`        | Follow work no agent of the session made                      |
-| `klaus failed-checks`                 | Dispatch fixes for failed valley checks, once                 |
-| `klaus restack-conflicts`             | Dispatch runs for valley restack conflicts, once              |
-| `klaus cleanup`                       | Remove runs' worktrees, panes and state                       |
-| `klaus push-log <run-id>`             | Store a log held back for sensitivity on the data ref         |
-| `klaus report time`                   | Where agent wall-clock time went                              |
-| `klaus target`                        | Set or show the session's default repository                  |
-| `klaus project`, `klaus sync`         | The project registry; fetch every registered project          |
-| `klaus scaffold <name>`               | Create a GitHub repository and have an agent scaffold it      |
-| `klaus init`                          | Write default configuration                                   |
-| `klaus webhook check\|setup`          | GitHub webhooks for registered projects                       |
-| `klaus self-update`                   | Install the tip of the configured branch into the nix profile |
+| Command                                                 | Purpose                                                       |
+| ------------------------------------------------------- | ------------------------------------------------------------- |
+| `valley flow`, `valley flow session`, `valley flow new` | Resume or start an interactive coordinator session            |
+| `valley flow launch`                                    | Launch an autonomous agent run                                |
+| `valley flow status`                                    | Every run of the session, then running and recent jobs        |
+| `valley flow dashboard`                                 | Live TUI of runs, changes and jobs; runs the pipeline         |
+| `valley flow logs <run-id>`                             | A run's output                                                |
+| `valley flow watch`                                     | Stream the session's events, or wait for the next ones        |
+| `valley flow notifications`                             | Events since the last check, summarised (alias `notif`)       |
+| `valley flow jobs [show <id>]`                          | Consults, reviews and prose passes                            |
+| `valley flow consult`                                   | Ask another model a read-only question                        |
+| `valley flow review <pr>`                               | Second-opinion review of GitHub work by another model family  |
+| `valley flow approve`, `valley flow merge`              | Approve GitHub work; merge it in order                        |
+| `valley flow ready <run-id\|handle>`                    | Mark a valley change ready once its review passes             |
+| `valley flow track`, `valley flow untrack`              | Follow work no agent of the session made                      |
+| `valley flow failed-checks`                             | Dispatch fixes for failed valley checks, once                 |
+| `valley flow restack-conflicts`                         | Dispatch runs for valley restack conflicts, once              |
+| `valley flow cleanup`                                   | Remove runs' worktrees, panes and state                       |
+| `valley flow push-log <run-id>`                         | Store a log held back for sensitivity on the data ref         |
+| `valley flow report time`                               | Where agent wall-clock time went                              |
+| `valley flow target`                                    | Set or show the session's default repository                  |
+| `valley flow project`, `valley flow sync`               | The project registry; fetch every registered project          |
+| `valley flow scaffold <name>`                           | Create a GitHub repository and have an agent scaffold it      |
+| `valley flow init`                                      | Write default configuration                                   |
+| `valley flow webhook check\|setup`                      | GitHub webhooks for registered projects                       |
+| `valley flow self-update`                               | Install the tip of the configured branch into the nix profile |
 
-`klaus --version` prints `klaus version <v>`.
+`valley flow --version` prints `valley flow version <v>` (run directly as `klaus`, it prints
+`klaus version <v>`).
 
-### klaus, klaus session, klaus new
+### valley flow, valley flow session, valley flow new
 
-`klaus` and `klaus session` resume the most recent coordinator session or create one; `klaus new`
-creates a fresh one. They must run inside tmux. In a repository the coordinator works in a worktree
-of `origin/<default branch>` under `worktree_base`, with klaus's hooks but no trailers; elsewhere in
-`~/.klaus/sessions/<id>/workspace`, configured by `~/.klaus/config.json` alone. Each creates the
-session's `events.jsonl` and syncs registered projects in the background (`~/.klaus/sync.log`).
+`valley flow` and `valley flow session` resume the most recent coordinator session or create one;
+`valley flow new` creates a fresh one. They must run inside tmux. In a repository the coordinator
+works in a worktree of `origin/<default branch>` under `worktree_base`, with flow's hooks but no
+trailers; elsewhere in `~/.klaus/sessions/<id>/workspace`, configured by `~/.klaus/config.json`
+alone. Each creates the session's `events.jsonl` and syncs registered projects in the background
+(`~/.klaus/sync.log`).
 
 | Flag                     | Meaning                                                               |
 | ------------------------ | --------------------------------------------------------------------- |
@@ -58,10 +62,10 @@ A resumed coordinator keeps its saved backend. A Claude coordinator's project me
 (`~/.claude/projects/<encoded path>/memory`) is a symlink to `~/.klaus/memory`, shared by every
 session; older memory files migrate into it on resume.
 
-### klaus launch
+### valley flow launch
 
-`klaus launch "<prompt>" | --prompt-file <path> [flags]`. The positional prompt and `--prompt-file`
-are mutually exclusive, and one is required.
+`valley flow launch "<prompt>" | --prompt-file <path> [flags]`. The positional prompt and
+`--prompt-file` are mutually exclusive, and one is required.
 
 | Flag                         | Meaning                                                                   |
 | ---------------------------- | ------------------------------------------------------------------------- |
@@ -88,7 +92,7 @@ are mutually exclusive, and one is required.
 
 **Target repository**, in order: `--repo` naming a registered project; `--repo` as `owner/repo` or a
 URL (cloned or fetched under `<worktree_base>/.repos/<owner>/<repo>`); the current repository; the
-session target (`klaus target`); else an error.
+session target (`valley flow target`); else an error.
 
 **Prompt storage.** However given, the brief is written to `prompts/<run-id>.md` in the session
 directory, kept as the record, and every worker reads it on stdin. A local Claude worker reads its
@@ -163,7 +167,7 @@ run, and whether it holds uncommitted changes or commits origin lacks), and whil
 holds commits `origin/<branch>` lacks. `--force-takeover` passes the running-run check and resets
 the local branch to origin's tip, discarding such commits. In one clone these launches hold
 `klaus-continue.lock` from the check through the new run's registration; a second waits up to 5
-minutes, then refuses. `klaus ready` takes the same lock.
+minutes, then refuses. `valley flow ready` takes the same lock.
 
 #### Dispatcher launches
 
@@ -176,7 +180,7 @@ run it could not record.
 
 #### Trajectory replay
 
-At finalize, klaus commits a Claude run's resumable conversation to the data ref at
+At finalize, flow commits a Claude run's resumable conversation to the data ref at
 `sessions/<run-id>.jsonl`. `--pr` on budget-paused work, and `--change` on any change, fetch the ref
 from origin (best effort), restore the newest run's conversation into the new worktree and run
 `claude --resume <uuid>`. Only the most recent run is replayed; otherwise the agent starts fresh,
@@ -204,16 +208,16 @@ Worker backend precedence: `--backend`, the session's saved worker default, `KLA
 Claude only `default_agent_model`/`default_agent_effort`; a `backends.<kind>` entry replaces the
 legacy defaults even with empty fields, and with nothing set the CLI's own default applies. Model
 names pass through unchanged. Claude efforts are `low`, `medium`, `high`, `xhigh`, `max`. Workers
-run with each CLI's permission bypass; agy runs with a 24-hour print timeout. `klaus status` shows
-the model the worker reported, else the one launched with, else `(default model)`.
+run with each CLI's permission bypass; agy runs with a 24-hour print timeout. `valley flow status`
+shows the model the worker reported, else the one launched with, else `(default model)`.
 
-### klaus status
+### valley flow status
 
 Prints the runs table; a line for each run that changed its clone's shared git files; the failed
-valley checks and the restack conflicts on changes klaus owns; a `Session cost` line that includes
+valley checks and the restack conflicts on changes flow owns; a `Session cost` line that includes
 removed runs; then the session's running jobs and consults and reviews that finished in the last 3
 hours. When prose passes finished in the same period, a summary line below the jobs table gives
-their total and any failures (use `klaus jobs --kind prose` to see individual passes).
+their total and any failures (use `valley flow jobs --kind prose` to see individual passes).
 
 | Column            | Values                                                                       |
 | ----------------- | ---------------------------------------------------------------------------- |
@@ -234,9 +238,9 @@ STATUS is `running`, `needs-attention`, `superseded`, `pr-created`, `merged`, `c
 idle at a shell after finalize, is not). `working`: another run of its change is running.
 `superseded`: a run needing attention whose pushed work a later run of its change took on, and that
 run is running or finished. `no-access`: GitHub will not show the work with the current credentials.
-`tracking`: added by `klaus track` and not yet settled.
+`tracking`: added by `valley flow track` and not yet settled.
 
-### klaus dashboard
+### valley flow dashboard
 
 | Key                   | Action                                                                                           |
 | --------------------- | ------------------------------------------------------------------------------------------------ |
@@ -247,7 +251,7 @@ run is running or finished. `no-access`: GitHub will not show the work with the 
 | `a`                   | approve the selected GitHub work                                                                 |
 | `d`                   | pre-fill `WRT PR#<num>:` in the coordinator's pane and focus it <!-- prose-allow: vocabulary --> |
 | `o`                   | open the selected GitHub work in a browser (`xdg-open`, or `open`)                               |
-| `x`                   | after `y`: remove what `klaus cleanup --done` would; hide finished jobs                          |
+| `x`                   | after `y`: remove what `valley flow cleanup --done` would; hide finished jobs                    |
 | `tab`                 | select a job, or back to the runs                                                                |
 | `enter`               | read the selected job's record and answer (`esc` back)                                           |
 | `r`                   | refresh and redraw                                                                               |
@@ -267,7 +271,7 @@ full period. A repository column appears when the session spans repositories or 
 **Sources.** File-system watching of run state, GitHub polling every 30 seconds (one GraphQL query
 per repository for all its tracked work, plus a compare when a head or base moved), or
 [webhooks](#webhook-receiver). Work seen merged or closed is not asked about again
-(`pr-transitions.json`); reopened work stays closed to klaus. Work the account cannot read (404, a
+(`pr-transitions.json`); reopened work stays closed to flow. Work the account cannot read (404, a
 non-rate-limit 403, an unresolvable reference) shows `NO ACCESS`, skips CI, conflict and review
 queries, and is asked again every 30 minutes. When GitHub rate-limits, polling stops until the time
 GitHub gives (or 2 minutes), the header says `GitHub rate-limited until HH:MM`, and rows keep their
@@ -291,7 +295,7 @@ when there are passes to count. Job row counts and `tab` selection cover only jo
 
 **Restart.** Every 30 seconds the dashboard looks for the name it was started as, `klaus` or
 `valley-flow`, in the absolute directories on `PATH`. When the first match is a different file that
-runs `--version`, the footer says `klaus updated to <version>; restarting`, and after 10 seconds
+runs `--version`, the footer says `flow updated to <version>; restarting`, and after 10 seconds
 without a key press the dashboard shuts down as on `q` and execs that file with the same arguments
 and environment. A dashboard started as `valley-flow` notes the `PATH` directory it was found in. If
 that directory later holds `klaus` without `valley-flow`, as when a profile is rolled back to a
@@ -301,12 +305,12 @@ is not tried again.
 Notes go to `dashboard.log` in the session directory, never to the screen. A narrow or short pane
 drops spacing, status, job and help lines before rows.
 
-### klaus logs
+### valley flow logs
 
-`klaus logs <run-id>` shows the live pane while the run runs, else replays the saved log through the
-formatter. `--replay` re-formats the saved JSONL log; `--raw` prints it as is.
+`valley flow logs <run-id>` shows the live pane while the run runs, else replays the saved log
+through the formatter. `--replay` re-formats the saved JSONL log; `--raw` prints it as is.
 
-### klaus watch
+### valley flow watch
 
 | Flag                  | Meaning                                                                                   |
 | --------------------- | ----------------------------------------------------------------------------------------- |
@@ -321,38 +325,38 @@ formatter. `--replay` re-formats the saved JSONL log; `--raw` prints it as is.
 | `--session-id <id>`   | Override `KLAUS_SESSION_ID`                                                               |
 
 `--after` is a byte offset into `events.jsonl` at the start of a line. The `next:` line repeats the
-other flags given, for example `next: klaus watch --once --after 18342`; with `--json` it is
-`{"after":18342,"next":"klaus watch --once --after 18342 --json"}`. Without `--after`, `--once`
-starts at the end of the file (the start with `--since-start`). Interrupted before any event, it
-prints only its `next:` line. An offset past the end or inside a line is an error, as is an events
-file replaced or removed while a watch waits. A watch on a session without an events file waits for
-it while the session directory exists; an unknown session fails at once.
+other flags given, for example `next: valley flow watch --once --after 18342`; with `--json` it is
+`{"after":18342,"next":"valley flow watch --once --after 18342 --json"}`. Without `--after`,
+`--once` starts at the end of the file (the start with `--since-start`). Interrupted before any
+event, it prints only its `next:` line. An offset past the end or inside a line is an error, as is
+an events file replaced or removed while a watch waits. A watch on a session without an events file
+waits for it while the session directory exists; an unknown session fails at once.
 
-### klaus notifications
+### valley flow notifications
 
 Shows events since the last run (marker `notifications-marker` in the session directory), grouped
 into summaries; `--all` shows every event, `--json` lists them. A superseded run's
 `agent:needs-attention` is left out of the summary.
 
-### klaus jobs
+### valley flow jobs
 
-`klaus jobs` lists running jobs and jobs that finished in the last 3 hours, including prose passes.
-Use `--all` to list all retained records. Filter with `--kind`, using `consult`, `review`, or
-`prose`. Repeat the flag or separate kinds with commas.
+`valley flow jobs` lists running jobs and jobs that finished in the last 3 hours, including prose
+passes. Use `--all` to list all retained records. Filter with `--kind`, using `consult`, `review`,
+or `prose`. Repeat the flag or separate kinds with commas.
 
-`klaus jobs show <id>` prints a record and its answer. Use `--answer` for just the answer. The ID
-can be a job ID, a unique suffix of a job ID, or a panel ID. A job record (`jobs/<run_id>.json`)
+`valley flow jobs show <id>` prints a record and its answer. Use `--answer` for just the answer. The
+ID can be a job ID, a unique suffix of a job ID, or a panel ID. A job record (`jobs/<run_id>.json`)
 holds `kind` (`consult`, `review` or `prose`), `thread`, `turn`, `role`, `backend`, `model`,
 `effort`, `dir`, `repo`, `commit` (or a review's `pr`), the `prompt` excerpt, `started_at`,
-`finished_at`, the klaus `pid` and its start time from `/proc/<pid>/stat`, `panel`, and `status`:
+`finished_at`, the flow `pid` and its start time from `/proc/<pid>/stat`, `panel`, and `status`:
 `running`, `succeeded`, `failed`, `timed out` or `interrupted`, with a short `error`. A `running`
 record whose process is gone reads `died`. A one-shot consult's answer is `<run_id>.answer` beside
 the record, a failed one's raw output `<run_id>.raw`; a thread's answer is in its log. Records
 finished over 7 days ago are removed when a job starts.
 
-### klaus consult
+### valley flow consult
 
-`klaus consult [flags] ("<question>" | --prompt-file PATH)`.
+`valley flow consult [flags] ("<question>" | --prompt-file PATH)`.
 
 | Flag                  | Meaning                                                                                      |
 | --------------------- | -------------------------------------------------------------------------------------------- |
@@ -378,8 +382,8 @@ first line is `Workspace: <project> at origin/<branch> <commit>`, and the commit
 thread, the `consult:started` event and the job record. A one-shot snapshot (shared by a panel)
 lives in `~/.klaus/consult-snapshots/` and goes when the consult ends; a thread's lives at
 `consults/NAME.workspace` and moves to the current origin branch every turn. When the fetch fails, a
-thread reads its last snapshot with a warning; a first turn fails. `klaus cleanup --all` removes
-thread snapshots, and a missing one is made again.
+thread reads its last snapshot with a warning; a first turn fails. `valley flow cleanup --all`
+removes thread snapshots, and a missing one is made again.
 
 **Threads** keep backend, model, effort, role and workspace; conflicting overrides are refused.
 `consults/NAME.json` holds metadata and `consults/NAME.log` the transcript: JSON lines, each turn
@@ -398,10 +402,10 @@ subagents disabled. Claude runs in safe mode with only Read, Grep and Glob. agy 
 with a temporary agent definition exposing only file reads and search, removed after the call.
 Consults never create run state.
 
-### klaus review
+### valley flow review
 
-`klaus review <pr>` has a model family other than the author's review GitHub work. The author's
-family is that of the klaus run that opened it, else Claude.
+`valley flow review <pr>` has a model family other than the author's review GitHub work. The
+author's family is that of the flow run that opened it, else Claude.
 
 | Flag                  | Meaning                                                                   |
 | --------------------- | ------------------------------------------------------------------------- |
@@ -422,20 +426,21 @@ before posting. `locks/review-<owner>-<repo>-<n>.lock` makes a concurrent `--pos
 fail at once. In a session it emits `review:started`/`review:completed` and leaves a job record;
 SIGINT and SIGTERM end it as `interrupted`.
 
-### klaus approve, klaus merge
+### valley flow approve, valley flow merge
 
-`klaus approve <n>...` (`--run <run-id>`, `--all` for every merge-ready one) marks GitHub work
+`valley flow approve <n>...` (`--run <run-id>`, `--all` for every merge-ready one) marks GitHub work
 approved in run state and emits `pr:approval-changed`.
 
-`klaus merge <n>...` merges in order, stopping at the first that fails and reporting the rest. For
-each: check readiness; wait for CI (polling every 30 seconds, up to 10 minutes); if it conflicts,
-rebase it onto main in a temporary worktree, run the verification (`merge_verify_command`, else
-`go build ./...` when there is a `go.mod`, else nothing) and push with `--force-with-lease`; merge
-with `gh pr merge`; mark the run merged. Work merely behind is merged as is; if GitHub demands an
-up-to-date branch, klaus runs GitHub's branch update (a merge from main, which keeps the head and
-its approval), waits for CI and merges again. Merge never removes a worktree that has the branch
-checked out. Without a clone it resolves one (current repository, registered project, or a clone
-under `<worktree_base>/.repos`), and the target repository's `.klaus/config.json` applies.
+`valley flow merge <n>...` merges in order, stopping at the first that fails and reporting the rest.
+For each: check readiness; wait for CI (polling every 30 seconds, up to 10 minutes); if it
+conflicts, rebase it onto main in a temporary worktree, run the verification
+(`merge_verify_command`, else `go build ./...` when there is a `go.mod`, else nothing) and push with
+`--force-with-lease`; merge with `gh pr merge`; mark the run merged. Work merely behind is merged as
+is; if GitHub demands an up-to-date branch, flow runs GitHub's branch update (a merge from main,
+which keeps the head and its approval), waits for CI and merges again. Merge never removes a
+worktree that has the branch checked out. Without a clone it resolves one (current repository,
+registered project, or a clone under `<worktree_base>/.repos`), and the target repository's
+`.klaus/config.json` applies.
 
 | Flag                  | Meaning                                                  |
 | --------------------- | -------------------------------------------------------- |
@@ -446,9 +451,9 @@ under `<worktree_base>/.repos`), and the target repository's `.klaus/config.json
 | `--force`             | Bypass the approval check                                |
 | `--yes`, `-y`         | Skip unapproved work with a warning instead of prompting |
 
-### klaus ready
+### valley flow ready
 
-`klaus ready <run-id|handle> [--head <sha>]` marks a change's current head ready
+`valley flow ready <run-id|handle> [--head <sha>]` marks a change's current head ready
 (`valley ready --change <change-id> --head <head> <branch>`, in the run's clone): the active
 version's head when the valley lists the change, else the head its newest run in any session pushed.
 `<run-id|handle>` is a run ID, or a handle, change ID or prefix as this session's runs record them.
@@ -460,41 +465,42 @@ valley. It clears `valley.draft` on this session's run that pushed the head, emi
 `agent:change-ready` with `"via": "klaus ready"`, and prints
 `<repo> <handle> v<n> ready at <head> (run <id>)`.
 
-### klaus track, klaus untrack
+### valley flow track, valley flow untrack
 
-`klaus track <ref>...` and `klaus untrack <ref>...`, with `--repo` naming the repository of a bare
-number or the project of a bare handle or change ID. GitHub work is a number (in `--repo`, else the
-session target), a URL or `owner/repo#N`; it reads `tracking` until GitHub says merged or closed. A
-change is a handle, a change ID or `<project>:<handle>`; the project is the one before the colon,
-else `--repo`, else the session target, else the current directory's repository, and klaus runs
-`valley changes --json` in its checkout and records the change ID, repository, handle, and the
+`valley flow track <ref>...` and `valley flow untrack <ref>...`, with `--repo` naming the repository
+of a bare number or the project of a bare handle or change ID. GitHub work is a number (in `--repo`,
+else the session target), a URL or `owner/repo#N`; it reads `tracking` until GitHub says merged or
+closed. A change is a handle, a change ID or `<project>:<handle>`; the project is the one before the
+colon, else `--repo`, else the session target, else the current directory's repository, and flow
+runs `valley changes --json` in its checkout and records the change ID, repository, handle, and the
 active version's title, branch and head. A change already followed is not added again; a landed or
 withdrawn one is added with a warning. Untrack removes only what track added, and a ref naming
 tracked changes in several projects removes none.
 
-### klaus failed-checks, klaus restack-conflicts
+### valley flow failed-checks, valley flow restack-conflicts
 
 One pass of what the dashboard does every minute: dispatch fix runs for
 [failed valley checks](#failed-check-dispatch), and runs for
-[restack conflicts](#restack-conflict-dispatch), on changes klaus owns.
+[restack conflicts](#restack-conflict-dispatch), on changes flow owns.
 
-### klaus cleanup
+### valley flow cleanup
 
-`klaus cleanup <run-id> | --done | --all [--force]` kills a run's pane, removes its worktree and
-scratch directory, deletes its local branch and its state, keeping its cost and duration in the
+`valley flow cleanup <run-id> | --done | --all [--force]` kills a run's pane, removes its worktree
+and scratch directory, deletes its local branch and its state, keeping its cost and duration in the
 session's ledger (`cleared.jsonl`). `--done` removes the runs of work that is merged, closed,
 integrated, withdrawn or gone, and the older runs of open work, keeping each open item's latest run,
 runs needing attention and running runs, with a line for each. `--all` removes every run and the
 session's unused consult thread snapshots, and the detached agents session once no run holds a pane
 in it and no pane runs a command. Running runs are skipped unless `--force`.
 
-### klaus push-log, klaus report time
+### valley flow push-log, valley flow report time
 
-`klaus push-log <run-id> [--push]` commits a log held back by the [sensitivity scan](#the-data-ref)
-to the data ref after you reviewed it; `--push` also pushes the ref once.
+`valley flow push-log <run-id> [--push]` commits a log held back by the
+[sensitivity scan](#the-data-ref) to the data ref after you reviewed it; `--push` also pushes the
+ref once.
 
-`klaus report time [--since 7d] [--repo <r>] [--current] [--json]` reads every session's event log
-(`--current`: this one) and reports, per repository and overall, for runs started in the window
+`valley flow report time [--since 7d] [--repo <r>] [--current] [--json]` reads every session's event
+log (`--current`: this one) and reports, per repository and overall, for runs started in the window
 (`0`: all time): runs by dispatch reason, time by phase, checks by kind, idle time between a
 change's runs, time from the last run to the first approval, follow-ups per change, consult and
 review time, and cost. Runs sharing a change ID in a repository, or GitHub work, are one change.
@@ -502,36 +508,37 @@ review time, and cost. Runs sharing a change ID in a repository, or GitHub work,
 without phase events count from `agent:started` to their last event; a run without a reason counts
 as `unknown`.
 
-### klaus target, klaus project, klaus sync
+### valley flow target, valley flow project, valley flow sync
 
-`klaus target [name | owner/repo]` sets the session's default repository (`target.json`); without an
-argument it shows it, and `--clear` removes it.
+`valley flow target [name | owner/repo]` sets the session's default repository (`target.json`);
+without an argument it shows it, and `--clear` removes it.
 
-`klaus project add <owner/repo | name> [--path <dir>] [-d <description>]` clones into the projects
-directory (or registers an existing checkout) and records it in `~/.klaus/projects.json`; a bare
-name searches your GitHub repositories, and without `-d` the description comes from `gh repo view`.
-`project list`, `project remove <name>` (keeps the clone), `project describe <name> <text>` (empty
-clears) and `project set-dir <path>` complete it. Descriptions appear in the coordinator's
-`## Registered projects` block. `klaus sync` fetches and fast-forwards every registered project.
+`valley flow project add <owner/repo | name> [--path <dir>] [-d <description>]` clones into the
+projects directory (or registers an existing checkout) and records it in `~/.klaus/projects.json`; a
+bare name searches your GitHub repositories, and without `-d` the description comes from
+`gh repo view`. `project list`, `project remove <name>` (keeps the clone),
+`project describe <name> <text>` (empty clears) and `project set-dir <path>` complete it.
+Descriptions appear in the coordinator's `## Registered projects` block. `valley flow sync` fetches
+and fast-forwards every registered project.
 
-### klaus scaffold, klaus init
+### valley flow scaffold, valley flow init
 
-`klaus scaffold <project-name> [--description <d>] [--type web|cli] [--budget <usd>] [--backend <kind>]`
+`valley flow scaffold <project-name> [--description <d>] [--type web|cli] [--budget <usd>] [--backend <kind>]`
 creates a GitHub repository, registers it, and launches an agent that scaffolds it from
 `.klaus/principles.md` in the current directory (else built-in principles), without templates. It
 must run inside tmux.
 
-`klaus init` writes `.klaus/config.json` (the defaults) and `.klaus/prompt.md` in a repository, or
-`~/.klaus/config.json` outside one.
+`valley flow init` writes `.klaus/config.json` (the defaults) and `.klaus/prompt.md` in a
+repository, or `~/.klaus/config.json` outside one.
 
-### klaus webhook
+### valley flow webhook
 
-`klaus webhook check` shows each registered project's webhook state; `klaus webhook setup [project]`
-creates missing ones. Both need `webhook.relay_url`; `setup` also needs `webhook.secret_file`. Hooks
-subscribe to `push`, `check_run`, `check_suite`, `pull_request`, `pull_request_review` and
-`issue_comment`.
+`valley flow webhook check` shows each registered project's webhook state;
+`valley flow webhook setup [project]` creates missing ones. Both need `webhook.relay_url`; `setup`
+also needs `webhook.secret_file`. Hooks subscribe to `push`, `check_run`, `check_suite`,
+`pull_request`, `pull_request_review` and `issue_comment`.
 
-### klaus self-update
+### valley flow self-update
 
 Off until the host config has `self_update` (`repo`, and `branch`, default `main`); a repository's
 `.klaus/config.json` cannot set it. `repo` is an `https://`, `ssh://`, `git://` or `file:///` URL,
@@ -544,7 +551,7 @@ flake references; nix 2.31 refuses them. A run:
 1. takes a lock under `$XDG_STATE_HOME/klaus/` (a run finding another exits 0, saying so); a pinned
    install exits 0 with a note;
 2. resolves the branch with `git ls-remote <repo> refs/heads/<branch>`;
-3. exits 0 when the installed klaus was built from that commit (`-v` says so);
+3. exits 0 when the installed flow was built from that commit (`-v` says so);
 4. reads the packages the flake offers at that commit and, unless it offers
    `packages.<system>.klaus`, refuses with nothing built or changed. The refusal asks for
    `self_update.repo` to name a repository whose flake offers it, such as the-valley's; the next run
@@ -555,7 +562,7 @@ flake references; nix 2.31 refuses them. A run:
    default package;
 7. smoke-tests it: `klaus --version` must report the commit and `klaus status` must exit 0; a
    failure records the commit as failed, installs nothing and exits non-zero;
-8. replaces the nix profile element `klaus`, leaving other elements and the system klaus alone;
+8. replaces the nix profile element `klaus`, leaving other elements and any system install alone;
 9. records current and previous store paths and commits, the time and any failure in
    `$XDG_STATE_HOME/klaus/self-update.json`.
 
@@ -614,7 +621,7 @@ repository's value is ignored) and `self_update`. Finalize reads `ready_at_final
 | `forbidden_terms`                                   | unset                                    | Host only: [forbidden terms](#forbidden-terms)                |
 | `trusted_reviewers`                                 | `["gemini-code-assist[bot]"]`            | Logins whose comments dispatch fix agents                     |
 | `pr_reviewer`                                       | picked at launch                         | Login an agent requests review from                           |
-| `require_approval`                                  | `true`                                   | `klaus merge` requires approval                               |
+| `require_approval`                                  | `true`                                   | `valley flow merge` requires approval                         |
 | `auto_merge_on_approval`                            | `false`                                  | The pipeline merges approved, green, conflict-free work       |
 | `merge_verify_command`                              | `go build ./...` with `go.mod`           | Verification before a merge's force-push                      |
 | `ready_at_finalize`                                 | `true`                                   | Mark a valley change ready at finalize, or leave a draft      |
@@ -631,14 +638,14 @@ repository's value is ignored) and `self_update`. Finalize reads `ready_at_final
 | `pre_review.prose.writer.<kind>`, `.checker.<kind>` | backend defaults                         | `model` and `effort` for the writer and checker               |
 | `cross_review.enabled`                              | `true`                                   | `false` keeps the author's family                             |
 | `cross_review.order`                                | `codex`, `claude`, `agy`                 | Reviewer preference                                           |
-| `cross_review.post`                                 | `false`                                  | Default for `klaus review --post`                             |
+| `cross_review.post`                                 | `false`                                  | Default for `valley flow review --post`                       |
 | `cross_review.max_rounds`                           | `2`                                      | Posted cross-reviews per GitHub work                          |
 | `consult.order`                                     | `codex`, `claude`, `agy`                 | Consult family preference                                     |
 | `consult.default_role`                              | `partner`                                | Consult role                                                  |
 | `dashboard.hide_finished_after_minutes`             | `60`                                     | Hide older done rows; negative never hides                    |
 | `dashboard.approve_command`                         | empty                                    | Footer approve template (`submit_command`: deprecated name)   |
 | `webhook.*`                                         | absent                                   | [Webhook receiver](#webhook-receiver)                         |
-| `self_update.repo`, `.branch`                       | absent, `main`                           | Host only: [self-update](#klaus-self-update) source           |
+| `self_update.repo`, `.branch`                       | absent, `main`                           | Host only: [self-update](#valley-flow-self-update) source     |
 
 **Cross-review choice.** The reviewer family is `backends.<author>.review_backend`, else the first
 `cross_review.order` entry that is not the author and whose CLI is on `PATH`, else the author's own;
@@ -681,7 +688,7 @@ coordinator's and `.klaus/pr-fix-prompt.md` the fix agents'. They are Go templat
 | `{{.DirectPush}}` | true when origin is not on github.com                                            |
 | `{{.PR}}`         | (fix prompt) the number of the work being fixed <!-- prose-allow: vocabulary --> |
 
-klaus appends its worker rules to every worker prompt: the run ends with the agent's turn, so long
+flow appends its worker rules to every worker prompt: the run ends with the agent's turn, so long
 builds run in the foreground; the test guidance; scratch output stays out of the worktree; a broken
 environment is reported, not worked around; work whose cost is out of proportion stops and reports
 what it taught; and the final report has the headings Intent, Decisions, Shape, What the
@@ -689,7 +696,7 @@ implementation taught us, Checks, Diff summary.
 
 `house_rules` (`{"repo": "<registered project>", "path": "guidance/house-rules.md"}`) is read at
 launch with `git show` from the project's freshly fetched origin default branch, never a working
-tree, and appended after the worker rules, and to the context of `klaus consult --repo`, the
+tree, and appended after the worker rules, and to the context of `valley flow consult --repo`, the
 `_pre-review` reviewer, and the prose writer and checker. The run records its source, commit and
 sha256, and launch prints them. An unreadable file is warned about once, recorded as missing, and
 skipped. A repository's config may name other rules.
@@ -720,7 +727,7 @@ Files equal to or under an `allow_paths` entry are skipped. The report lists `fi
 | `KLAUS_RUN_ID`        | launch                | The run, in the agent's pane (and on a sandbox host)                                              |
 | `KLAUS_RUN_EVENTS`    | launch, sandbox runs  | `output`: `_pre-review` prints its check as a stream line                                         |
 | `KLAUS_SCRATCH`       | launch, local workers | The run's scratch directory                                                                       |
-| `KLAUS_TMUX_SOCKET`   | launch, local workers | The real tmux server's socket, for klaus's own commands                                           |
+| `KLAUS_TMUX_SOCKET`   | launch, local workers | The real tmux server's socket, for flow's own commands                                            |
 | `TMUX_TMPDIR`         | launch, local workers | The run's own empty tmux directory; `TMUX`, `TMUX_PANE` unset                                     |
 | `XDG_STATE_HOME`      | user                  | Self-update's lock and state go in `$XDG_STATE_HOME/klaus` (default `~/.local/state/klaus`)       |
 | `CODEX_HOME`          | user                  | Codex authentication, also for consults                                                           |
@@ -766,14 +773,14 @@ Run state records, among others: `id`, `prompt`, `issue`, `pr`, `pr_url`, `branc
 
 ## The data ref
 
-At finalize klaus commits, with a temporary index and without touching any working tree, to
+At finalize flow commits, with a temporary index and without touching any working tree, to
 `data_ref` (default `refs/klaus/data`) in the local clone: `runs/<run-id>.json`,
 `logs/<run-id>.jsonl` and the Claude conversation `sessions/<run-id>.jsonl`. Before a log is stored,
 a scan looks for private IP addresses, SSH keys, credential patterns and `.age` secret references
 (the repository's own remote hosts are exempt); a log that matches, or cannot be scanned in full, is
-held back, only the state is stored, and `klaus push-log` stores it after review. A trajectory with
-sensitive content is not stored. The ref is pushed to origin only when `push_data_ref` is true; a
-push sends its whole history, and anyone who can read the repository can read it.
+held back, only the state is stored, and `valley flow push-log` stores it after review. A trajectory
+with sensitive content is not stored. The ref is pushed to origin only when `push_data_ref` is true;
+a push sends its whole history, and anyone who can read the repository can read it.
 
 ## Commit hooks and trailers
 
@@ -878,11 +885,11 @@ name.
 
 ### Valley change states
 
-`klaus status` and the dashboard read `valley changes --all --json` once per look (the
+`valley flow status` and the dashboard read `valley changes --all --json` once per look (the
 `valley-changes/v1` view; other schemas are refused) and match a run to the version, in its
 repository and change, whose head is its pushed SHA.
 
-| Dashboard                     | `klaus status`                | Group    | Meaning                                                                                   |
+| Dashboard                     | `valley flow status`          | Group    | Meaning                                                                                   |
 | ----------------------------- | ----------------------------- | -------- | ----------------------------------------------------------------------------------------- |
 | `REVIEW`                      | `awaiting-review`             | pipeline | a draft left by finalize for review; approve refuses it                                   |
 | `READY`                       | `awaiting-approval`           | yours    | the active version, ready, awaiting approval                                              |
@@ -900,28 +907,28 @@ Landing is the change's `landed_version`, else any version `landed` or `landed-r
 listing lacks, or a failed listing, falls back to the git integration check, reading `READY` (or
 `REVIEW`) rather than `GONE`. A row the dashboard has seen keeps its last verdict marked
 `(last known)`. While a listing fails, the dashboard shows
-`valley unreachable: <reason>; showing git's view` and `klaus status` prints it on stderr.
+`valley unreachable: <reason>; showing git's view` and `valley flow status` prints it on stderr.
 `valley changes --checks` adds checks; a valley refusing the flag is listed without it, and the
 refusal is remembered for 10 minutes.
 
 ### Restack-conflict dispatch
 
-klaus owns a change when its record's owner is the clone's `valley.principal`. A report
+flow owns a change when its record's owner is the clone's `valley.principal`. A report
 (`refs/the-valley/restack/main/<change-id>`) counts while the valley calls it current and the
-change's record, active version, head and branch match it; klaus re-reads origin's refs before
+change's record, active version, head and branch match it; flow re-reads origin's refs before
 acting. The dispatch is `valley unready`, then
-`klaus launch [--repo <project>] --change <change-id> --run-id <id> --expect-owner <principal> --expect-branch <branch> --expect-head <head> --expect-draft --reason restack-conflict "<brief>"`.
+`valley flow launch [--repo <project>] --change <change-id> --run-id <id> --expect-owner <principal> --expect-branch <branch> --expect-head <head> --expect-draft --reason restack-conflict "<brief>"`.
 The brief names the change, version, head, branch and main's tip, never the report's paths or text.
 Limits: no second run on a change, 60 seconds between dispatches, at most 3 runs until a clean
 report, once per input set (head, main's tip), 16 input sets remembered per change. An attempt is
 given back only when no worker started (stopped before launching, or exit status 3). Events:
 `change:restack-dispatched`, and `change:restack-stalled` with a `reason` once per input set.
-`klaus status` shows `restack` in CONFLICTS.
+`valley flow status` shows `restack` in CONFLICTS.
 
 ### Failed-check dispatch
 
-For each failed head of a ready change klaus owns, the dispatch is
-`klaus launch --change <change-id> --run-id <id> --expect-owner <principal> --expect-branch <branch> --expect-head <head> --reason checks-failed <brief>`.
+For each failed head of a ready change flow owns, the dispatch is
+`valley flow launch --change <change-id> --run-id <id> --expect-owner <principal> --expect-branch <branch> --expect-head <head> --reason checks-failed <brief>`.
 Once per failed head, never while a run works on the change, and at most 3 failed attempts (a fix
 whose next version still fails counts) until the checks pass; recorded in `checks-dispatches.json`.
 
@@ -930,7 +937,7 @@ whose next version still fails counts) until the checks pass; recorded in `check
 `--issue` is a knot when its form is `oc-`, `bd-`, `ida-` or `qn-` with 7 hex digits, optionally
 `<project>:` first. Launch refuses it with `--pr`, outside a valley repository, without
 `valley knot`, and for a knot that is not an active outcome or bug, or that a running or unknown run
-claims; a claim left by a run klaus knows has ended is released (`--if claimed_by=<run>`) and taken
+claims; a claim left by a run flow knows has ended is released (`--if claimed_by=<run>`) and taken
 over. The knot, parents and comments go into the brief in a `## Project notes (untrusted)` block
 between marker lines carrying a random token. Just before the worker starts,
 `valley knot claim <id> --run <run-id>` (a refusal fails the launch). Finalize, once the head is
@@ -958,29 +965,30 @@ Each line of `events.jsonl` is
 | `agent:paused`, `agent:resumed`                       | Budget pause; its follow-up finalized                              |
 | `agent:ci-passed`, `agent:ci-failed`                  | CI on an agent's GitHub work                                       |
 | `pr:awaiting-approval`, `pr:approved`, `pr:merged`    | GitHub work ready for approval; approved; merged (once each)       |
-| `pr:approval-changed`                                 | `klaus approve` changed klaus's approval                           |
+| `pr:approval-changed`                                 | `valley flow approve` changed flow's approval                      |
 | `pipeline:stalled`                                    | The pipeline gave up on GitHub work                                |
 | `change:approved`, `change:integrated`                | A ready version got a request; the change landed (`landed_commit`) |
 | `change:stale`, `change:rejected`, `change:failed`    | The integrator's decision on the active version                    |
 | `change:withdrawn`                                    | The change was withdrawn                                           |
 | `change:new-version`                                  | A version this session did not record (`uploader`)                 |
 | `change:checks-failed`, `change:checks-passed`        | The host's verdict on a ready version's checks (`failed`)          |
-| `change:restack-dispatched`, `change:restack-stalled` | A restack run launched; klaus stops short                          |
+| `change:restack-dispatched`, `change:restack-stalled` | A restack run launched; flow stops short                           |
 | `consult:started`, `consult:completed`                | A consult backend call                                             |
-| `review:started`, `review:completed`                  | A `klaus review`                                                   |
+| `review:started`, `review:completed`                  | A `valley flow review`                                             |
 | `phase:started`, `phase:completed`                    | A run phase (`setup`, `agent`, `finalize`)                         |
 | `check:started`, `check:completed`                    | A check an agent ran                                               |
 
-The default `klaus watch` filter is every type above except `agent:started`, `agent:completed`,
-`agent:paused`, `agent:resumed`, `agent:ci-*`, `agent:change-recorded`, `agent:shared-git-changed`,
-`pr:awaiting-approval`, `pr:approval-changed`, `phase:*` and `check:*`, plus the reserved types
-`agent:error`, `ci:failed`, `ci:passed` and `pr:comment`, which nothing emits.
+The default `valley flow watch` filter is every type above except `agent:started`,
+`agent:completed`, `agent:paused`, `agent:resumed`, `agent:ci-*`, `agent:change-recorded`,
+`agent:shared-git-changed`, `pr:awaiting-approval`, `pr:approval-changed`, `phase:*` and `check:*`,
+plus the reserved types `agent:error`, `ci:failed`, `ci:passed` and `pr:comment`, which nothing
+emits.
 
 `pr:approved` and `pr:merged` fire once per piece of GitHub work across restarts; work already
 merged when first seen emits neither. Change transitions fire once per mark, under the change's
 handle, from the dashboard's minute check; each carries `repo`, `handle`, `change_id`, `version`,
 `head`, `title`, `repo_key` and `key`. A change first seen is recorded as it stands, without events.
-Dashboards on one session share the transition files under their `.lock`. `klaus status` emits
+Dashboards on one session share the transition files under their `.lock`. `valley flow status` emits
 nothing.
 
 **Consult events** share a `run_id` `consult-YYYYMMDD-HHMM-xxxxxxxx` (one pair per panel member) and
@@ -1024,8 +1032,8 @@ the worktree with `rsync -az --delete`; the agent runs over SSH and its stream, 
 finalize stay local. An unreachable host falls back to local execution. A sandbox worker gets no
 `KLAUS_SCRATCH` or private `TMUX_TMPDIR`; its prompt says to keep scratch files in a `mktemp -d`
 directory, and nothing removes the worktree copy. The dashboard tags such runs `[sandbox]` and shows
-reachability; `klaus status` shows HOST. Claude conversations stay on the sandbox host, so its runs
-are never replayed.
+reachability; `valley flow status` shows HOST. Claude conversations stay on the sandbox host, so its
+runs are never replayed.
 
 ## Webhook receiver
 
@@ -1046,15 +1054,17 @@ may be a quiet repository or a broken path.
 
 ## Constraints
 
-- Sessions, launches and `klaus scaffold` run inside tmux; agents are headless and take no input.
+- Sessions, launches and `valley flow scaffold` run inside tmux; agents are headless and take no
+  input.
 - A run ends with its agent's turn; background work still running is interrupted and recorded.
-- No approval is automated: klaus posts no approving review, and `klaus ready` never approves.
+- No approval is automated: flow posts no approving review, and `valley flow ready` never approves.
 - The pipeline dispatches nothing on work a fix run is on, spaces dispatches 60 seconds apart, and
   stalls work after 3 failed attempts of a kind.
 - Briefs of any length go through files; inline pane content is capped at 12000 bytes.
 - Budgets, budget pause and `--replay` are Claude-only; `--resume-from` never moves a conversation
   between backends or machines.
 - Consult attachments total at most 200 KB; each consult call has a deadline (default 10 minutes);
-  `klaus merge` waits at most 10 minutes for CI; the continuation lock waits at most 5 minutes.
+  `valley flow merge` waits at most 10 minutes for CI; the continuation lock waits at most 5
+  minutes.
 - `valley ready`, `valley unready` and knot calls are bounded by 30 seconds, `valley changes` by
   three minutes; the dashboard holds one telemetry follow slot per valley host.

@@ -114,7 +114,7 @@ func (p *klausProcess) stop() RunResult {
 // pr:merged events it printed and the command on its next: line.
 func (h *Harness) watchOnce(cmdline string) (prs []string, next string) {
 	h.t.Helper()
-	p := h.startKlaus(nil, strings.Fields(strings.TrimPrefix(cmdline, "klaus "))...)
+	p := h.startKlaus(nil, strings.Fields(strings.TrimPrefix(cmdline, "valley flow "))...)
 	p.waitFor(p.exited, "exit")
 	res := p.wait()
 	if res.ExitCode != 0 {
@@ -129,7 +129,7 @@ func parseWatchBatch(t *testing.T, cmdline, out string) (prs []string, next stri
 	t.Helper()
 	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
 	last := lines[len(lines)-1]
-	if !strings.HasPrefix(last, "next: klaus watch --once --after ") {
+	if !strings.HasPrefix(last, "next: valley flow watch --once --after ") {
 		t.Fatalf("%s: last line %q is not a next: line\n%s", cmdline, last, out)
 	}
 	for _, l := range lines[:len(lines)-1] {
@@ -160,7 +160,7 @@ func TestAgyCoordinatorWatchesWithOneShotWatches(t *testing.T) {
 			t.Errorf("the agy coordinator's prompt doesn't say %q", want)
 		}
 	}
-	m := regexp.MustCompile("start `(klaus watch --once --after 0)` as a background task").FindStringSubmatch(prompt)
+	m := regexp.MustCompile("start `(valley flow watch --once --after 0)` as a background task").FindStringSubmatch(prompt)
 	if m == nil {
 		t.Fatalf("the agy coordinator's prompt has no first watch from the start of the new session's events:\n%s", prompt)
 	}
@@ -181,7 +181,7 @@ func TestAgyCoordinatorWatchesWithOneShotWatches(t *testing.T) {
 	}
 
 	// The third waits: it has nothing to print until PR 4 merges.
-	p := h.startKlaus(nil, strings.Fields(strings.TrimPrefix(next, "klaus "))...)
+	p := h.startKlaus(nil, strings.Fields(strings.TrimPrefix(next, "valley flow "))...)
 	time.Sleep(time.Second)
 	if p.exited() {
 		res := p.wait()
@@ -200,7 +200,7 @@ func TestAgyCoordinatorWatchesWithOneShotWatches(t *testing.T) {
 
 	// Its cursor is the end of the stream: a watch from it waits too, and
 	// interrupted, says to start the same command again.
-	p = h.startKlaus(nil, strings.Fields(strings.TrimPrefix(next, "klaus "))...)
+	p = h.startKlaus(nil, strings.Fields(strings.TrimPrefix(next, "valley flow "))...)
 	time.Sleep(500 * time.Millisecond)
 	res = p.stop()
 	if res.ExitCode != 0 || res.Stdout != "next: "+next+"\n" {
@@ -208,7 +208,7 @@ func TestAgyCoordinatorWatchesWithOneShotWatches(t *testing.T) {
 	}
 }
 
-// TestCoordinatorPromptsFollowTheirBackends: Claude's prompt arms klaus watch
+// TestCoordinatorPromptsFollowTheirBackends: Claude's prompt arms valley flow watch
 // in Monitor; Codex's, like agy's, never mentions Monitor and gives the
 // one-shot watch.
 func TestCoordinatorPromptsFollowTheirBackends(t *testing.T) {
@@ -218,7 +218,7 @@ func TestCoordinatorPromptsFollowTheirBackends(t *testing.T) {
 			h := NewHarness(t)
 			prompt := h.newCoordinatorSession(kind)
 			monitor := strings.Contains(prompt, "Command to arm in Monitor")
-			oneShot := strings.Contains(prompt, "klaus watch --once --after 0")
+			oneShot := strings.Contains(prompt, "valley flow watch --once --after 0")
 			if kind == "claude" && (!monitor || oneShot) {
 				t.Errorf("Claude's prompt: Monitor instructions %t, one-shot watch %t; want only Monitor", monitor, oneShot)
 			}

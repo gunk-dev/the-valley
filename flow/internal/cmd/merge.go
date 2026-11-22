@@ -195,7 +195,7 @@ var mergeCmd = &cobra.Command{
 
 A branch that is merely behind main is merged as-is: rebasing it would rewrite
 history and dismiss the approval the merge depends on. If GitHub refuses the
-merge because the branch must be up to date, klaus runs GitHub's "Update
+merge because the branch must be up to date, flow runs GitHub's "Update
 branch" (a merge from main, not a rebase), waits for CI, and merges again.
 
 If a rebase fails or CI times out, stops and reports the stuck PR. The rebase
@@ -203,8 +203,8 @@ runs in a worktree of its own; while another worktree, such as a fix agent's,
 has the PR's branch checked out, merge stops rather than remove it.
 
 Use --repo to specify the target repository when running outside a git repo
-(e.g. from a klaus session workspace). If PRs were created by klaus agents,
-the repo is auto-detected from run state. Rebasing needs a checkout: klaus
+(e.g. from a flow session workspace). If PRs were created by flow agents,
+the repo is auto-detected from run state. Rebasing needs a checkout: flow
 uses the current repo, a registered project, or clones under
 worktree_base/.repos, so merge does not have to run inside a clone.`,
 	Args: cobra.MinimumNArgs(1),

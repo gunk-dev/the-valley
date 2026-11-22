@@ -116,7 +116,7 @@ func TestScanHoldsWhatKlausMustNotResolve(t *testing.T) {
 	base := conflictOn(theirs, "someone", head2, rec2, tipA, theirs, lower, own)
 	base.Versions[0].Branch = "base"
 	got, _ := Scan(repoOf(upper, base), "klaus")
-	if len(got) != 1 || !strings.Contains(got[0].Held, "kkkk, a change below it that klaus doesn't own") {
+	if len(got) != 1 || !strings.Contains(got[0].Held, "kkkk, a change below it that flow doesn't own") {
 		t.Fatalf("a conflict in another owner's lower change should be held: %+v", got)
 	}
 

@@ -10,7 +10,7 @@ import (
 )
 
 // ErrLocked: another klaus review --post holds this PR's lock.
-var ErrLocked = errors.New("another klaus review --post is running for this PR")
+var ErrLocked = errors.New("another valley flow review --post is running for this PR")
 
 // lockPR takes a non-blocking exclusive flock on dir/review-<owner>-<repo>-<n>.lock; the returned func releases it.
 func lockPR(dir, repo, prNumber string) (func(), error) {

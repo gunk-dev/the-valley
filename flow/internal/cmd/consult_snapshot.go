@@ -38,7 +38,7 @@ func prepareRepoSnapshot(ctx context.Context, name, dir string, errOut io.Writer
 	}
 	_, clone := resolveRepoTarget(name, "", reg)
 	if clone == "" {
-		return nil, fmt.Errorf("project %q is not registered; use klaus project add or --dir", name)
+		return nil, fmt.Errorf("project %q is not registered; use valley flow project add or --dir", name)
 	}
 	s := &repoSnapshot{project: name, branch: "main", dir: dir}
 	if cfg, err := config.Load(clone); err == nil && cfg.DefaultBranch != "" {

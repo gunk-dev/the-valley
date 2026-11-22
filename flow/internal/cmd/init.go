@@ -10,7 +10,7 @@ import (
 
 var initCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Initialize klaus config",
+	Short: "Initialize flow config",
 	Long: `Scaffolds a .klaus/ directory with default config.json and prompt.md template.
 
 If run inside a git repository, creates .klaus/ in the repo root.
@@ -29,7 +29,7 @@ If run outside a git repository, creates ~/.klaus/config.json for global configu
 			if err := config.InitGlobal(); err != nil {
 				return err
 			}
-			fmt.Println("Initialized global klaus config:")
+			fmt.Println("Initialized global flow config:")
 			fmt.Println("  ~/.klaus/config.json  — configuration")
 		}
 		return nil

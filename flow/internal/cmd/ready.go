@@ -21,7 +21,7 @@ var readyCmd = &cobra.Command{
 	Long: `Marks a valley change ready for approval: typically the draft that
 finalize leaves awaiting review when "ready_at_finalize" is false in
 ~/.klaus/config.json or the project's .klaus/config.json. Run it once the
-change's review passes; until then approve refuses the change, and klaus
+change's review passes; until then approve refuses the change, and valley flow
 status and the dashboard show it awaiting review.
 
 <run-id|handle> is a run ID, which names that run's change, or the change's
@@ -37,7 +37,7 @@ review has not been reviewed. With --head the change's current head is the
 tip of its branch on origin when that differs from the one above, as when a
 follow-up's push isn't a version yet; if origin can't be asked, it refuses. That is 'valley ready --change <change-id>
 --head <head> <branch>', run in the run's clone, within 30 seconds. A draft
-at its active version's head is ready again at that version. klaus ready then
+at its active version's head is ready again at that version. valley flow ready then
 records the version on the run of this session that pushed the head, if any,
 emits agent:change-ready, with "via": "klaus ready", as finalize does when it
 marks a change ready, and prints the version and the head it marked ready,
@@ -126,13 +126,13 @@ take, so a follow-up launch can't start between that check and the ready.`,
 				head, where = tip, fmt.Sprintf(" (origin's %s, a push the valley doesn't hold as a version yet)", t.Branch)
 			}
 			if !strings.HasPrefix(head, strings.ToLower(reviewed)) {
-				return fmt.Errorf("change %s's current head is %s%s, not %s: it has moved on since the head you reviewed; review %s, then klaus ready %s --head %s",
+				return fmt.Errorf("change %s's current head is %s%s, not %s: it has moved on since the head you reviewed; review %s, then valley flow ready %s --head %s",
 					t.Name, head, where, reviewed, shortSHA(head), args[0], head)
 			}
 			t.Head = head
 		}
 		if !valley.Detect(ctx, dir, t.Branch, t.Head) {
-			return fmt.Errorf("change %s isn't on a valley klaus can mark changes ready on: %s's origin isn't one, its head carries no valley policy, or valley isn't on PATH", t.Name, dir)
+			return fmt.Errorf("change %s isn't on a valley flow can mark changes ready on: %s's origin isn't one, its head carries no valley policy, or valley isn't on PATH", t.Name, dir)
 		}
 		r, err := valley.Ready(ctx, dir, t.ID, t.Head, t.Branch)
 		if err != nil {

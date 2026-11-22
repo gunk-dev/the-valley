@@ -197,7 +197,7 @@ func (m dashboardModel) restartOnto(target *binUpdateMsg, now time.Time) (dashbo
 		return m, nil
 	}
 	m.restart = target
-	m.binNotice, m.binNoticeErr = "klaus updated to "+target.version+"; restarting", false
+	m.binNotice, m.binNoticeErr = "flow updated to "+target.version+"; restarting", false
 	if now.Sub(m.lastKeyAt) < restartQuiet {
 		return m, restartWaitCmd() // a key came in meanwhile
 	}

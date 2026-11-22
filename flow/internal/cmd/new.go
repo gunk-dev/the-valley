@@ -57,7 +57,7 @@ func runNew(cmd *cobra.Command, args []string) error {
 	}
 
 	if !tmux.InSession() {
-		return fmt.Errorf("klaus new must be run inside a tmux session")
+		return fmt.Errorf("valley flow scaffold must be run inside a tmux session")
 	}
 
 	// Interactive prompts for missing info
@@ -238,7 +238,7 @@ func runNew(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("  dir:      %s\n", repoDir)
 	fmt.Println()
-	fmt.Printf("Scaffolding %s. Use 'klaus status' to check progress.\n", name)
+	fmt.Printf("Scaffolding %s. Use 'valley flow status' to check progress.\n", name)
 	return nil
 }
 
@@ -269,7 +269,7 @@ Follow these principles when making all decisions:
 
 Your task:
 1. Initialize the project structure appropriate for a %s project
-2. Create flake.nix with a dev shell (include klaus from the-valley's flake, as its packages.<system>.klaus)
+2. Create flake.nix with a dev shell (include flow from the-valley's flake, as its packages.<system>.klaus)
 3. Set up GitHub Actions CI pipeline following the principles above
 4. Create AGENTS.md with project conventions
 5. Create .klaus/config.json

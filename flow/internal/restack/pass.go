@@ -186,7 +186,7 @@ func (v View) Summary() string {
 		return fmt.Sprintf("resolution run %s dispatched (attempt %d of %d)", v.RunID, v.Attempts, MaxAttempts)
 	case StateLaunching:
 		if v.Detail != "" {
-			return fmt.Sprintf("resolution run %s (attempt %d of %d) may have started its worker: %s; klaus waits until it can tell none runs", v.RunID, v.Attempts, MaxAttempts, v.Detail)
+			return fmt.Sprintf("resolution run %s (attempt %d of %d) may have started its worker: %s; flow waits until it can tell none runs", v.RunID, v.Attempts, MaxAttempts, v.Detail)
 		}
 		return fmt.Sprintf("launching resolution run %s (attempt %d of %d)", v.RunID, v.Attempts, MaxAttempts)
 	case StateBusy:
@@ -279,7 +279,7 @@ func (d Deps) reconcile(ctx context.Context, l *Ledger, r Repo) {
 		case d.gone(ctx, r.Dir, a.RunID):
 			failed := a.Refused
 			a.Pending = false
-			a.Refused = fmt.Sprintf("klaus lost sight of its launch of run %s, and no worker of it runs; the attempt still counts", a.RunID)
+			a.Refused = fmt.Sprintf("flow lost sight of its launch of run %s, and no worker of it runs; the attempt still counts", a.RunID)
 			if failed != "" {
 				a.Refused = fmt.Sprintf("no worker of run %s runs, and the attempt still counts; %s", a.RunID, failed)
 			}
@@ -525,7 +525,7 @@ func (d Deps) dispatch(ctx context.Context, l *Ledger, r Repo, c Conflict) View 
 	}
 	runID, err := d.NewRunID()
 	if err != nil {
-		v.State, v.Detail = StateRefused, "klaus couldn't name the run: "+err.Error()
+		v.State, v.Detail = StateRefused, "flow couldn't name the run: "+err.Error()
 		return v
 	}
 
@@ -542,7 +542,7 @@ func (d Deps) dispatch(ctx context.Context, l *Ledger, r Repo, c Conflict) View 
 	e.record(act)
 	if !d.save(l) {
 		e.Actions, e.Attempts, e.Handle = prevActions, prevAttempts, prevHandle
-		v.State, v.Detail = StateRefused, "klaus couldn't record the dispatch in its ledger"
+		v.State, v.Detail = StateRefused, "flow couldn't record the dispatch in its ledger"
 		return v
 	}
 	// refuse gives the attempt back: no worker started.
@@ -572,14 +572,14 @@ func (d Deps) dispatch(ctx context.Context, l *Ledger, r Repo, c Conflict) View 
 	case ch.State != valley.StateDraft:
 		return refuse(fmt.Sprintf("the change is %s after valley unready, not a draft", ch.State))
 	case ch.Owner != c.Owner:
-		return refuse("the change's owner changed while klaus returned it to draft")
+		return refuse("the change's owner changed while flow returned it to draft")
 	case !hasActive || active.Head != c.Head || active.Branch != c.Branch:
-		return refuse("the change's head moved while klaus returned it to draft")
+		return refuse("the change's head moved while flow returned it to draft")
 	}
 
 	prompt := Prompt(c)
 	if prompt == "" {
-		return refuse("its change ID or heads don't read as klaus expects")
+		return refuse("its change ID or heads don't read as flow expects")
 	}
 	err = d.Launch(ctx, Launch{Dir: r.Dir, Project: r.Project, ChangeID: c.ChangeID, Prompt: prompt,
 		RunID: runID, Owner: c.Owner, Branch: c.Branch, Head: c.Head})

@@ -16,23 +16,23 @@ import (
 var projectCmd = &cobra.Command{
 	Use:   "project",
 	Short: "Manage the project registry",
-	Long: `Register, list, and remove projects from the klaus project registry.
+	Long: `Register, list, and remove projects from the flow project registry.
 
 The registry maps project names to local paths and is stored in ~/.klaus/projects.json.
 
-  klaus project add owner/repo                       Clone and register a project
-  klaus project add owner/repo --path .              Register with explicit local path
-  klaus project add owner/repo -d "what it does"     Register with a description
-  klaus project list                                 Show registered projects
-  klaus project remove <name>                        Unregister a project
-  klaus project describe <name> <desc>               Set a one-line description (empty to clear)
-  klaus project set-dir ~/hack                       Set the default projects directory`,
+  valley flow project add owner/repo                       Clone and register a project
+  valley flow project add owner/repo --path .              Register with explicit local path
+  valley flow project add owner/repo -d "what it does"     Register with a description
+  valley flow project list                                 Show registered projects
+  valley flow project remove <name>                        Unregister a project
+  valley flow project describe <name> <desc>               Set a one-line description (empty to clear)
+  valley flow project set-dir ~/hack                       Set the default projects directory`,
 }
 
 var projectAddCmd = &cobra.Command{
 	Use:   "add <owner/repo | name>",
 	Short: "Clone and register a project",
-	Long: `Register a project in the klaus project registry.
+	Long: `Register a project in the flow project registry.
 
 With owner/repo format, clones the repo into the projects directory and registers it.
 With just a name, searches your GitHub repos for a match.
@@ -41,9 +41,9 @@ If --path is provided, registers the project at that path (must be an existing g
 If the repo is already cloned at the expected path, it is registered without re-cloning.
 
 If --description is provided, it is stored as the project's one-line description.
-When --description is omitted, klaus tries 'gh repo view --json description' to fetch
+When --description is omitted, flow tries 'gh repo view --json description' to fetch
 the GitHub description automatically; if that fails or returns empty, no description
-is stored (you can set one later with 'klaus project describe').`,
+is stored (you can set one later with 'valley flow project describe').`,
 	Args: cobra.ExactArgs(1),
 	RunE: runProjectAdd,
 }
@@ -74,13 +74,13 @@ var projectDescribeCmd = &cobra.Command{
 	Short: "Set a one-line description for a registered project (empty string clears it)",
 	Long: `Set a freeform one-line description for a registered project.
 
-The description is shown in 'klaus project list' and included in the session
+The description is shown in 'valley flow project list' and included in the session
 coordinator's system prompt so the coordinator knows what each project is for.
 
 Pass an empty string to clear an existing description:
 
-  klaus project describe my-tool "CLI for managing X"
-  klaus project describe my-tool ""`,
+  valley flow project describe my-tool "CLI for managing X"
+  valley flow project describe my-tool ""`,
 	Args: cobra.ExactArgs(2),
 	RunE: runProjectDescribe,
 }
@@ -198,7 +198,7 @@ func runProjectList(cmd *cobra.Command, _ []string) error {
 
 	projects := reg.List()
 	if len(projects) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "No projects registered. Use 'klaus project add' to register one.")
+		fmt.Fprintln(cmd.OutOrStdout(), "No projects registered. Use 'valley flow project add' to register one.")
 		return nil
 	}
 

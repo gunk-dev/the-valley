@@ -28,10 +28,10 @@ var reviewCmd = &cobra.Command{
 	Short: "Get a second opinion on a PR from a different model family",
 	Long: `Reviews an open PR with a model family other than the one that wrote it.
 
-The PR author's backend comes from the klaus run that opened the PR (claude when
+The PR author's backend comes from the flow run that opened the PR (claude when
 no run is found). The reviewer is --backend, else backends.<author>.review_backend,
 else the first cross_review.order entry that is not the author and whose CLI is
-on PATH. klaus refuses to review a PR with its own family unless you pass both
+on PATH. flow refuses to review a PR with its own family unless you pass both
 --backend and --allow-same-family.
 
 The reviewer sees only the diff (gh pr diff) plus the PR title and description,
@@ -46,18 +46,18 @@ operator, never approvals. Posting is refused when this backend already
 reviewed the PR's head commit or cross_review.max_rounds reviews exist.
 
 Accepts PR numbers, full GitHub PR URLs, or owner/repo#number references. For a
-bare number the repo is --repo, else the repo of the klaus run that opened the
+bare number the repo is --repo, else the repo of the flow run that opened the
 PR, else the session target, else the current checkout.
 
-Inside a Klaus session (or the most recent one outside a pane) the review
-emits review:started and review:completed events (see klaus watch) and
-leaves a job record with its findings: klaus status, klaus jobs and the
-dashboard list it, and 'klaus jobs show <id>' prints it.
+Inside a flow session (or the most recent one outside a pane) the review
+emits review:started and review:completed events (see valley flow watch) and
+leaves a job record with its findings: valley flow status, valley flow jobs and the
+dashboard list it, and 'valley flow jobs show <id>' prints it.
 
 Examples:
-  klaus review 303
-  klaus review 303 --repo maintainer/klaus --backend codex
-  klaus review maintainer/klaus#303 --post`,
+  valley flow review 303
+  valley flow review 303 --repo acme/widget --backend codex
+  valley flow review acme/widget#303 --post`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		repoFlag, _ := cmd.Flags().GetString("repo")

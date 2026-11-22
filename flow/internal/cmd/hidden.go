@@ -1211,7 +1211,7 @@ func syncRunToDataRef(ctx context.Context, root string, store run.StateStore, gi
 				for _, f := range findings {
 					fmt.Fprintf(os.Stderr, "  - %s\n", f.Category)
 				}
-				fmt.Fprintf(os.Stderr, "  Use 'klaus push-log %s' to store it after review.\n", state.ID)
+				fmt.Fprintf(os.Stderr, "  Use 'valley flow push-log %s' to store it after review.\n", state.ID)
 			}
 		}
 	}

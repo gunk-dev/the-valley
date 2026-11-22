@@ -192,7 +192,7 @@ func (u *Updater) Update(ctx context.Context, retry bool) error {
 		return err
 	}
 	if st.Pinned {
-		u.say("pinned at %s: leaving it alone until klaus self-update --unpin", st.Current.label())
+		u.say("pinned at %s: leaving it alone until valley flow self-update --unpin", st.Current.label())
 		return nil
 	}
 
@@ -207,7 +207,7 @@ func (u *Updater) Update(ctx context.Context, retry bool) error {
 	short := sha[:7]
 	if u.upToDate(st, sha) && u.inProfile(ctx, st.Current) {
 		if u.Verbose {
-			u.say("%s is at %s: klaus is up to date", u.Branch, short)
+			u.say("%s is at %s: flow is up to date", u.Branch, short)
 		}
 		return nil
 	}
@@ -268,7 +268,7 @@ func (u *Updater) noPackage(short string) error {
 	pkg := "packages." + nix.System() + "." + Package
 	return fmt.Errorf("%s at %s offers no %s; nothing changed\n"+
 		"  set self_update.repo in ~/.klaus/config.json to a repository whose flake offers %s,\n"+
-		"  as the-valley's does, and run klaus self-update again",
+		"  as the-valley's does, and run valley flow self-update again",
 		u.Repo, short, pkg, pkg)
 }
 
@@ -302,7 +302,7 @@ func (u *Updater) Rollback(ctx context.Context) error {
 	}
 	u.say("rolled back to %s; --rollback again returns to %s", st.Current.label(), st.Previous.label())
 	if !st.Pinned {
-		u.say("not pinned: the next run installs the tip of %s unless it is this one; klaus self-update --pin keeps this one", u.Branch)
+		u.say("not pinned: the next run installs the tip of %s unless it is this one; valley flow self-update --pin keeps this one", u.Branch)
 	}
 	return nil
 }
@@ -323,7 +323,7 @@ func (u *Updater) Pin(pinned bool) error {
 		return err
 	}
 	if pinned {
-		u.say("pinned at %s: self-update leaves it alone until klaus self-update --unpin", st.Current.label())
+		u.say("pinned at %s: self-update leaves it alone until valley flow self-update --unpin", st.Current.label())
 	} else {
 		u.say("unpinned: the next run installs the tip of %s if it is not installed", u.Branch)
 	}

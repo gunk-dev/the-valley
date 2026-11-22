@@ -18,7 +18,7 @@ var syncCmd = &cobra.Command{
 its current branch to the upstream when the working tree is clean.
 
 Projects with a dirty tree, diverged branch, detached HEAD, or missing upstream
-are reported as skipped and left untouched. klaus never resets or force-updates
+are reported as skipped and left untouched. flow never resets or force-updates
 a working clone.
 
 Exit code is 0 if every project succeeded (up-to-date / pulled / fetched-only)
@@ -31,7 +31,7 @@ hit an error (typically a fetch failure).`,
 			return fmt.Errorf("loading project registry: %w", err)
 		}
 		if reg == nil || len(reg.Projects) == 0 {
-			fmt.Fprintln(cmd.OutOrStdout(), "No projects registered. Use 'klaus project add' to register one.")
+			fmt.Fprintln(cmd.OutOrStdout(), "No projects registered. Use 'valley flow project add' to register one.")
 			return nil
 		}
 

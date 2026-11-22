@@ -12,9 +12,9 @@ import (
 
 var selfUpdateCmd = &cobra.Command{
 	Use:   "self-update",
-	Short: "Install the tip of the configured klaus branch into the nix profile",
-	Long: `Brings the installed klaus up to the tip of a configured branch, for a host
-whose klaus should follow upstream without a system rebuild. It is off until
+	Short: "Install the tip of the configured branch into the nix profile",
+	Long: `Brings the installed flow up to the tip of a configured branch, for a host
+whose install should follow upstream without a system rebuild. It is off until
 the host config, ~/.klaus/config.json, has a self_update block (a repo's
 .klaus/config.json can't set it):
 
@@ -31,7 +31,7 @@ defaults to main. Each run:
   1. takes a lock under $XDG_STATE_HOME/klaus, so runs never overlap: a run
      that finds another in progress exits 0 and says so;
   2. resolves the branch's commit with git ls-remote;
-  3. exits 0 if the installed klaus was built from that commit (quietly;
+  3. exits 0 if the installed flow was built from that commit (quietly;
      -v says so);
   4. reads the names of the packages the flake offers at that commit, and
      refuses, changing nothing, unless it offers packages.<system>.klaus, as
@@ -40,13 +40,13 @@ defaults to main. Each run:
      installs it as below;
   5. exits 0 if that commit already failed to build or test (it is retried
      when the branch moves, or with --retry);
-  6. builds exactly that commit's klaus, never the flake's default package:
+  6. builds exactly that commit's package, never the flake's default package:
      nix build 'git+<repo>?ref=refs/heads/<branch>&rev=<sha>#packages.<system>.klaus';
   7. smoke-tests the build: its klaus --version must report the commit, and
      its klaus status must exit 0. A failure records the commit as failed,
      installs nothing, and exits non-zero;
   8. installs it into the user's default nix profile in place of the profile
-     element named klaus, leaving other elements alone. The system klaus
+     element named klaus, leaving other elements alone. Any system install
      stays underneath as the fallback;
   9. records the current and previous store paths and commits, the time and
      any failure in $XDG_STATE_HOME/klaus/self-update.json.
@@ -59,7 +59,7 @@ to the newer one. --pin leaves the current install alone until --unpin:
 runs while pinned exit 0 with a note, so a bad tip isn't reinstalled while
 it gets fixed.
 
-A running klaus dashboard notices the new klaus on PATH and restarts onto it.`,
+A running flow dashboard notices the new build on PATH and restarts onto it.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cmd.SilenceUsage = true
@@ -100,9 +100,9 @@ A running klaus dashboard notices the new klaus on PATH and restarts onto it.`,
 }
 
 func init() {
-	selfUpdateCmd.Flags().BoolP("verbose", "v", false, "also say so when klaus is up to date")
+	selfUpdateCmd.Flags().BoolP("verbose", "v", false, "also say so when flow is up to date")
 	selfUpdateCmd.Flags().Bool("retry", false, "build the branch's tip even if it failed before")
-	selfUpdateCmd.Flags().Bool("rollback", false, "reinstall the previous klaus; again to return to the newer one")
+	selfUpdateCmd.Flags().Bool("rollback", false, "reinstall the previous build; again to return to the newer one")
 	selfUpdateCmd.Flags().Bool("pin", false, "leave the current install alone until --unpin")
 	selfUpdateCmd.Flags().Bool("unpin", false, "let self-update install the branch's tip again")
 	selfUpdateCmd.MarkFlagsMutuallyExclusive("retry", "rollback", "pin", "unpin")

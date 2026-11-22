@@ -141,7 +141,7 @@ func (e *Entry) migrate() {
 	var old []*Action
 	for _, in := range e.OldConsumed {
 		if e.ActionOn(in) == nil && (e.OldLast == nil || e.OldLast.inputs() != in) {
-			old = append(old, &Action{Head: in.Head, TargetTip: in.TargetTip, Refused: "klaus acted on these inputs before it kept what came of it"})
+			old = append(old, &Action{Head: in.Head, TargetTip: in.TargetTip, Refused: "flow acted on these inputs before it kept what came of it"})
 		}
 	}
 	if e.OldLast != nil && e.ActionOn(e.OldLast.inputs()) == nil {

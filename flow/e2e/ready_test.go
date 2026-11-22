@@ -146,7 +146,7 @@ func TestReadyAtFinalizeOffLeavesDraftForKlausReady(t *testing.T) {
 				// The dashboard: REVIEW with the pipeline, no approve
 				// command, and the klaus ready that readies it.
 				_, screen := h.startDashboard(170)
-				s := screen("1 pipeline", "REVIEW  v1@"+head[:7], "klaus ready nxvp --head "+head[:7])
+				s := screen("1 pipeline", "REVIEW  v1@"+head[:7], "valley flow ready nxvp --head "+head[:7])
 				if strings.Contains(s, "approve: ") || strings.Contains(s, "READY") {
 					t.Errorf("a draft awaiting review must offer no approve command:\n%s", s)
 				}

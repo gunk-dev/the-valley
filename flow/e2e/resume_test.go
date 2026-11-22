@@ -851,10 +851,10 @@ func TestContinuingNeverTouchesOtherWork(t *testing.T) {
 		want  string
 		keep  string
 	}{
-		{"dirty worktree", dirty, false, "--resume-from: branch agent/dirty is checked out in run 20261021-2200-00000030's worktree " + dirtyWT + " (with uncommitted changes); klaus never removes a worktree, even with --force-takeover: save that work, then clean that run up (klaus cleanup 20261021-2200-00000030, with --force while its agent runs) and launch again", filepath.Join(dirtyWT, "notes.txt")},
+		{"dirty worktree", dirty, false, "--resume-from: branch agent/dirty is checked out in run 20261021-2200-00000030's worktree " + dirtyWT + " (with uncommitted changes); flow never removes a worktree, even with --force-takeover: save that work, then clean that run up (valley flow cleanup 20261021-2200-00000030, with --force while its agent runs) and launch again", filepath.Join(dirtyWT, "notes.txt")},
 		{"unpushed commits", unpushed, false, `--resume-from: creating worktree: local branch "agent/unpushed" has 1 commit(s) not on origin/agent/unpushed`, ""},
-		{"a finished run's worktree", occupied, false, "--resume-from: branch agent/occupied is checked out in run 20261021-2200-00000032's worktree " + occupiedWT + "; klaus never removes a worktree, even with --force-takeover: clean that run up first (klaus cleanup 20261021-2200-00000032, with --force while its agent runs) and launch again", occupiedWT},
-		{"a worktree no run registered", foreign, true, "--resume-from: branch agent/foreign is checked out in " + foreignWT + ", which no klaus run registered; klaus never removes it", foreignWT},
+		{"a finished run's worktree", occupied, false, "--resume-from: branch agent/occupied is checked out in run 20261021-2200-00000032's worktree " + occupiedWT + "; flow never removes a worktree, even with --force-takeover: clean that run up first (valley flow cleanup 20261021-2200-00000032, with --force while its agent runs) and launch again", occupiedWT},
+		{"a worktree no run registered", foreign, true, "--resume-from: branch agent/foreign is checked out in " + foreignWT + ", which no flow run registered; flow never removes it", foreignWT},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			args := []string{"launch", "--repo", "widget", "--resume-from", tc.prior.ID}
@@ -978,7 +978,7 @@ func TestForcedTakeoverNeverRemovesAWorktree(t *testing.T) {
 				t.Fatalf("launch should refuse\nstdout:\n%s", res.Stdout)
 			}
 			want := "--resume-from: branch " + branch + " is checked out in run " + holder + "'s worktree " + runWT +
-				" (with uncommitted changes); klaus never removes a worktree, even with --force-takeover: save that work, then clean that run up (klaus cleanup " + holder
+				" (with uncommitted changes); flow never removes a worktree, even with --force-takeover: save that work, then clean that run up (valley flow cleanup " + holder
 			if !strings.Contains(res.Stderr, want) {
 				t.Errorf("stderr should say %q:\n%s", want, res.Stderr)
 			}

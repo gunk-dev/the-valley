@@ -62,13 +62,13 @@ var defaultWatchFilter = []string{
 var knownEventTypes = []eventTypeInfo{
 	{event.ConsultStarted, "live", "A read-only model consultation started"},
 	{event.ConsultCompleted, "live", "A read-only model consultation finished (success, failure, timeout or interrupt)"},
-	{event.ReviewStarted, "live", "A cross-model PR review (klaus review) started"},
+	{event.ReviewStarted, "live", "A cross-model PR review (valley flow review) started"},
 	{event.ReviewCompleted, "live", "A cross-model PR review finished (success, failure, timeout or interrupt)"},
 	{event.AgentStarted, "live", "An agent run started"},
 	{event.AgentCompleted, "live", "An agent run finished (success or failure)"},
 	{event.AgentPRCreated, "live", "An agent published a PR"},
 	{event.AgentBranchPushed, "live", "An agent finished with its branch on origin and no PR (awaiting integration)"},
-	{event.AgentChangeReady, "live", "Finalize, or klaus ready, marked a pushed branch ready on its valley as a version of the run's change (awaiting approval)"},
+	{event.AgentChangeReady, "live", "Finalize, or valley flow ready, marked a pushed branch ready on its valley as a version of the run's change (awaiting approval)"},
 	{event.AgentChangeDraft, "live", "Finalize recorded a pushed branch on its valley as a version of the run's change but left it a draft (awaiting review; ready_at_finalize off)"},
 	{event.AgentCIPassed, "live", "CI passed on an agent-owned PR"},
 	{event.AgentCIFailed, "live", "CI failed on an agent-owned PR"},
@@ -76,10 +76,10 @@ var knownEventTypes = []eventTypeInfo{
 	{event.PRAwaitingApproval, "live", "A PR is ready for human approval"},
 	{event.PRApproved, "live", "A PR was approved"},
 	{event.PRMerged, "live", "A PR merged"},
-	{event.PRApprovalChanged, "live", "Klaus-internal approval state for a PR changed (e.g. via klaus approve)"},
+	{event.PRApprovalChanged, "live", "Flow-internal approval state for a PR changed (e.g. via valley flow approve)"},
 	{event.PipelineStalled, "live", "The pipeline gave up on a PR after exhausting its retry budget"},
-	{event.ChangeRestackDispatched, "live", "klaus launched a run to resolve a restack conflict the valley reported on a change klaus owns"},
-	{event.ChangeRestackStalled, "live", "The change needs the coordinator: klaus will not resolve its restack conflict (attempts spent, unready or launch failed, or left alone: sits on other changes, or the conflict is in a change below)"},
+	{event.ChangeRestackDispatched, "live", "flow launched a run to resolve a restack conflict the valley reported on a change flow owns"},
+	{event.ChangeRestackStalled, "live", "The change needs the coordinator: flow will not resolve its restack conflict (attempts spent, unready or launch failed, or left alone: sits on other changes, or the conflict is in a change below)"},
 	{event.ChangeApproved, "live", "A ready version of a valley change got an integration request (the operator approved it)"},
 	{event.ChangeIntegrated, "live", "A valley change landed"},
 	{event.ChangeStale, "live", "The integrator found a valley change's approved version stale"},
@@ -92,7 +92,7 @@ var knownEventTypes = []eventTypeInfo{
 	{event.AgentSharedGitChanged, "live", "A run's clone's shared git files (config, info/attributes, hooks) changed while it ran; the run needs attention"},
 	{event.PhaseStarted, "live", "A run entered a phase (agent, finalize); not in the default filter"},
 	{event.PhaseCompleted, "live", "A run finished a phase (setup, agent, finalize), with its duration; not in the default filter"},
-	{event.CheckStarted, "live", "An agent started a check klaus can see (_pre-review, or a build, test or lint command); not in the default filter"},
+	{event.CheckStarted, "live", "An agent started a check flow can see (_pre-review, or a build, test or lint command); not in the default filter"},
 	{event.CheckCompleted, "live", "An agent's check finished, with its duration; not in the default filter"},
 	{"agent:error", "reserved", "Reserved for unrecoverable agent failures (not currently emitted; use agent:needs-attention)"},
 	{"ci:failed", "reserved", "Reserved short name (currently emitted as agent:ci-failed)"},
@@ -109,7 +109,7 @@ type eventTypeInfo struct {
 var watchCmd = &cobra.Command{
 	Use:   "watch",
 	Short: "Stream session pipeline events as a real-time channel",
-	Long: `Stream structured pipeline events from the current klaus session as a
+	Long: `Stream structured pipeline events from the current flow session as a
 line-buffered text channel. Designed for Claude Code's Monitor tool — each
 matching event becomes one notification.
 
@@ -132,12 +132,12 @@ change:stale, change:rejected, change:failed, change:withdrawn,
 change:new-version, change:checks-failed and change:checks-passed) report its life as pr:approved and pr:merged report a
 PR's: the dashboard reads them off the valley's listing in its integration
 check, once a minute, and reports each transition once, under the change's
-handle. Without a dashboard nothing reports them; klaus status only reads.
+handle. Without a dashboard nothing reports them; valley flow status only reads.
 A change the dashboard sees for the first time is recorded as it stands,
 without events.
 
 Some of those types are reserved (not currently emitted) but kept in the
-default filter so this command stays forward-compatible. Run 'klaus watch
+default filter so this command stays forward-compatible. Run 'valley flow watch
 --list-types' to see which types are live vs reserved.
 
 Passing --filter REPLACES the default. --filter-out is always subtracted.
@@ -146,7 +146,7 @@ only the events of the given runs (repeatable; a pipeline event's run is its
 PR's number, and a valley change's transition's, change:approved and the
 like, is the change's handle).
 
-klaus session creates the events file when it creates or resumes a session.
+valley flow session creates the events file when it creates or resumes a session.
 In a session that has none yet, watch waits for it as long as the session's
 directory exists, then reads it from the start. An unknown session ID is an
 error.
@@ -157,9 +157,9 @@ arrived, prints every matching event that has, and exits 0. Its last line is
 the command that waits for the events after those, with the stream's position
 in --after, e.g.
 
-  next: klaus watch --once --after 18342
+  next: valley flow watch --once --after 18342
 
-(with --json, a JSON object: {"after":18342,"next":"klaus watch ..."}).
+(with --json, a JSON object: {"after":18342,"next":"valley flow watch ..."}).
 Starting each watch from the last one's next: line delivers every event once:
 --after is a byte offset into events.jsonl, so events that land between two
 watches are past it, and running the same command again prints the same
@@ -168,26 +168,26 @@ with --since-start). Interrupted before any event, it prints just the next:
 line. An --after past the end of the file or inside a line is an error, and
 so is an events file replaced or removed while --once waits on it.`,
 	Example: `  # Default filter, follow new events from now:
-  klaus watch
+  valley flow watch
 
   # Only react when a PR merges:
-  klaus watch --filter pr:merged
+  valley flow watch --filter pr:merged
 
   # Default filter minus pr:approved (e.g. don't notify on self-approvals):
-  klaus watch --filter-out pr:approved
+  valley flow watch --filter-out pr:approved
 
   # Replay everything in the file, then keep following:
-  klaus watch --since-start
+  valley flow watch --since-start
 
   # Raw JSONL passthrough for downstream tools:
-  klaus watch --json
+  valley flow watch --json
 
   # Wait for the next events, print them and exit; then run the next: line:
-  klaus watch --once
-  klaus watch --once --after 18342
+  valley flow watch --once
+  valley flow watch --once --after 18342
 
   # Wait for one run's next event:
-  klaus watch --once --run 20261026-1701-445ec227`,
+  valley flow watch --once --run 20261026-1701-445ec227`,
 	RunE: runWatch,
 }
 
@@ -236,7 +236,7 @@ func runWatch(cmd *cobra.Command, args []string) error {
 		sessionID = os.Getenv(sessionIDEnv)
 	}
 	if sessionID == "" {
-		return fmt.Errorf("klaus watch must be run inside a klaus session (KLAUS_SESSION_ID is not set; use --session-id to override)")
+		return fmt.Errorf("valley flow watch must be run inside a flow session (KLAUS_SESSION_ID is not set; use --session-id to override)")
 	}
 
 	sessionsDir, err := run.SessionsDir()
@@ -468,7 +468,7 @@ func streamEvents(ctx context.Context, path string, flt watchFilter, sinceStart,
 				return nil
 			}
 			// Watcher errors are non-fatal — log to stderr and keep going.
-			fmt.Fprintf(os.Stderr, "klaus watch: watcher error: %v\n", werr)
+			fmt.Fprintf(os.Stderr, "valley flow watch: watcher error: %v\n", werr)
 		case <-ticker.C:
 			// Defensive: catch missed write notifications and inode swaps.
 			newInode := statInode(path)
@@ -969,7 +969,7 @@ func watchOnce(ctx context.Context, path string, flt watchFilter, start int64, a
 			if !ok {
 				return trailer()
 			}
-			fmt.Fprintf(os.Stderr, "klaus watch: watcher error: %v\n", werr)
+			fmt.Fprintf(os.Stderr, "valley flow watch: watcher error: %v\n", werr)
 		case <-ticker.C:
 			// Catches a missed notification, and a session or events file
 			// removed under us. Offsets into a file that was replaced say
@@ -984,10 +984,10 @@ func watchOnce(ctx context.Context, path string, flt watchFilter, start int64, a
 	}
 }
 
-// nextWatchCommand is the klaus watch --once command line that reads on from
+// nextWatchCommand is the valley flow watch --once command line that reads on from
 // cursor with the given flags.
 func nextWatchCommand(sessionID string, filterIn, filterOut, runs []string, asJSON bool, cursor int64) string {
-	args := []string{"klaus", "watch", "--once", "--after", strconv.FormatInt(cursor, 10)}
+	args := []string{"valley", "flow", "watch", "--once", "--after", strconv.FormatInt(cursor, 10)}
 	if sessionID != "" {
 		args = append(args, "--session-id", shellWord(sessionID))
 	}
@@ -1033,7 +1033,7 @@ func printKnownEventTypes(out io.Writer) {
 	sort.Slice(live, func(i, j int) bool { return live[i].Type < live[j].Type })
 	sort.Slice(reserved, func(i, j int) bool { return reserved[i].Type < reserved[j].Type })
 
-	fmt.Fprintln(out, "Live event types (currently emitted by klaus):")
+	fmt.Fprintln(out, "Live event types (currently emitted by flow):")
 	for _, t := range live {
 		fmt.Fprintf(out, "  %-24s %s\n", t.Type, t.Desc)
 	}

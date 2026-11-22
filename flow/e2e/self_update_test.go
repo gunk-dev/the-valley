@@ -297,7 +297,7 @@ func TestSelfUpdateInstallsMovesAndRollsBack(t *testing.T) {
 	if res := e.selfUpdate(0); res.Stdout != "" {
 		t.Errorf("up-to-date run printed:\n%s", res.Stdout)
 	}
-	if res := e.selfUpdate(0, "-v"); !strings.Contains(res.Stdout, "main is at "+first[:7]+": klaus is up to date") {
+	if res := e.selfUpdate(0, "-v"); !strings.Contains(res.Stdout, "main is at "+first[:7]+": flow is up to date") {
 		t.Errorf("-v up-to-date run printed:\n%s", res.Stdout)
 	}
 	if n := e.builds(); n != 1 {
@@ -410,7 +410,7 @@ func TestSelfUpdatePin(t *testing.T) {
 		t.Errorf("--pin:\n%s", res.Stdout)
 	}
 	e.advance("second")
-	if res := e.selfUpdate(0); !strings.Contains(res.Stdout, "pinned at "+first[:7]+": leaving it alone until klaus self-update --unpin") {
+	if res := e.selfUpdate(0); !strings.Contains(res.Stdout, "pinned at "+first[:7]+": leaving it alone until valley flow self-update --unpin") {
 		t.Errorf("pinned run:\n%s", res.Stdout)
 	}
 	if n := e.builds(); n != 1 {

@@ -38,7 +38,7 @@ func sessionStore() (run.StateStore, error) {
 		}
 		found, err := run.FindMostRecentSession(sessionsDir)
 		if err != nil {
-			return nil, fmt.Errorf("KLAUS_SESSION_ID is not set and no sessions found (are you inside a klaus session?)")
+			return nil, fmt.Errorf("KLAUS_SESSION_ID is not set and no sessions found (are you inside a flow session?)")
 		}
 		sessionID = found
 	}

@@ -17,20 +17,20 @@ import (
 
 var failedChecksCmd = &cobra.Command{
 	Use:   "failed-checks",
-	Short: "Dispatch runs to fix the valley checks that failed on ready changes klaus owns",
+	Short: "Dispatch runs to fix the valley checks that failed on ready changes flow owns",
 	Long: `Reads the checks of the ready changes in the valley repos the session's
 runs deliver to, and launches a run to fix each failed head of a change
-klaus owns, as the pipeline dispatches a fix agent for a PR's failing CI.
+flow owns, as the pipeline dispatches a fix agent for a PR's failing CI.
 The dashboard does this after each integration check, about once a minute;
 run it by hand where no dashboard runs.
 
 The valley lists, on a ready change's active version, where the host's
 check worker stands on its required checks: pending, failed or passed. A
-valley from before checks were listed lists none, and klaus does nothing.
-A change is klaus's when its record's owner is klaus's principal, the
+valley from before checks were listed lists none, and flow does nothing.
+A change is flow's when its record's owner is flow's principal, the
 repo's git config valley.principal.
 
-For each failed head, klaus:
+For each failed head, flow:
 
   - does nothing while a run, in any session, is working on the change or
     its branch;
@@ -39,11 +39,11 @@ For each failed head, klaus:
     attempt, and stops after 3 attempts, until the change's checks pass;
   - records the dispatch, and the ID of the run it is about to launch, in
     the session's checks-dispatches.json, and launches nothing if it can't;
-  - launches 'klaus launch [--repo <project>] --change <change-id>
+  - launches 'valley flow launch [--repo <project>] --change <change-id>
     --run-id <id> --expect-owner <principal> --expect-branch <branch>
     --expect-head <head> --reason checks-failed <brief>' from a clone of the
     repo. Launch returns the change to draft before the run starts, and
-    refuses a change that moved since klaus read it.
+    refuses a change that moved since flow read it.
 
 The brief names the failed checks and what the worker said of each, how to
 read the worker's build output ('valley telemetry --json read --source
@@ -52,8 +52,8 @@ it builds every check 'valley checks --names origin/main HEAD' lists before
 it pushes.
 
 The dashboard reports change:checks-failed and change:checks-passed for
-each verdict; klaus status and the dashboard show the checks in the CI
-column. Prints one line per change klaus owns whose checks failed.`,
+each verdict; valley flow status and the dashboard show the checks in the CI
+column. Prints one line per change flow owns whose checks failed.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		store, err := sessionStore()
@@ -69,7 +69,7 @@ column. Prints one line per change klaus owns whose checks failed.`,
 			return err
 		}
 		if len(lines) == 0 {
-			fmt.Println("No failed checks on ready changes klaus owns.")
+			fmt.Println("No failed checks on ready changes flow owns.")
 		}
 		for _, l := range lines {
 			fmt.Println(l)

@@ -464,8 +464,8 @@ func TestDashboardViewRender(t *testing.T) {
 	view := m.View()
 
 	// Verify key elements are present
-	if !strings.Contains(view, "klaus dashboard") {
-		t.Error("view should contain 'klaus dashboard' header")
+	if !strings.Contains(view, "flow dashboard") {
+		t.Error("view should contain 'flow dashboard' header")
 	}
 	if !strings.Contains(view, "testowner/testrepo") {
 		t.Error("view should contain repo name")

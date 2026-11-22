@@ -12,8 +12,8 @@ import (
 var untrackCmd = &cobra.Command{
 	Use:   "untrack <ref> [<ref>...]",
 	Short: "Stop tracking PRs or valley changes on the dashboard",
-	Long: `Removes tracked PRs or valley changes from the klaus dashboard and klaus
-status. Only removes what was added via 'klaus track' — agent-created runs are
+	Long: `Removes tracked PRs or valley changes from the flow dashboard and valley flow
+status. Only removes what was added via 'valley flow track' — agent-created runs are
 never removed.
 
 A PR is named by its number. A valley change is named by its handle, its
@@ -22,10 +22,10 @@ doesn't. A change ref that names tracked changes in more than one project
 removes none; name the project.
 
 Examples:
-  klaus untrack 405
-  klaus untrack vpkz
-  klaus untrack the-valley:vpkz
-  klaus untrack --repo the-valley vpkz`,
+  valley flow untrack 405
+  valley flow untrack vpkz
+  valley flow untrack the-valley:vpkz
+  valley flow untrack --repo the-valley vpkz`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		repoFlag, _ := cmd.Flags().GetString("repo")

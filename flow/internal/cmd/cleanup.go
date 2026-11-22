@@ -22,13 +22,13 @@ var cleanupCmd = &cobra.Command{
 deleting local branches, and removing state files.
 
 Use --done to clean up what's finished: the runs whose PR or change is
-merged, closed, integrated, withdrawn or gone, as klaus status shows them,
+merged, closed, integrated, withdrawn or gone, as valley flow status shows them,
 and the older runs of a PR or change still open. It keeps the latest run of
 each open PR or change, a run that needs attention, and a running run, and
 prints a line for each run it removes or keeps, with why.
 
 Use --all to clean up all runs, and the session's consult thread snapshots
-(see klaus consult --repo) not in use; a thread makes a new one on its next
+(see valley flow consult --repo) not in use; a thread makes a new one on its next
 turn. Runs with active tmux panes are skipped by default; pass --force to
 remove them anyway. With --all, the detached
 agents tmux session is removed too — but only once no remaining run holds a
@@ -36,7 +36,7 @@ pane in it and no pane in it is still running a command, so a session with
 live agents is never torn down.
 
 Each run cleanup removes leaves its cost and duration in the session's
-ledger, so klaus status and the dashboard still count them.`,
+ledger, so valley flow status and the dashboard still count them.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		all, _ := cmd.Flags().GetBool("all")
 		done, _ := cmd.Flags().GetBool("done")
@@ -68,7 +68,7 @@ ledger, so klaus status and the dashboard still count them.`,
 		}
 
 		if len(args) != 1 {
-			return fmt.Errorf("usage: klaus cleanup <run-id>, klaus cleanup --done or klaus cleanup --all")
+			return fmt.Errorf("usage: valley flow cleanup <run-id>, valley flow cleanup --done or valley flow cleanup --all")
 		}
 
 		return cleanupOne(ctx, root, store, gitClient, args[0], force, deps, tmuxClient)

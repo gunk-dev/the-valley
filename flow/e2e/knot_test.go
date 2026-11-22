@@ -319,7 +319,7 @@ func TestKnotClaimRefusals(t *testing.T) {
 	refused("--issue: " + knotID + " is claimed by run " + live.ID + ", which is still running; wait for it to finish or stop it")
 
 	claimed("20261001-0000-deadbeef")
-	refused("is claimed by run 20261001-0000-deadbeef, which klaus doesn't know, so it may still be working; if it has ended, release the claim with 'valley knot unclaim " + knotID + " --project widget'")
+	refused("is claimed by run 20261001-0000-deadbeef, which flow doesn't know, so it may still be working; if it has ended, release the claim with 'valley knot unclaim " + knotID + " --project widget'")
 	if ids := h.RunIDs(); len(ids) != 1 {
 		t.Errorf("refused launches should record no run: %v", ids)
 	}
@@ -370,7 +370,7 @@ func TestKnotNeedsAValleyProject(t *testing.T) {
 	h.installValleyStub()
 	res := h.RunKlaus("launch", "--issue", knotID, "Build what the knot asks for.")
 	if res.ExitCode == 0 || !strings.Contains(res.Stderr, "--issue: "+knotID+" names a valley knot, and") ||
-		!strings.Contains(res.Stderr, "isn't a valley project klaus can work knots in") {
+		!strings.Contains(res.Stderr, "isn't a valley project flow can work knots in") {
 		t.Errorf("launch exited %d, want a refusal\nstderr:\n%s", res.ExitCode, res.Stderr)
 	}
 	if calls := h.knotCalls(); len(calls) != 0 || len(h.RunIDs()) != 0 {

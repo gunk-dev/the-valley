@@ -390,7 +390,7 @@ func TestRestackConflictLeavesAlone(t *testing.T) {
 		t.Fatal("a report on main before it moved should read historical")
 	}
 
-	if out, launched := h.restackPass(); launched != nil || !strings.Contains(out, "No restack conflicts on changes klaus owns.") {
+	if out, launched := h.restackPass(); launched != nil || !strings.Contains(out, "No restack conflicts on changes flow owns.") {
 		t.Fatalf("the pass launched %v:\n%s", launched, out)
 	}
 	for _, c := range []string{id, theirs} {

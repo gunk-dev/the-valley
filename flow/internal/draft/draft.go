@@ -304,7 +304,7 @@ func applyLabel(ctx context.Context, r Runner, workdir, repo, prNumber string) e
 
 func postComment(ctx context.Context, r Runner, in PauseInput, prNumber string) error {
 	body := fmt.Sprintf(
-		"Agent paused at budget cap ($%.2f of $%.2f). Label `%s` set; latest commit is WIP. Use `klaus launch --pr %s \"continue the work\"` to continue, or close to abandon.",
+		"Agent paused at budget cap ($%.2f of $%.2f). Label `%s` set; latest commit is WIP. Use `valley flow launch --pr %s \"continue the work\"` to continue, or close to abandon.",
 		in.CostUSD, in.BudgetUSD, event.BudgetPausedLabel, prNumber,
 	)
 	args := []string{"pr", "comment", prNumber, "--body", body}
@@ -332,13 +332,13 @@ func titleFromPrompt(prompt, runID string) string {
 
 func pauseBody(in PauseInput) string {
 	return fmt.Sprintf(
-		"This PR was opened by klaus when the agent for run `%s` exhausted its budget cap.\n\n"+
+		"This PR was opened by flow when the agent for run `%s` exhausted its budget cap.\n\n"+
 			"- **Cost so far:** $%.2f of $%.2f\n"+
 			"- **Branch:** `%s`\n"+
 			"- **Status:** draft, labeled `%s`\n\n"+
 			"## Original prompt\n\n%s\n\n"+
 			"## Continue the work\n\n"+
-			"Run `klaus launch --pr <number> \"continue the work\"` to dispatch a fresh agent against this branch. "+
+			"Run `valley flow launch --pr <number> \"continue the work\"` to dispatch a fresh agent against this branch. "+
 			"The new agent will see the WIP commit and pick up from there.\n\n"+
 			"To abandon, close this PR.\n",
 		in.RunID, in.CostUSD, in.BudgetUSD, in.Branch, event.BudgetPausedLabel, summarizePrompt(in.Prompt),

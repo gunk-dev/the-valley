@@ -457,7 +457,7 @@ func TestWatchRequiresSessionID(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected klaus watch to fail without KLAUS_SESSION_ID, succeeded")
 	}
-	if !strings.Contains(stderr.String(), "must be run inside a klaus session") {
+	if !strings.Contains(stderr.String(), "must be run inside a flow session") {
 		t.Errorf("expected helpful error message about missing session, got: %s", stderr.String())
 	}
 }
@@ -689,7 +689,7 @@ func TestWatchOnceJSONKeepsFlags(t *testing.T) {
 		if err := json.Unmarshal([]byte(lines[1]), &tr); err != nil {
 			t.Fatalf("trailer %q: %v", lines[1], err)
 		}
-		want := fmt.Sprintf("klaus watch --once --after %d --session-id %s --filter pr:merged --run r2 --json", len(raw), sessionID)
+		want := fmt.Sprintf("valley flow watch --once --after %d --session-id %s --filter pr:merged --run r2 --json", len(raw), sessionID)
 		if tr.After != int64(len(raw)) || tr.Next != want {
 			t.Errorf("trailer = %+v, want after %d, next %q", tr, len(raw), want)
 		}
@@ -705,7 +705,7 @@ func TestWatchOnceJSONKeepsFlags(t *testing.T) {
 	// r1's merge doesn't pass --run r2; r2's does.
 	em.emit(t, "r1", event.PRMerged, map[string]interface{}{"pr_number": "3"})
 	em.emit(t, "r2", event.PRMerged, map[string]interface{}{"pr_number": "4"})
-	out, stderr, err = runKlaus(t, bin, home, strings.Fields(tr.Next)[1:]...)
+	out, stderr, err = runKlaus(t, bin, home, strings.Fields(strings.TrimPrefix(tr.Next, "valley flow "))...)
 	if err != nil {
 		t.Fatalf("%s: %v\n%s", tr.Next, err, stderr)
 	}

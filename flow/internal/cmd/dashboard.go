@@ -67,7 +67,7 @@ row: when a valley lists the change, or one of those runs pushed a branch
 that waits for integration, they share the change's row, as the runs
 without a PR on a change no PR carries do. A run with neither has a row of
 its own. A run that needs attention stops counting once a run of its
-change records taking its pushed work on (see klaus launch) and is running
+change records taking its pushed work on (see valley flow launch) and is running
 or finished: that run carries the attention, and the row reads ATTN if it
 in turn ended needing attention or failing. Rows are grouped by whose move
 it is, most recent first within each group:
@@ -102,7 +102,7 @@ v2@1a2b3c4). Finalize marked the pushed head ready, or, with
 "valley changes --all --json" for all such runs says where each stands. It
 runs at once when the valley host reports a decision or new evidence, and
 otherwise every minute: REVIEW (a draft finalize left that awaits review; approve refuses it,
-and the footer offers the 'klaus ready <handle> --head <head>' that marks the
+and the footer offers the 'valley flow ready <handle> --head <head>' that marks the
 head on screen ready once its review passes), READY (ready and waiting for you), APPROVED, INTEGRATED
 (landed), UNCERTAIN (no landing evidence: look), STALE, REJECTED or FAILED
 (the integrator's decision), WITHDRAWN, or DRAFT (returned to draft, as
@@ -113,8 +113,8 @@ whose change finalize couldn't mark ready shows SUBMIT and the reason.
 A ready change's row shows its required checks as a PR row shows CI: CI …
 (pending), CI ✗ and the failed checks' names, or CI ✓. They don't change
 READY: you may approve before they finish. After each check the dashboard
-dispatches a run to fix a failed head of a change klaus owns, as
-'klaus failed-checks' does.
+dispatches a run to fix a failed head of a change flow owns, as
+'valley flow failed-checks' does.
 
 A change's row is built like a PR's. It shows the valley's handle, else the
 first 8 characters of the change ID; the valley's title, else the subject
@@ -129,15 +129,15 @@ and the footer says which agent is working on it. Once it exits, the row
 goes back to where the PR or change stands.
 
 Below the run rows, a jobs section lists the session's consults, reviews, and
-running prose passes, as klaus status does: every running job, with how long it
+running prose passes, as valley flow status does: every running job, with how long it
 has run, and consults and reviews that finished in the last 3 hours, with how
 long they took and how they ended (SUCCEEDED, FAILED, TIMED OUT, INTERRUPTED, or
-DIED when the job's klaus was killed without recording its end). Finished prose
+DIED when the job's flow process was killed without recording its end). Finished prose
 passes in the last 3 hours are counted on the jobs header line (total and
 failed), and each selected run row's footer includes that row's own finished
 prose passes. It follows the job records as they change. Press tab to select a
 listed job: the footer says how it stands, with its error and where its raw
-output was saved, and enter opens its record and answer, as 'klaus jobs show'
+output was saved, and enter opens its record and answer, as 'valley flow jobs show'
 prints them; esc goes back. On a short pane the jobs lines go before any run
 row does.
 
@@ -158,13 +158,14 @@ machine; the dashboard never runs it. "submit_command" is the
 deprecated name of "approve_command", read only when approve_command is
 unset.
 
-Every 30 seconds the dashboard resolves klaus on PATH, symlinks and all.
-When it names a different file than the running binary, and that file runs
---version, as after klaus self-update, the footer says "klaus updated to
-<version>; restarting". Once no key has been pressed for 10 seconds, the
-dashboard shuts down as on q, releasing its webhook port, and execs the new
-klaus with the same arguments and environment. If the exec fails, it keeps
-running on the old klaus, shows the error, and leaves that file alone.
+Every 30 seconds the dashboard resolves the binary it was started as on PATH,
+symlinks and all. When it names a different file than the running binary, and
+that file runs --version, as after valley flow self-update, the footer says
+"flow updated to <version>; restarting". Once no key has been pressed for 10
+seconds, the dashboard shuts down as on q, releasing its webhook port, and
+execs the new binary with the same arguments and environment. If the exec
+fails, it keeps running on the old binary, shows the error, and leaves that
+file alone.
 
 Keyboard shortcuts:
   j / k or ↑ / ↓  move the selection
@@ -191,7 +192,7 @@ Keyboard shortcuts:
 			err = syscall.Exec(next.path, os.Args, os.Environ())
 			// Still here: keep running on this klaus, and leave that file be.
 			bin.failed[next.path] = true
-			notice = fmt.Sprintf("klaus updated to %s, but restarting onto it failed: %v", next.version, err)
+			notice = fmt.Sprintf("flow updated to %s, but restarting onto it failed: %v", next.version, err)
 		}
 	},
 }
@@ -203,7 +204,7 @@ func runDashboard(cmd *cobra.Command, bin *binCheck, notice string) (*binUpdateM
 	{
 		store, err := sessionStore()
 		if err != nil {
-			return nil, fmt.Errorf("KLAUS_SESSION_ID not set; run inside a klaus session")
+			return nil, fmt.Errorf("KLAUS_SESSION_ID not set; run inside a flow session")
 		}
 
 		// Load config once — used for both the dashboard model and webhook setup.
@@ -912,7 +913,7 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		m.restart = &msg
-		m.binNotice, m.binNoticeErr = "klaus updated to "+msg.version+"; restarting", false
+		m.binNotice, m.binNoticeErr = "flow updated to "+msg.version+"; restarting", false
 		// Show the notice for a moment before restarting.
 		return m, restartWaitCmd()
 
@@ -953,7 +954,7 @@ func (m dashboardModel) View() string {
 	chrome := func(c chromeItem) string {
 		switch c.kind {
 		case chromeHeader:
-			title := " klaus dashboard"
+			title := " flow dashboard"
 			span := computeSessionDuration(m.states)
 			if first := m.cleared.FirstCreated; !first.IsZero() && now.Sub(first) > span {
 				span = now.Sub(first)

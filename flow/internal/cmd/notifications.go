@@ -24,7 +24,7 @@ By default shows only events since the last time notifications was run.
 Use --all to show all events, or --json for machine-readable output.
 
 A run that needed attention is left out of the summary once a run of its
-change took its pushed work on and is running or finished, as klaus status
+change took its pushed work on and is running or finished, as valley flow status
 shows it superseded: that run carries the attention, and its own
 agent:needs-attention says so if it ended needing attention or failing.
 --json lists every event.`,

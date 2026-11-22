@@ -414,7 +414,7 @@ func TestLoadStatesFromDir(t *testing.T) {
 		}
 	}
 
-	store := run.NewGitDirStore(tmpDir)
+	store := run.NewGitDirStore(filepath.Join(tmpDir, "klaus"))
 	loaded, err := store.List()
 	if err != nil {
 		t.Fatal(err)

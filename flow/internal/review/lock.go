@@ -3,32 +3,30 @@ package review
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
+
+	"the-valley/flow/internal/location"
 )
 
 // ErrLocked: another klaus review --post holds this PR's lock.
 var ErrLocked = errors.New("another valley flow review --post is running for this PR")
 
-// lockPR takes a non-blocking exclusive flock on dir/review-<owner>-<repo>-<n>.lock; the returned func releases it.
-func lockPR(dir, repo, prNumber string) (func(), error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
-	}
+// lockPR takes a non-blocking exclusive flock on review-<owner>-<repo>-<n>.lock
+// in each of dirs, in order; the returned func releases it.
+func lockPR(dirs []string, repo, prNumber string) (func(), error) {
 	name := strings.NewReplacer("/", "-", string(filepath.Separator), "-").Replace("review-" + repo + "-" + prNumber + ".lock")
-	path := filepath.Join(dir, name)
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	var paths []string
+	for _, dir := range dirs {
+		paths = append(paths, filepath.Join(dir, name))
+	}
+	l, err := location.TryLock(paths...)
+	var busy *location.BusyError
+	if errors.As(err, &busy) {
+		return nil, fmt.Errorf("%w (lock %s)", ErrLocked, busy.Path)
+	}
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, fmt.Errorf("%w (lock %s)", ErrLocked, path)
-		}
-		return nil, fmt.Errorf("locking %s: %w", path, err)
-	}
-	return func() { f.Close() }, nil // close drops the flock
+	return l.Release, nil
 }

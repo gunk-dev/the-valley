@@ -11,26 +11,30 @@ import (
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize flow config",
-	Long: `Scaffolds a .klaus/ directory with default config.json and prompt.md template.
+	Long: `Scaffolds default config.json and prompt.md template.
 
-If run inside a git repository, creates .klaus/ in the repo root.
-If run outside a git repository, creates ~/.klaus/config.json for global configuration.`,
+If run inside a git repository, writes them in the repo's .klaus/ (or over the
+ones in .valley/flow/, where a repo keeps them there).
+If run outside a git repository, writes the host config, ~/.klaus/config.json
+(or ~/.valley/flow/config.json, where the host keeps it).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		root, _ := git.RepoRoot()
 
 		if root != "" {
-			if err := config.Init(root); err != nil {
+			configPath, promptPath, err := config.Init(root)
+			if err != nil {
 				return err
 			}
-			fmt.Println("Initialized .klaus/ directory:")
-			fmt.Println("  .klaus/config.json  — configuration")
-			fmt.Println("  .klaus/prompt.md    — system prompt template")
+			fmt.Println("Initialized flow config:")
+			fmt.Printf("  %s  — configuration\n", configPath)
+			fmt.Printf("  %s  — system prompt template\n", promptPath)
 		} else {
-			if err := config.InitGlobal(); err != nil {
+			path, err := config.InitGlobal()
+			if err != nil {
 				return err
 			}
 			fmt.Println("Initialized global flow config:")
-			fmt.Println("  ~/.klaus/config.json  — configuration")
+			fmt.Printf("  %s  — configuration\n", path)
 		}
 		return nil
 	},

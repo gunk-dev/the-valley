@@ -12,7 +12,6 @@ import (
 	"the-valley/flow/internal/config"
 	"the-valley/flow/internal/event"
 	"the-valley/flow/internal/flowenv"
-	"the-valley/flow/internal/project"
 	"the-valley/flow/internal/review"
 	"the-valley/flow/internal/stream"
 	"github.com/spf13/cobra"
@@ -39,7 +38,10 @@ var preReviewCmd = &cobra.Command{
 
 		// forbidden_terms is host config, so a repo's pre_review.enabled
 		// doesn't turn its check off.
-		forbidden := forbiddenTermsFor(cfg, dir, "")
+		forbidden, err := forbiddenTermsFor(cfg, dir, "")
+		if err != nil {
+			return err
+		}
 		if !cfg.PreReviewEnabled() && len(forbidden) == 0 {
 			fmt.Println("Pre-review is disabled in config.")
 			return nil
@@ -142,7 +144,10 @@ var preReviewCmd = &cobra.Command{
 		check.data["reviewer"] = string(kind)
 		check.data["lint_ms"] = time.Since(check.start).Milliseconds()
 		reviewStart := time.Now()
-		reg, _ := project.Load()
+		reg, err := registryUnlessConflict()
+		if err != nil {
+			return err
+		}
 		houseRules := loadHouseRules(cmd.Context(), dir, cfg, reg, cmd.ErrOrStderr()).Text
 		printProse := startProsePass(cmd.Context(), dir, base, cfg, author, houseRules)
 		result, err := review.ReviewDiff(dir, review.ReviewConfig{

@@ -24,7 +24,8 @@ import (
 //     calls are pointed at it via the $TMUX env var; the test's control-plane
 //     queries use `tmux -S <Sock>`.
 //   - state: HOME is a per-test temp dir, so all ~/.klaus/sessions state lands
-//     under Home.
+//     under Home. The harness's session exists, as a coordinator's does:
+//     flow never creates a session it is asked to look up.
 //   - externals: a per-test bin dir (BinDir) is prepended to PATH and holds the
 //     klaus binary plus fake `claude`/`gh` stubs. git and tmux stay real.
 //
@@ -43,6 +44,7 @@ type Harness struct {
 	InitialPane string // the session's first pane id (klaus splits from here)
 
 	SessionID string // KLAUS_SESSION_ID for all invocations
+	StateRoot string // where the session's root is: Home/.klaus, or Home/.valley/flow after UseFlowNames
 	shellWrap string // path to the no-profile shell wrapper for tmux panes
 }
 
@@ -74,10 +76,13 @@ func NewHarness(t *testing.T) *Harness {
 		RepoDir:   filepath.Join(root, "repo"),
 		OriginDir: filepath.Join(root, "origin.git"),
 		Sock:      filepath.Join(root, "tmux.sock"),
-		SessionID: "session-e2e-" + filepath.Base(root),
+		// Not session-<time>: a coordinator started by a test resumes the
+		// most recent such session, never this one.
+		SessionID: "e2e-" + filepath.Base(root),
 	}
+	h.StateRoot = filepath.Join(h.Home, ".klaus")
 
-	for _, d := range []string{h.Home, h.BinDir, h.E2EDir} {
+	for _, d := range []string{h.Home, h.BinDir, h.E2EDir, h.SessionDir()} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", d, err)
 		}
@@ -518,9 +523,34 @@ func (h *Harness) PaneTitle(paneID string) string {
 	return strings.TrimSpace(h.tmux("display-message", "-p", "-t", paneID, "#{pane_title}"))
 }
 
+// SessionDir is this session's directory.
+func (h *Harness) SessionDir() string {
+	return filepath.Join(h.StateRoot, "sessions", h.SessionID)
+}
+
+// UseFlowNames moves the harness's session under the flow names
+// (~/.valley/flow/sessions), where a later build puts new sessions.
+func (h *Harness) UseFlowNames() {
+	h.t.Helper()
+	old := h.SessionDir()
+	h.StateRoot = filepath.Join(h.Home, ".valley", "flow")
+	if err := os.MkdirAll(filepath.Dir(h.SessionDir()), 0o755); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := os.Rename(old, h.SessionDir()); err != nil {
+		h.t.Fatal(err)
+	}
+	// The emptied legacy roots go too: nothing is left under the old names.
+	for _, dir := range []string{filepath.Dir(old), filepath.Dir(filepath.Dir(old))} {
+		if err := os.Remove(dir); err != nil {
+			h.t.Fatal(err)
+		}
+	}
+}
+
 // RunsDir is the directory holding this session's run-state JSON files.
 func (h *Harness) RunsDir() string {
-	return filepath.Join(h.Home, ".klaus", "sessions", h.SessionID, "runs")
+	return filepath.Join(h.SessionDir(), "runs")
 }
 
 // RunIDs returns the run ids (state file basenames) currently on disk.

@@ -95,7 +95,7 @@ func TestSessionIDReadersAcceptBothSpellings(t *testing.T) {
 
 	// Prepare two sessions so sessionStore can open either.
 	for _, id := range []string{"sess-old", "sess-new"} {
-		st, err := run.NewHomeDirStore(id)
+		st, err := run.CreateSession(id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -231,7 +231,7 @@ func TestRunIDAndRunEventsReadersAcceptBothSpellings(t *testing.T) {
 	unsetFlowEnv(t, flowenv.SessionID)
 	t.Setenv(flowenv.SessionID.New, "sess-run-test")
 
-	st, err := run.NewHomeDirStore("sess-run-test")
+	st, err := run.CreateSession("sess-run-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +330,7 @@ func TestWatchReadsValleyFlowSessionID(t *testing.T) {
 	unsetFlowEnv(t, flowenv.SessionID)
 	t.Setenv(flowenv.SessionID.New, "sess-watch-new")
 
-	st, err := run.NewHomeDirStore("sess-watch-new")
+	st, err := run.CreateSession("sess-watch-new")
 	if err != nil {
 		t.Fatal(err)
 	}

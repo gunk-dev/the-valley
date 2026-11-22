@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"the-valley/flow/internal/config"
 	"the-valley/flow/internal/consult"
 	"the-valley/flow/internal/git"
+	"the-valley/flow/internal/location"
 	"the-valley/flow/internal/project"
 )
 
@@ -41,7 +43,14 @@ func prepareRepoSnapshot(ctx context.Context, name, dir string, errOut io.Writer
 		return nil, fmt.Errorf("project %q is not registered; use valley flow project add or --dir", name)
 	}
 	s := &repoSnapshot{project: name, branch: "main", dir: dir}
-	if cfg, err := config.Load(clone); err == nil && cfg.DefaultBranch != "" {
+	// A config that can't be loaded leaves main, unless a file under the
+	// flow names is what fails: that is never a fallback.
+	cfg, err := config.Load(clone)
+	var flowErr *config.FlowFileError
+	if errors.As(err, &flowErr) {
+		return nil, err
+	}
+	if err == nil && cfg.DefaultBranch != "" {
 		s.branch = cfg.DefaultBranch
 	}
 	if fetchErr := git.FetchRemoteBranch(ctx, clone, s.branch); fetchErr != nil {
@@ -64,14 +73,18 @@ func prepareRepoSnapshot(ctx context.Context, name, dir string, errOut io.Writer
 }
 
 // oneShotSnapshotDir is a new, empty directory for the snapshot of an
-// unthreaded --repo consult, under ~/.klaus/consult-snapshots. The snapshot
-// is the project-named directory inside it, so remove both when done.
+// unthreaded --repo consult, under location's ConsultSnapshots. The
+// snapshot is the project-named directory inside it, so remove both when
+// done.
 func oneShotSnapshotDir(name string) (parent, dir string, err error) {
-	home, err := os.UserHomeDir()
+	l, err := location.Host()
 	if err != nil {
 		return "", "", err
 	}
-	root := filepath.Join(home, ".klaus", "consult-snapshots")
+	root, err := l.ConsultSnapshots()
+	if err != nil {
+		return "", "", err
+	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return "", "", err
 	}

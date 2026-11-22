@@ -89,7 +89,7 @@ type PROptions struct {
 	Model     string       // "" → CLI default
 	Post      bool         // submit one COMMENT review
 	MaxRounds int          // posted cross-reviews allowed per PR; ≤0 → 2
-	LockDir   string       // required with Post: per-PR lock held from eligibility check to post
+	LockDirs  []string     // required with Post: per-PR lock held from eligibility check to post, in each in order
 }
 
 type prInfo struct {
@@ -104,10 +104,10 @@ type prInfo struct {
 // A refused or failed post still returns the result alongside the error.
 func RunPRReview(ctx context.Context, repo, prNumber string, opts PROptions) (*ReviewResult, error) {
 	if opts.Post {
-		if opts.LockDir == "" {
-			return nil, errors.New("RunPRReview: Post requires LockDir")
+		if len(opts.LockDirs) == 0 {
+			return nil, errors.New("RunPRReview: Post requires LockDirs")
 		}
-		unlock, err := lockPR(opts.LockDir, repo, prNumber)
+		unlock, err := lockPR(opts.LockDirs, repo, prNumber)
 		if err != nil {
 			return nil, err
 		}

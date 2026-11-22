@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -579,7 +580,7 @@ func TestPreTrustWorktreeIdempotent(t *testing.T) {
 func TestInit(t *testing.T) {
 	dir := t.TempDir()
 
-	if err := Init(dir); err != nil {
+	if _, _, err := Init(dir); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
 
@@ -965,11 +966,13 @@ func TestInitGlobal(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
 
-	if err := InitGlobal(); err != nil {
+	configPath, err := InitGlobal()
+	if err != nil {
 		t.Fatalf("InitGlobal() error: %v", err)
 	}
-
-	configPath := filepath.Join(homeDir, ".klaus", "config.json")
+	if want := filepath.Join(homeDir, ".klaus", "config.json"); configPath != want {
+		t.Errorf("InitGlobal() wrote %s, want %s", configPath, want)
+	}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("reading global config: %v", err)
@@ -1177,5 +1180,127 @@ func TestRestackPushQuotesTheBranch(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, "pwned")); err == nil {
 			t.Errorf("%s: the push command ran the branch name's $()", branch)
 		}
+	}
+}
+
+// The host and the repo config are each the file under .valley/flow when
+// one is there, else the .klaus one; a broken one there is an error, never
+// a fall back to the other.
+func TestLoadFindsConfigUnderEitherName(t *testing.T) {
+	home, repo := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	writeFile := func(path, data string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(filepath.Join(home, ".klaus", "config.json"), `{"default_budget": "1.00", "default_branch": "trunk"}`)
+	writeFile(filepath.Join(home, ".valley", "flow", "config.json"), `{"default_budget": "2.00"}`)
+	writeFile(filepath.Join(repo, ".klaus", "config.json"), `{"data_ref": "refs/old/data"}`)
+	writeFile(filepath.Join(repo, ".valley", "flow", "config.json"), `{"data_ref": "refs/new/data"}`)
+
+	cfg, err := Load(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultBudget != "2.00" || cfg.DefaultBranch != "main" || cfg.DataRef != "refs/new/data" {
+		t.Errorf("Load read budget %q, branch %q, data ref %q; want each from the .valley/flow file alone",
+			cfg.DefaultBudget, cfg.DefaultBranch, cfg.DataRef)
+	}
+
+	writeFile(filepath.Join(repo, ".valley", "flow", "config.json"), `{"data_ref": `)
+	if _, err := Load(repo); err == nil || !strings.Contains(err.Error(), filepath.Join(".valley", "flow", "config.json")) {
+		t.Errorf("Load with a malformed repo config under .valley/flow = %v, want its error", err)
+	}
+	writeFile(filepath.Join(home, ".valley", "flow", "config.json"), `{"default_budget": `)
+	if _, err := Load(""); err == nil {
+		t.Error("Load with a malformed host config under .valley/flow fell back")
+	}
+}
+
+// init in a repo that keeps its config under .valley/flow writes it there,
+// and the prompt template, which it lacks, under .klaus.
+func TestInitBesideFlowConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := t.TempDir()
+	flowConfig := filepath.Join(repo, ".valley", "flow", "config.json")
+	if err := os.MkdirAll(filepath.Dir(flowConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(flowConfig, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath, promptPath, err := Init(repo)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if configPath != flowConfig || promptPath != filepath.Join(repo, ".klaus", "prompt.md") {
+		t.Errorf("Init wrote %s and %s", configPath, promptPath)
+	}
+}
+
+func TestNamingGenerationIsHostOnly(t *testing.T) {
+	home, repo := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	for path, data := range map[string]string{
+		filepath.Join(home, ".klaus", "config.json"): `{"naming_generation": "bridge"}`,
+		filepath.Join(repo, ".klaus", "config.json"): `{"naming_generation": "flow"}`,
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := Load(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Generation() != "bridge" {
+		t.Errorf("Generation() = %q, want the host's bridge", cfg.Generation())
+	}
+
+	if err := os.WriteFile(filepath.Join(home, ".klaus", "config.json"), []byte(`{"naming_generation": "w1"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(""); err == nil || !strings.Contains(err.Error(), "w1") {
+		t.Errorf("Load with naming_generation w1 = %v, want it refused", err)
+	}
+}
+
+// With nothing under the flow names, a legacy file is read as flow always
+// read it: a host config that can't be read is skipped, and a repo config
+// that can't be read or parsed is an error but not a FlowFileError, which
+// a file under the flow names that can't be read is.
+func TestLoadReadsLegacyFilesAsBefore(t *testing.T) {
+	home, repo := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	// A directory where the file is: unreadable as one, root included.
+	for _, dir := range []string{filepath.Join(home, ".klaus", "config.json"), filepath.Join(repo, ".klaus")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if cfg, err := Load(""); err != nil || cfg.DefaultBranch != Defaults().DefaultBranch {
+		t.Errorf("Load with an unreadable legacy host config = %v; want the defaults", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".klaus", "config.json"), []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var flowErr *FlowFileError
+	if _, err := Load(repo); err == nil || errors.As(err, &flowErr) {
+		t.Errorf("Load with a malformed legacy repo config = %v; want an error, not a FlowFileError", err)
+	}
+
+	if err := os.MkdirAll(filepath.Join(home, ".valley", "flow", "config.json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(""); !errors.As(err, &flowErr) {
+		t.Errorf("Load with an unreadable host config under the flow names = %v; want a FlowFileError", err)
 	}
 }

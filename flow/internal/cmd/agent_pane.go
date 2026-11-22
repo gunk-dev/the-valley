@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+	"slices"
 
 	"the-valley/flow/internal/config"
 	"the-valley/flow/internal/flowenv"
+	"the-valley/flow/internal/location"
 	"the-valley/flow/internal/run"
 	"the-valley/flow/internal/tmux"
 )
@@ -24,12 +25,7 @@ import (
 // session. Tests must never let a real tmux client see this name; use a fake
 // tmux client and t.Setenv(sessionIDEnv, ...) to pin it.
 func agentsSessionName() string {
-	id := sessionIDFromEnv()
-	if id == "" {
-		return "klaus-agents"
-	}
-	// tmux treats "." and ":" as target separators.
-	return "klaus-agents-" + strings.NewReplacer(".", "-", ":", "-").Replace(id)
+	return location.AgentsSession(sessionIDFromEnv())
 }
 
 // workerDirs are a local worker's own directories, which launch creates.
@@ -74,18 +70,20 @@ func workerEnv(dirs workerDirs) string {
 // standard title/rename settings.
 //
 // In detached mode (the default) the pane is a window in the agents session,
-// so the coordinator's window is left alone and splitFrom comes back empty. In
-// "pane" mode the coordinator's window is split and splitFrom is the pane that
-// was split, so the caller can re-pin its layout.
-func startAgentPane(ctx context.Context, tc tmux.Client, mode, runID, dir, paneCmd, title string) (paneID, splitFrom string, err error) {
+// named in tmuxSession for the run to record, so the coordinator's window is
+// left alone and splitFrom comes back empty. In "pane" mode the coordinator's
+// window is split and splitFrom is the pane that was split, so the caller can
+// re-pin its layout.
+func startAgentPane(ctx context.Context, tc tmux.Client, mode, runID, dir, paneCmd, title string) (paneID, splitFrom, tmuxSession string, err error) {
 	if mode == config.AgentDisplayPane {
 		splitFrom = os.Getenv("TMUX_PANE")
 		paneID, err = tc.SplitWindow(ctx, splitFrom, dir, paneCmd)
 	} else {
-		paneID, err = tc.NewDetachedWindow(ctx, agentsSessionName(), runID, dir, paneCmd)
+		tmuxSession = agentsSessionName()
+		paneID, err = tc.NewDetachedWindow(ctx, tmuxSession, runID, dir, paneCmd)
 	}
 	if err != nil {
-		return "", "", fmt.Errorf("creating tmux pane: %w", err)
+		return "", "", "", fmt.Errorf("creating tmux pane: %w", err)
 	}
 
 	if err := tc.SetPaneTitle(ctx, paneID, title); err != nil {
@@ -100,22 +98,64 @@ func startAgentPane(ctx context.Context, tc tmux.Client, mode, runID, dir, paneC
 
 	if splitFrom != "" {
 		if err := tc.RebalanceLayout(ctx, splitFrom); err != nil {
-			return paneID, splitFrom, fmt.Errorf("rebalancing tmux layout: %w", err)
+			return paneID, splitFrom, tmuxSession, fmt.Errorf("rebalancing tmux layout: %w", err)
 		}
 	}
-	return paneID, splitFrom, nil
+	return paneID, splitFrom, tmuxSession, nil
 }
 
-// killEmptyAgentsSession drops the detached agents session once no remaining
-// run holds a pane in it. tmux already destroys a session whose last window
-// closes; this covers leftovers (e.g. a window whose command exited into a
-// shell) so `klaus cleanup --all` leaves nothing behind.
+// killEmptyAgentsSession drops each detached agents session the runs of
+// before were in once no run the store holds now has a pane in it: the
+// session a run recorded, when it is a name location gives the run's
+// session, and the computed legacy name for runs that recorded none or
+// another. before is the runs as they were before cleanup removed any,
+// whose records no longer say which session they were in. tmux already
+// destroys a session whose last window closes; this covers leftovers (e.g. a
+// window whose command exited into a shell) so `klaus cleanup --all` leaves
+// nothing behind.
 //
 // The store is only advisory — it can be stale, or belong to a different
 // klaus session entirely — so the tmux server gets the final say: a session
 // with any pane still running a command is never killed.
-func killEmptyAgentsSession(ctx context.Context, store run.StateStore, tc tmux.Client) {
-	name := agentsSessionName()
+func killEmptyAgentsSession(ctx context.Context, before []*run.State, store run.StateStore, tc tmux.Client) {
+	states, err := store.List()
+	if err != nil {
+		return
+	}
+	// The runs are the store's session's: this process's, unless cleanup
+	// fell back to the latest session.
+	id := sessionIDFromEnv()
+	if hs, ok := store.(*run.HomeDirStore); ok {
+		id = filepath.Base(hs.BaseDir())
+	}
+	for _, name := range agentsSessionNames(id, append(before, states...)) {
+		killIfEmpty(ctx, name, states, tc)
+	}
+}
+
+// agentsSessionNames are the agents sessions the runs of states, all of the
+// flow session id, put their panes in: the computed legacy name, and each
+// name a run recorded that location gives session id under some
+// generation. Any other recorded name is not a session flow made for these
+// runs: it gets one warning and is never killed.
+func agentsSessionNames(id string, states []*run.State) []string {
+	names := []string{agentsSessionName()}
+	ours := location.AgentsSessions(id)
+	warned := map[string]bool{}
+	for _, s := range states {
+		switch name := s.TmuxSession; {
+		case name == "" || slices.Contains(names, name):
+		case slices.Contains(ours, name):
+			names = append(names, name)
+		case !warned[s.ID+"\x00"+name]:
+			warned[s.ID+"\x00"+name] = true
+			fmt.Printf("  warning: run %s records tmux session %s, not one flow names for session %s; ignoring it\n", s.ID, name, id)
+		}
+	}
+	return names
+}
+
+func killIfEmpty(ctx context.Context, name string, states []*run.State, tc tmux.Client) {
 	panes, err := tc.SessionPanes(ctx, name)
 	if err != nil {
 		return // session does not exist — nothing to do
@@ -130,10 +170,6 @@ func killEmptyAgentsSession(ctx context.Context, store run.StateStore, tc tmux.C
 		}
 	}
 
-	states, err := store.List()
-	if err != nil {
-		return
-	}
 	held := make(map[string]bool, len(states))
 	for _, s := range states {
 		if s.TmuxPane != nil {

@@ -1022,9 +1022,9 @@ func finalizeRealRepo(t *testing.T, repo, worktree, branch, logContent, delivery
 	sessionID := "20260918-1205-salvage-session"
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv(sessionIDEnv, sessionID)
-	store, err := run.NewHomeDirStore(sessionID)
+	store, err := run.CreateSession(sessionID)
 	if err != nil {
-		t.Fatalf("NewHomeDirStore: %v", err)
+		t.Fatalf("CreateSession: %v", err)
 	}
 	if err := store.EnsureDirs(); err != nil {
 		t.Fatalf("EnsureDirs: %v", err)

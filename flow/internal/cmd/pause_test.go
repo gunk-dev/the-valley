@@ -292,9 +292,9 @@ func TestFinalizeBudgetPauseEmitsEvents(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
 	t.Setenv(sessionIDEnv, sessionID)
-	store, err := run.NewHomeDirStore(sessionID)
+	store, err := run.CreateSession(sessionID)
 	if err != nil {
-		t.Fatalf("NewHomeDirStore: %v", err)
+		t.Fatalf("CreateSession: %v", err)
 	}
 	if err := store.EnsureDirs(); err != nil {
 		t.Fatalf("EnsureDirs: %v", err)
@@ -425,9 +425,9 @@ func TestFinalizeClearsBudgetPausedLabel(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
 	t.Setenv(sessionIDEnv, sessionID)
-	store, err := run.NewHomeDirStore(sessionID)
+	store, err := run.CreateSession(sessionID)
 	if err != nil {
-		t.Fatalf("NewHomeDirStore: %v", err)
+		t.Fatalf("CreateSession: %v", err)
 	}
 	if err := store.EnsureDirs(); err != nil {
 		t.Fatalf("EnsureDirs: %v", err)

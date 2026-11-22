@@ -116,7 +116,10 @@ func trackChange(ctx context.Context, proj, id string, store run.StateStore, sta
 
 	target := repo
 	if proj != "" {
-		reg, _ := project.Load()
+		reg, err := registryUnlessConflict()
+		if err != nil {
+			return nil, err
+		}
 		target = project.NormalizeRepoName(proj, reg)
 	}
 	runID, err := run.GenID()
@@ -146,20 +149,23 @@ func trackChange(ctx context.Context, proj, id string, store run.StateStore, sta
 // trackedChanges returns the tracked valley changes among states that id (a
 // handle or a change ID) names, in project when it isn't "": by the valley's
 // name for the change's repo, or the name its project had when it was
-// tracked.
-func trackedChanges(states []*run.State, proj, id string) []*run.State {
+// tracked. A registry at both its names is an error.
+func trackedChanges(states []*run.State, proj, id string) ([]*run.State, error) {
 	var out []*run.State
 	for _, s := range states {
 		if !integration.TracksChange(s) || !refersTo(id, s.ChangeID, s.Valley.Handle) {
 			continue
 		}
 		if proj != "" && proj != s.Valley.Repo && proj != deref(s.TargetRepo) {
-			reg, _ := project.Load()
+			reg, err := registryUnlessConflict()
+			if err != nil {
+				return nil, err
+			}
 			if project.NormalizeRepoName(proj, reg) != deref(s.TargetRepo) {
 				continue
 			}
 		}
 		out = append(out, s)
 	}
-	return out
+	return out, nil
 }

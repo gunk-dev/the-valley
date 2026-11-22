@@ -1,34 +1,63 @@
 package run
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"the-valley/flow/internal/location"
 )
 
-// SessionsDir returns the base directory for all sessions (~/.klaus/sessions).
-func SessionsDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolving home dir: %w", err)
-	}
-	return filepath.Join(home, ".klaus", "sessions"), nil
-}
-
-// HomeDirStore implements StateStore using ~/.klaus/sessions/{session-id}/.
+// HomeDirStore implements StateStore using a session's directory, under
+// either sessions root (location's SessionRoots). Everything of a session
+// stays in its directory.
 type HomeDirStore struct {
-	baseDir string // e.g. ~/.klaus/sessions/{session-id}
+	baseDir string // the session's directory
 }
 
-// NewHomeDirStore creates a new HomeDirStore for the given session ID.
-// It resolves ~/.klaus via os.UserHomeDir().
-func NewHomeDirStore(sessionID string) (*HomeDirStore, error) {
-	dir, err := SessionsDir()
+// OpenSession returns the store of the existing session id, under either
+// sessions root. An ID no root has is an error: looking a session up never
+// creates one.
+func OpenSession(id string) (*HomeDirStore, error) {
+	l, err := location.Host()
 	if err != nil {
 		return nil, err
 	}
-	baseDir := filepath.Join(dir, sessionID)
-	return &HomeDirStore{baseDir: baseDir}, nil
+	dir, err := l.Session(id)
+	if err != nil {
+		return nil, err
+	}
+	return &HomeDirStore{baseDir: dir}, nil
+}
+
+// CreateSession returns the store of the new session id, in the directory
+// location allocates for it, which it creates.
+func CreateSession(id string) (*HomeDirStore, error) {
+	l, err := location.Host()
+	if err != nil {
+		return nil, err
+	}
+	dir, err := l.NewSession(id)
+	if err != nil {
+		return nil, err
+	}
+	s := &HomeDirStore{baseDir: dir}
+	if err := s.EnsureDirs(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// Sessions lists every session directory under either root, by ID, with a
+// location.ConflictError for each ID both roots have.
+func Sessions() ([]location.Session, error) {
+	l, err := location.Host()
+	if err != nil {
+		return nil, err
+	}
+	return l.Sessions()
 }
 
 // NewHomeDirStoreFromPath creates a HomeDirStore with an explicit base directory.
@@ -74,6 +103,14 @@ func (s *HomeDirStore) List() ([]*State, error) {
 // Scan lists the run states as List does, and names the records List
 // skips because they don't parse, as one caught while it is rewritten.
 func (s *HomeDirStore) Scan() ([]*State, []string, error) {
+	states, unparsed, _, err := scanStates(s.StateDir())
+	return states, unparsed, err
+}
+
+// Audit is Scan for a reader that must account for every run: it also
+// returns the read errors of the records Scan skips because they can't be
+// read.
+func (s *HomeDirStore) Audit() (states []*State, unparsed []string, unreadable []error, err error) {
 	return scanStates(s.StateDir())
 }
 
@@ -81,89 +118,43 @@ func (s *HomeDirStore) Delete(id string) error {
 	return deleteState(s.StateDir(), id)
 }
 
-// ListAllSessions scans ~/.klaus/sessions/ and returns a combined list of
-// all run states across all session directories.
+// ListAllSessions returns the run states of every session, under either
+// root. A session ID both roots have is left out, and its error returned
+// with the rest.
 func ListAllSessions() ([]*State, error) {
-	dir, err := SessionsDir()
-	if err != nil {
-		return nil, err
-	}
-	return listAllSessionsIn(dir)
-}
-
-func listAllSessionsIn(sessionsDir string) ([]*State, error) {
-	entries, err := os.ReadDir(sessionsDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("reading sessions dir: %w", err)
-	}
-
+	sessions, err := Sessions()
 	var all []*State
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		store := NewHomeDirStoreFromPath(filepath.Join(sessionsDir, e.Name()))
-		states, err := store.List()
-		if err != nil {
+	for _, sess := range sessions {
+		states, listErr := NewHomeDirStoreFromPath(sess.Dir).List()
+		if listErr != nil {
 			continue
 		}
 		all = append(all, states...)
 	}
-	return all, nil
+	return all, err
 }
 
-// FindMostRecentSession returns the ID of the most recent session directory
-// under the given sessions base dir. Session IDs embed timestamps
-// (session-YYYYMMDD-HHMM-XXXX), so lexicographic sort gives chronological order.
-func FindMostRecentSession(sessionsDir string) (string, error) {
-	entries, err := os.ReadDir(sessionsDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", fmt.Errorf("no sessions found")
-		}
-		return "", fmt.Errorf("reading sessions dir: %w", err)
-	}
+// ErrNoSessions is the absence of any session, under either root.
+var ErrNoSessions = errors.New("no sessions found")
 
+// MostRecentSession returns the ID of the most recent session, under
+// either root. Session IDs embed timestamps (session-YYYYMMDD-HHMM-XXXX),
+// so lexicographic order is chronological. With none it returns
+// ErrNoSessions; any other error, such as a session ID both roots have, is
+// one it could not look past.
+func MostRecentSession() (string, error) {
+	sessions, err := Sessions()
+	if err != nil {
+		return "", err
+	}
 	var latest string
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if len(name) > len("session-") && name[:8] == "session-" {
-			latest = name
+	for _, sess := range sessions {
+		if strings.HasPrefix(sess.ID, "session-") && len(sess.ID) > len("session-") && sess.ID > latest {
+			latest = sess.ID
 		}
 	}
 	if latest == "" {
-		return "", fmt.Errorf("no sessions found")
+		return "", ErrNoSessions
 	}
 	return latest, nil
-}
-
-// FindStateInSessions searches across all session directories for a run with the given ID.
-// Returns the state and its store if found.
-func FindStateInSessions(homeDir string, id string) (*State, StateStore, error) {
-	sessionsDir := filepath.Join(homeDir, ".klaus", "sessions")
-	entries, err := os.ReadDir(sessionsDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil, fmt.Errorf("no run found with id: %s", id)
-		}
-		return nil, nil, fmt.Errorf("reading sessions dir: %w", err)
-	}
-
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		store := NewHomeDirStoreFromPath(filepath.Join(sessionsDir, e.Name()))
-		st, err := store.Load(id)
-		if err == nil {
-			return st, store, nil
-		}
-	}
-	return nil, nil, fmt.Errorf("no run found with id: %s", id)
 }

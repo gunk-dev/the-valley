@@ -475,9 +475,9 @@ func TestPushLogPushesOnlyWhenAsked(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	const sessionID = "20261004-1100-pushlog-session"
 	t.Setenv(sessionIDEnv, sessionID)
-	store, err := run.NewHomeDirStore(sessionID)
+	store, err := run.CreateSession(sessionID)
 	if err != nil {
-		t.Fatalf("NewHomeDirStore: %v", err)
+		t.Fatalf("CreateSession: %v", err)
 	}
 	if err := store.EnsureDirs(); err != nil {
 		t.Fatalf("EnsureDirs: %v", err)

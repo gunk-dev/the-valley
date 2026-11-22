@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"text/template"
+
+	"the-valley/flow/internal/location"
 )
 
 // Config holds the klaus configuration.
@@ -36,8 +40,12 @@ type Config struct {
 	Webhook            *WebhookConfig     `json:"webhook,omitempty"`
 	Dashboard          *DashboardConfig   `json:"dashboard,omitempty"`
 	// SelfUpdate turns on klaus self-update. It is read only from the host
-	// config, ~/.klaus/config.json, never from a repo's .klaus/config.json.
+	// config, never from a repo's.
 	SelfUpdate *SelfUpdateConfig `json:"self_update,omitempty"`
+	// NamingGeneration is which names new state gets (location.Generation):
+	// legacy, bridge or flow. Host config only: Load ignores a repo's, with
+	// a warning.
+	NamingGeneration string `json:"naming_generation,omitempty"`
 	// ReplayThresholdKB caps the stored Claude trajectory size (in KB) that
 	// 'klaus launch --pr' will restore for claude --resume when continuing a
 	// budget-paused PR. Trajectories above this fall back to a fresh agent
@@ -411,42 +419,96 @@ func Defaults() Config {
 	}
 }
 
-// Load reads config by layering: defaults → ~/.klaus/config.json → .klaus/config.json.
-// Repo-local config overrides global config, except forbidden_terms, which
-// only the global config sets.
+// Load reads config by layering: defaults → the host config → the repo's
+// config, each file where location finds it. Repo-local config overrides
+// global config, except forbidden_terms and naming_generation, which only
+// the host config sets. A host config under the legacy name that can't be
+// read is skipped; one under the flow names is an error. An error from a
+// file under the flow names is a FlowFileError.
 func Load(repoRoot string) (Config, error) {
 	cfg := Defaults()
 
-	// Layer 1: global config from ~/.klaus/config.json
-	if home, err := os.UserHomeDir(); err == nil {
-		globalPath := filepath.Join(home, ".klaus", "config.json")
-		if data, err := os.ReadFile(globalPath); err == nil {
+	// Layer 1: the host config
+	if l, err := location.Host(); err == nil {
+		globalPath, err := l.HostConfig()
+		if err != nil {
+			return cfg, &FlowFileError{err}
+		}
+		data, err := os.ReadFile(globalPath)
+		switch {
+		case err == nil:
 			if err := json.Unmarshal(data, &cfg); err != nil {
-				return cfg, fmt.Errorf("parsing global config: %w", err)
+				return cfg, declarationErr(globalPath, fmt.Errorf("parsing global config %s: %w", globalPath, err))
 			}
+		case !os.IsNotExist(err) && location.FlowNamed(globalPath):
+			return cfg, &FlowFileError{fmt.Errorf("reading global config: %w", err)}
+		}
+		if _, err := location.ParseGeneration(cfg.NamingGeneration); err != nil {
+			return cfg, declarationErr(globalPath, fmt.Errorf("global config %s: %w", globalPath, err))
 		}
 	}
 
-	// Layer 2: repo-local config from .klaus/config.json (overrides global)
+	// Layer 2: the repo's config (overrides global)
 	if repoRoot != "" {
-		localPath := filepath.Join(repoRoot, ".klaus", "config.json")
+		localPath, err := location.ProjectFile(repoRoot, location.ProjectConfig)
+		if err != nil {
+			return cfg, &FlowFileError{err}
+		}
 		data, err := os.ReadFile(localPath)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return cfg, nil
 			}
-			return cfg, fmt.Errorf("reading config: %w", err)
+			return cfg, declarationErr(localPath, fmt.Errorf("reading config: %w", err))
 		}
-		hostTerms := cfg.ForbiddenTerms
-		cfg.ForbiddenTerms = nil
+		hostTerms, hostGen := cfg.ForbiddenTerms, cfg.NamingGeneration
+		cfg.ForbiddenTerms, cfg.NamingGeneration = nil, ""
 		err = json.Unmarshal(data, &cfg)
-		cfg.ForbiddenTerms = hostTerms // host config only: a repo can't change its own
+		if cfg.NamingGeneration != "" {
+			warnHostOnly(localPath, "naming_generation")
+		}
+		// host config only: a repo can't change its own
+		cfg.ForbiddenTerms, cfg.NamingGeneration = hostTerms, hostGen
 		if err != nil {
-			return cfg, fmt.Errorf("parsing config: %w", err)
+			return cfg, declarationErr(localPath, fmt.Errorf("parsing config %s: %w", localPath, err))
 		}
 	}
 
 	return cfg, nil
+}
+
+// FlowFileError is a Load error from a declaration under the flow names: a
+// file there that can't be read or parsed, or a symlink there to nothing.
+// A caller that goes on with defaults when Load fails still stops at one:
+// a file there is never a fallback.
+type FlowFileError struct{ Err error }
+
+func (e *FlowFileError) Error() string { return e.Err.Error() }
+func (e *FlowFileError) Unwrap() error { return e.Err }
+
+// declarationErr is err, from reading the declaration at path, as a
+// FlowFileError when path is under the flow names.
+func declarationErr(path string, err error) error {
+	if location.FlowNamed(path) {
+		return &FlowFileError{err}
+	}
+	return err
+}
+
+// Generation is the host's naming_generation, which Load has validated.
+func (c Config) Generation() location.Generation {
+	g, _ := location.ParseGeneration(c.NamingGeneration)
+	return g
+}
+
+var warnedHostOnly sync.Map
+
+// warnHostOnly warns, once a process, that the repo config at path sets
+// key, which only the host config sets.
+func warnHostOnly(path, key string) {
+	if _, seen := warnedHostOnly.LoadOrStore(path+"\x00"+key, true); !seen {
+		slog.Warn("ignoring a key only the host config sets", "config", path, "key", key)
+	}
 }
 
 // PromptVars are the template variables available in the system prompt.
@@ -483,61 +545,62 @@ type PromptVars struct {
 	Coordinator string
 }
 
-// RenderPrompt renders the system prompt template from .klaus/prompt.md.
+// RenderPrompt renders the repo's worker prompt template (prompt.md).
 // If the file doesn't exist, returns a default prompt.
 func RenderPrompt(repoRoot string, vars PromptVars) (string, error) {
-	return renderPromptFromFile(repoRoot, "prompt.md", defaultPromptTemplate, vars)
+	return renderPromptFromFile(repoRoot, location.WorkerPrompt, defaultPromptTemplate, vars)
 }
 
-// Init scaffolds the .klaus/ directory with default config and prompt template.
-func Init(repoRoot string) error {
-	dir := filepath.Join(repoRoot, ".klaus")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("creating .klaus dir: %w", err)
-	}
-
-	// Write default config
-	cfg := Defaults()
-	data, err := json.MarshalIndent(cfg, "", "  ")
+// Init scaffolds the repo's default config and prompt template, each where
+// location says scaffolding writes it, and returns their paths.
+func Init(repoRoot string) (configPath, promptPath string, err error) {
+	l, err := location.Host()
 	if err != nil {
-		return err
+		return "", "", err
 	}
-	configPath := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(configPath, append(data, '\n'), 0o644); err != nil {
-		return fmt.Errorf("writing config: %w", err)
+	if configPath, err = l.ScaffoldProjectFile(repoRoot, location.ProjectConfig); err != nil {
+		return "", "", err
 	}
-
-	// Write default prompt template
-	promptPath := filepath.Join(dir, "prompt.md")
+	if promptPath, err = l.ScaffoldProjectFile(repoRoot, location.WorkerPrompt); err != nil {
+		return "", "", err
+	}
+	if err := writeDefaultConfig(configPath); err != nil {
+		return "", "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(promptPath), 0o755); err != nil {
+		return "", "", fmt.Errorf("creating prompt dir: %w", err)
+	}
 	if err := os.WriteFile(promptPath, []byte(defaultPromptTemplate), 0o644); err != nil {
-		return fmt.Errorf("writing prompt template: %w", err)
+		return "", "", fmt.Errorf("writing prompt template: %w", err)
 	}
-
-	return nil
+	return configPath, promptPath, nil
 }
 
-// InitGlobal scaffolds ~/.klaus/config.json with default configuration.
-// Used when running outside a git repository.
-func InitGlobal() error {
-	home, err := os.UserHomeDir()
+// InitGlobal scaffolds the host config with default configuration, and
+// returns its path. Used when running outside a git repository.
+func InitGlobal() (string, error) {
+	l, err := location.Host()
 	if err != nil {
-		return fmt.Errorf("resolving home dir: %w", err)
+		return "", err
 	}
-	dir := filepath.Join(home, ".klaus")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("creating ~/.klaus dir: %w", err)
+	path, err := l.ScaffoldHostConfig()
+	if err != nil {
+		return "", err
 	}
+	return path, writeDefaultConfig(path)
+}
 
-	cfg := Defaults()
-	data, err := json.MarshalIndent(cfg, "", "  ")
+func writeDefaultConfig(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating config dir: %w", err)
+	}
+	data, err := json.MarshalIndent(Defaults(), "", "  ")
 	if err != nil {
 		return err
 	}
-	configPath := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(configPath, append(data, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
-
 	return nil
 }
 
@@ -618,9 +681,9 @@ PR: #{{.PR}}
 `
 
 // RenderPRFixPrompt renders the system prompt for PR-fix mode.
-// It reads from .klaus/pr-fix-prompt.md, falling back to the built-in default.
+// It reads the repo's pr-fix-prompt.md, falling back to the built-in default.
 func RenderPRFixPrompt(repoRoot string, vars PromptVars) (string, error) {
-	return renderPromptFromFile(repoRoot, "pr-fix-prompt.md", defaultPRFixPromptTemplate, vars)
+	return renderPromptFromFile(repoRoot, location.FixPrompt, defaultPRFixPromptTemplate, vars)
 }
 
 // WorkerRules states the mechanics every worker backend shares, in any
@@ -1028,12 +1091,12 @@ These projects are available by name with ` + "`valley flow launch --repo <name>
 {{end}}`
 
 // RenderSessionPrompt renders the session coordinator system prompt.
-// It reads from .klaus/session-prompt.md, falling back to the built-in default.
+// It reads the repo's session-prompt.md, falling back to the built-in default.
 func RenderSessionPrompt(repoRoot string, vars PromptVars) (string, error) {
 	if vars.Coordinator == "" {
 		vars.Coordinator = "claude"
 	}
-	return renderPromptFromFile(repoRoot, "session-prompt.md", defaultSessionPromptTemplate, vars)
+	return renderPromptFromFile(repoRoot, location.SessionPrompt, defaultSessionPromptTemplate, vars)
 }
 
 // FormatProjectList formats project name → local path (and optional description)
@@ -1136,7 +1199,7 @@ func PreTrustWorktree(worktreeDir string) error {
 }
 
 // LinkSharedMemory points the Claude Code project memory directory for the
-// given worktree at the shared coordinator memory in ~/.klaus/memory, so the
+// given worktree at the shared coordinator memory (location's Memory), so the
 // coordinator keeps its persistent memory across sessions even though each
 // session runs in a fresh working directory. Any memory files already present
 // in the project's own memory directory are migrated into the shared
@@ -1152,7 +1215,14 @@ func LinkSharedMemory(worktreeDir string) error {
 		return fmt.Errorf("finding home dir: %w", err)
 	}
 
-	sharedDir := filepath.Join(homeDir, ".klaus", "memory")
+	l, err := location.Host()
+	if err != nil {
+		return err
+	}
+	sharedDir, err := l.Memory()
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(sharedDir, 0o755); err != nil {
 		return fmt.Errorf("creating shared memory dir: %w", err)
 	}
@@ -1272,7 +1342,7 @@ func setTrustInClaudeConfig(homeDir, absPath string) error {
 	return nil
 }
 
-// DefaultPrinciples is used when .klaus/principles.md doesn't exist.
+// DefaultPrinciples is used when a directory has no principles.md.
 const DefaultPrinciples = `# Project Principles
 
 ## Tech Defaults
@@ -1321,10 +1391,13 @@ const DefaultPrinciples = `# Project Principles
 - .gitignore appropriate to the language
 `
 
-// LoadPrinciples reads .klaus/principles.md from the given directory.
+// LoadPrinciples reads the principles.md declared in the given directory.
 // If the file doesn't exist, returns DefaultPrinciples.
 func LoadPrinciples(dir string) (string, error) {
-	path := filepath.Join(dir, ".klaus", "principles.md")
+	path, err := location.ProjectFile(dir, location.Principles)
+	if err != nil {
+		return "", err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -1340,7 +1413,10 @@ func renderPromptFromFile(repoRoot, filename, defaultTemplate string, vars Promp
 		return renderTemplate(defaultTemplate, vars)
 	}
 
-	path := filepath.Join(repoRoot, ".klaus", filename)
+	path, err := location.ProjectFile(repoRoot, filename)
+	if err != nil {
+		return "", err
+	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {

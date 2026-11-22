@@ -476,3 +476,44 @@ func TestCommitRunID(t *testing.T) {
 		})
 	}
 }
+
+// InstalledHooks finds flow's hooks in linked worktrees and tells a stale
+// one from the current one, leaving out worktrees without them.
+func TestInstalledHooks(t *testing.T) {
+	clone := testClone(t)
+	current := addWorktree(t, clone, "run-current")
+	stale := addWorktree(t, clone, "run-stale")
+	addWorktree(t, clone, "run-bare")
+	install(t, current, Provenance{RunID: testRunA})
+	install(t, stale, Provenance{RunID: testRunB})
+	gitDir := mustGit(t, stale, "rev-parse", "--absolute-git-dir")
+	if err := os.WriteFile(filepath.Join(gitDir, "hooks", "commit-msg"), []byte("#!/bin/sh\n# an older hook\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := InstalledHooks(context.Background(), clone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{current: true, stale: false}
+	if len(got) != len(want) {
+		t.Fatalf("InstalledHooks = %+v, want %v", got, want)
+	}
+	for _, h := range got {
+		if c, ok := want[h.Worktree]; !ok || c != h.Current {
+			t.Errorf("InstalledHooks reported %+v, want %v", h, want)
+		}
+	}
+
+	// A hook it cannot read is an error, not a worktree without hooks.
+	hook := filepath.Join(gitDir, "hooks", "commit-msg")
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(hook, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InstalledHooks(context.Background(), clone); err == nil {
+		t.Error("InstalledHooks with an unreadable commit-msg hook succeeded")
+	}
+}

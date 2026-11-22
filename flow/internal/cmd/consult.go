@@ -22,7 +22,6 @@ import (
 	"the-valley/flow/internal/flowenv"
 	"the-valley/flow/internal/git"
 	"the-valley/flow/internal/jobs"
-	"the-valley/flow/internal/project"
 	"the-valley/flow/internal/run"
 	"github.com/spf13/cobra"
 )
@@ -277,7 +276,10 @@ func runConsult(cmd *cobra.Command, args []string) error {
 	// A --repo consult carries the house rules, read once for all its members.
 	var houseRules string
 	if repo != "" {
-		reg, _ := project.Load()
+		reg, err := registryUnlessConflict()
+		if err != nil {
+			return err
+		}
 		_, clone := resolveRepoTarget(repo, "", reg)
 		houseRules = loadHouseRules(cmd.Context(), clone, cfg, reg, cmd.ErrOrStderr()).Text
 	}

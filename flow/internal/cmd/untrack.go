@@ -44,7 +44,9 @@ Examples:
 				if project == "" {
 					project = repoFlag
 				}
-				untrackChange(store, states, ref, project, id)
+				if err := untrackChange(store, states, ref, project, id); err != nil {
+					return err
+				}
 				continue
 			}
 			prNum := strings.TrimPrefix(ref, "#")
@@ -73,12 +75,15 @@ Examples:
 
 // untrackChange removes the track record of the valley change id names, in
 // project when it isn't "", saying what it did, or why it removed none.
-func untrackChange(store run.StateStore, states []*run.State, ref, project, id string) {
-	matches := trackedChanges(states, project, id)
+func untrackChange(store run.StateStore, states []*run.State, ref, project, id string) error {
+	matches, err := trackedChanges(states, project, id)
+	if err != nil {
+		return err
+	}
 	switch len(matches) {
 	case 0:
 		fmt.Fprintf(os.Stderr, "warning: no tracked change %s found\n", ref)
-		return
+		return nil
 	case 1:
 	default:
 		var names []string
@@ -86,14 +91,15 @@ func untrackChange(store run.StateStore, states []*run.State, ref, project, id s
 			names = append(names, s.Valley.Repo+":"+s.Valley.Handle)
 		}
 		fmt.Fprintf(os.Stderr, "warning: %s names tracked changes in more than one project (%s); name the project\n", ref, strings.Join(names, ", "))
-		return
+		return nil
 	}
 	s := matches[0]
 	if err := store.Delete(s.ID); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to stop tracking change %s: %v\n", ref, err)
-		return
+		return nil
 	}
 	fmt.Printf("Stopped tracking change %s (%s)\n", s.Valley.Handle, s.Valley.Repo)
+	return nil
 }
 
 func init() {

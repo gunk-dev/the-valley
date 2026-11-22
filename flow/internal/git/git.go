@@ -946,6 +946,63 @@ func InstallHooks(ctx context.Context, worktreeDir string, prov Provenance, form
 	return nil
 }
 
+// WorktreeHooks is flow's hooks in one linked worktree.
+type WorktreeHooks struct {
+	Worktree string `json:"worktree"`
+	// Current is true when both hooks are the ones InstallHooks writes now.
+	Current bool `json:"current"`
+}
+
+// InstalledHooks lists the linked worktrees of the clone at repoDir that
+// have flow's hooks, saying whether each has the current ones. It changes
+// nothing; a worktree whose directory is gone is left out.
+func InstalledHooks(ctx context.Context, repoDir string) ([]WorktreeHooks, error) {
+	// -z: a line-per-field listing quotes paths it can't print plainly.
+	out, err := runGit(ctx, repoDir, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return nil, err
+	}
+	commonDir, err := absGitPath(ctx, repoDir, "--git-common-dir")
+	if err != nil {
+		return nil, err
+	}
+	var found []WorktreeHooks
+	for _, line := range strings.Split(out, "\x00") {
+		path, ok := strings.CutPrefix(line, "worktree ")
+		if !ok {
+			continue
+		}
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return nil, err
+		}
+		gitDir, err := absGitPath(ctx, path, "--git-dir")
+		if err != nil {
+			return nil, fmt.Errorf("finding the git dir of %s: %w", path, err)
+		}
+		if samePath(gitDir, commonDir) {
+			continue
+		}
+		hooksDir := filepath.Join(gitDir, "hooks")
+		msg, err := os.ReadFile(filepath.Join(hooksDir, "commit-msg"))
+		if errors.Is(err, os.ErrNotExist) {
+			continue // no hooks of flow's: only InstallHooks writes here
+		} else if err != nil {
+			return nil, err
+		}
+		pre, err := os.ReadFile(filepath.Join(hooksDir, "pre-commit"))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		found = append(found, WorktreeHooks{
+			Worktree: path,
+			Current:  string(msg) == commitMsgHookScript && string(pre) == preCommitHookScript,
+		})
+	}
+	return found, nil
+}
+
 // absGitPath runs git rev-parse with flag (--git-dir, --git-common-dir) in dir
 // and returns the path it names, made absolute.
 func absGitPath(ctx context.Context, dir, flag string) (string, error) {

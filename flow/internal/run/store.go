@@ -37,31 +37,37 @@ func loadState(dir string, id string) (*State, error) {
 }
 
 func listStates(dir string) ([]*State, error) {
-	states, _, err := scanStates(dir)
+	states, _, _, err := scanStates(dir)
 	return states, err
 }
 
-// scanStates lists the run states in dir, newest first, and names the
-// records it skipped because they don't parse. saveState rewrites a record
-// in place, so a reader can catch one half written.
-func scanStates(dir string) ([]*State, []string, error) {
+// scanStates lists the run states in dir, newest first, names the records
+// it skipped because they don't parse, and returns the read errors of
+// those it could not read. saveState rewrites a record in place, so a
+// reader can catch one half written; a record removed since the listing is
+// none of these.
+func scanStates(dir string) ([]*State, []string, []error, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil, nil
+			return nil, nil, nil, nil
 		}
-		return nil, nil, fmt.Errorf("reading state dir: %w", err)
+		return nil, nil, nil, fmt.Errorf("reading state dir: %w", err)
 	}
 
 	var states []*State
 	var unparsed []string
+	var unreadable []error
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
-			continue // removed since the listing, or unreadable
+			if !os.IsNotExist(err) {
+				unreadable = append(unreadable, err)
+			}
+			continue
 		}
 		var st State
 		if err := json.Unmarshal(data, &st); err != nil {
@@ -75,7 +81,7 @@ func scanStates(dir string) ([]*State, []string, error) {
 		return states[i].CreatedAt > states[j].CreatedAt
 	})
 
-	return states, unparsed, nil
+	return states, unparsed, unreadable, nil
 }
 
 func deleteState(dir string, id string) error {
@@ -112,22 +118,23 @@ func WritePromptFile(path, text string) error {
 	return nil
 }
 
-// GitDirStore implements StateStore using the .git/klaus/ directory structure.
+// GitDirStore implements StateStore in a clone's standalone run store
+// (location's StandaloneStore), for runs started outside a session.
 type GitDirStore struct {
-	gitCommonDir string
+	dir string
 }
 
-// NewGitDirStore creates a new GitDirStore rooted at the given git common directory.
-func NewGitDirStore(gitCommonDir string) *GitDirStore {
-	return &GitDirStore{gitCommonDir: gitCommonDir}
+// NewGitDirStore creates a GitDirStore keeping runs/ and logs/ in dir.
+func NewGitDirStore(dir string) *GitDirStore {
+	return &GitDirStore{dir: dir}
 }
 
 func (s *GitDirStore) StateDir() string {
-	return filepath.Join(s.gitCommonDir, "klaus", "runs")
+	return filepath.Join(s.dir, "runs")
 }
 
 func (s *GitDirStore) LogDir() string {
-	return filepath.Join(s.gitCommonDir, "klaus", "logs")
+	return filepath.Join(s.dir, "logs")
 }
 
 func (s *GitDirStore) EnsureDirs() error {

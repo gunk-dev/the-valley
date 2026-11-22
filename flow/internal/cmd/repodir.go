@@ -11,8 +11,22 @@ import (
 
 	"the-valley/flow/internal/config"
 	"the-valley/flow/internal/git"
+	"the-valley/flow/internal/location"
 	"the-valley/flow/internal/project"
 )
+
+// registryUnlessConflict is the project registry for a command that goes on
+// without one it can't read, nil then, but not past a registry at both its
+// names: that is an error naming both, since going on would silently read
+// neither.
+func registryUnlessConflict() (*project.Registry, error) {
+	reg, err := project.Load()
+	var conflict *location.ConflictError
+	if errors.As(err, &conflict) {
+		return nil, err
+	}
+	return reg, nil
+}
 
 // errNoTargetRepo is returned when there is nothing to resolve: no repo was
 // requested and the current directory is not a checkout.

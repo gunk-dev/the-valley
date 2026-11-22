@@ -180,7 +180,10 @@ func trackPR(ref, defaultRepo string, store run.StateStore, existingStates []*ru
 	}
 
 	// Normalize repo name
-	reg, _ := project.Load()
+	reg, err := registryUnlessConflict()
+	if err != nil {
+		return err
+	}
 	normalizedRepo := project.NormalizeRepoName(repo, reg)
 
 	id, err := run.GenID()

@@ -258,7 +258,7 @@ func TestGitDirStoreEnsureDirs(t *testing.T) {
 }
 
 func TestGitDirStoreDirPaths(t *testing.T) {
-	store := NewGitDirStore("/repo/.git")
+	store := NewGitDirStore(filepath.Join("/repo/.git", "klaus"))
 	if got := store.StateDir(); got != filepath.Join("/repo/.git", "klaus", "runs") {
 		t.Errorf("StateDir() = %q, want /repo/.git/klaus/runs", got)
 	}

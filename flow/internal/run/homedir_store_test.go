@@ -1,9 +1,12 @@
 package run
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"the-valley/flow/internal/location"
 )
 
 func TestHomeDirStore_SaveLoadListDelete(t *testing.T) {
@@ -136,98 +139,97 @@ func TestHomeDirStore_Paths(t *testing.T) {
 	}
 }
 
-func TestFindMostRecentSession(t *testing.T) {
-	t.Run("returns latest session by lexicographic order", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		// Create session dirs with embedded timestamps (earlier to later)
+func TestMostRecentSession(t *testing.T) {
+	t.Run("returns latest session under either root", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
 		dirs := []string{
-			"session-20260301-0900-aaaa",
-			"session-20260305-1400-bbbb",
-			"session-20260310-1000-cccc",
+			filepath.Join(home, ".klaus", "sessions", "session-20260301-0900-aaaa"),
+			filepath.Join(home, ".valley", "flow", "sessions", "session-20260310-1000-cccc"),
+			filepath.Join(home, ".klaus", "sessions", "session-20260305-1400-bbbb"),
+			filepath.Join(home, ".klaus", "sessions", "not-a-session"),
 		}
 		for _, d := range dirs {
-			if err := os.MkdirAll(filepath.Join(tmpDir, d), 0o755); err != nil {
+			if err := os.MkdirAll(d, 0o755); err != nil {
 				t.Fatalf("MkdirAll: %v", err)
 			}
 		}
-
-		got, err := FindMostRecentSession(tmpDir)
+		got, err := MostRecentSession()
 		if err != nil {
-			t.Fatalf("FindMostRecentSession: %v", err)
+			t.Fatalf("MostRecentSession: %v", err)
 		}
 		if got != "session-20260310-1000-cccc" {
 			t.Errorf("got %q, want session-20260310-1000-cccc", got)
 		}
-	})
-
-	t.Run("skips non-session directories", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		os.MkdirAll(filepath.Join(tmpDir, "not-a-session"), 0o755)
-		os.MkdirAll(filepath.Join(tmpDir, "session-20260301-0900-aaaa"), 0o755)
-
-		got, err := FindMostRecentSession(tmpDir)
-		if err != nil {
-			t.Fatalf("FindMostRecentSession: %v", err)
-		}
-		if got != "session-20260301-0900-aaaa" {
-			t.Errorf("got %q, want session-20260301-0900-aaaa", got)
+		store, err := OpenSession(got)
+		if err != nil || store.BaseDir() != dirs[1] {
+			t.Errorf("OpenSession(%s) = %v, %v; want %s", got, store, err, dirs[1])
 		}
 	})
 
 	t.Run("error when no sessions exist", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		_, err := FindMostRecentSession(tmpDir)
-		if err == nil {
-			t.Error("expected error for empty directory")
+		t.Setenv("HOME", t.TempDir())
+		if _, err := MostRecentSession(); err == nil {
+			t.Error("expected error with no sessions")
 		}
 	})
 
-	t.Run("error when directory does not exist", func(t *testing.T) {
-		_, err := FindMostRecentSession("/nonexistent/path")
-		if err == nil {
-			t.Error("expected error for nonexistent directory")
+	t.Run("error when one ID is under both roots", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		for _, d := range []string{
+			filepath.Join(home, ".klaus", "sessions", "session-20260301-0900-aaaa"),
+			filepath.Join(home, ".valley", "flow", "sessions", "session-20260301-0900-aaaa"),
+		} {
+			if err := os.MkdirAll(d, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var conflict *location.ConflictError
+		if _, err := MostRecentSession(); !errors.As(err, &conflict) {
+			t.Errorf("MostRecentSession() = %v, want a ConflictError", err)
 		}
 	})
 }
 
-func TestFindStateInSessions(t *testing.T) {
-	tmpHome := t.TempDir()
-	sessionsDir := filepath.Join(tmpHome, ".klaus", "sessions")
+// A sessions root that can't be read is not the absence of sessions: a
+// caller that would start a new session on ErrNoSessions must not.
+func TestMostRecentSessionUnreadableRoot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".klaus"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".klaus", "sessions"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MostRecentSession(); err == nil || errors.Is(err, ErrNoSessions) {
+		t.Errorf("MostRecentSession() over an unreadable root = %v, want an error other than ErrNoSessions", err)
+	}
+	t.Setenv("HOME", t.TempDir())
+	if _, err := MostRecentSession(); !errors.Is(err, ErrNoSessions) {
+		t.Errorf("MostRecentSession() with no roots = %v, want ErrNoSessions", err)
+	}
+}
 
-	// Create two session directories with states
-	session1Dir := filepath.Join(sessionsDir, "session-1")
-	store1 := NewHomeDirStoreFromPath(session1Dir)
-	if err := store1.EnsureDirs(); err != nil {
-		t.Fatalf("EnsureDirs: %v", err)
+// An unknown session ID fails lookup, and makes no directory.
+func TestOpenSessionUnknown(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if _, err := OpenSession("session-20260301-0900-aaaa"); !errors.Is(err, location.ErrUnknownSession) {
+		t.Errorf("OpenSession(unknown) = %v, want ErrUnknownSession", err)
 	}
-	if err := store1.Save(&State{ID: "run-aaa", CreatedAt: "2026-03-07T10:00:00Z"}); err != nil {
-		t.Fatalf("Save: %v", err)
+	if entries, _ := os.ReadDir(home); len(entries) != 0 {
+		t.Errorf("an unknown session's lookup wrote %v", entries)
 	}
-
-	session2Dir := filepath.Join(sessionsDir, "session-2")
-	store2 := NewHomeDirStoreFromPath(session2Dir)
-	if err := store2.EnsureDirs(); err != nil {
-		t.Fatalf("EnsureDirs: %v", err)
-	}
-	if err := store2.Save(&State{ID: "run-bbb", CreatedAt: "2026-03-07T11:00:00Z"}); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	// Find run-bbb (in session-2)
-	state, store, err := FindStateInSessions(tmpHome, "run-bbb")
+	store, err := CreateSession("session-20260301-0900-aaaa")
 	if err != nil {
-		t.Fatalf("FindStateInSessions: %v", err)
+		t.Fatal(err)
 	}
-	if state.ID != "run-bbb" {
-		t.Errorf("got ID %q, want run-bbb", state.ID)
+	if want := filepath.Join(home, ".klaus", "sessions", "session-20260301-0900-aaaa"); store.BaseDir() != want {
+		t.Errorf("CreateSession made %s, want %s", store.BaseDir(), want)
 	}
-	if store == nil {
-		t.Error("store should not be nil")
-	}
-
-	// Not found
-	_, _, err = FindStateInSessions(tmpHome, "run-zzz")
-	if err == nil {
-		t.Error("expected error for nonexistent run")
+	if _, err := OpenSession("session-20260301-0900-aaaa"); err != nil {
+		t.Errorf("OpenSession after CreateSession: %v", err)
 	}
 }

@@ -6,15 +6,18 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"the-valley/flow/internal/location"
 )
 
-// LogPath returns the absolute path to the klaus sync log (~/.klaus/sync.log).
+// LogPath returns the absolute path of the sync log new syncs append to
+// (location's SyncLog).
 func LogPath() (string, error) {
-	home, err := os.UserHomeDir()
+	l, err := location.Host()
 	if err != nil {
-		return "", fmt.Errorf("resolving home dir: %w", err)
+		return "", err
 	}
-	return filepath.Join(home, ".klaus", "sync.log"), nil
+	return l.SyncLog()
 }
 
 // WriteLog appends a single block of timestamped sync results to the klaus

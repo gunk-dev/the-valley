@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -118,5 +119,30 @@ func TestRepoSlug(t *testing.T) {
 		if got := repoSlug(tt.ref); got != tt.want {
 			t.Errorf("repoSlug(%q) = %q, want %q", tt.ref, got, tt.want)
 		}
+	}
+}
+
+// A command that goes on without a registry it can't read stops at one
+// under both names, naming both; one that doesn't parse it still goes on
+// without, and none at all is the default registry.
+func TestRegistryUnlessConflict(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	legacy, flow := filepath.Join(home, ".klaus", "projects.json"), filepath.Join(home, ".valley", "flow", "projects.json")
+
+	if reg, err := registryUnlessConflict(); err != nil || reg == nil {
+		t.Fatalf("no registry: %v, %v; want the default one", reg, err)
+	}
+	writeJSON(t, legacy, map[string]any{"projects": map[string]string{}})
+	if err := os.WriteFile(legacy, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if reg, err := registryUnlessConflict(); err != nil || reg != nil {
+		t.Fatalf("unparsed registry: %v, %v; want none and no error", reg, err)
+	}
+	writeJSON(t, flow, map[string]any{"projects": map[string]string{}})
+	_, err := registryUnlessConflict()
+	if err == nil || !strings.Contains(err.Error(), legacy) || !strings.Contains(err.Error(), flow) {
+		t.Fatalf("registry under both names: %v; want an error naming both", err)
 	}
 }

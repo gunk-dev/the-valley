@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"the-valley/flow/internal/location"
 )
 
 // Registry holds the project registry: a default projects directory
@@ -14,15 +16,18 @@ type Registry struct {
 	ProjectsDir  string            `json:"projects_dir"`
 	Projects     map[string]string `json:"projects"`
 	Descriptions map[string]string `json:"descriptions,omitempty"`
+
+	path string // where Load read it, and Save writes it
 }
 
-// registryPath returns the path to ~/.klaus/projects.json.
+// registryPath returns the path of the one project registry (location's
+// Registry).
 func registryPath() (string, error) {
-	home, err := os.UserHomeDir()
+	l, err := location.Host()
 	if err != nil {
-		return "", fmt.Errorf("resolving home dir: %w", err)
+		return "", err
 	}
-	return filepath.Join(home, ".klaus", "projects.json"), nil
+	return l.Registry()
 }
 
 // ExpandHome expands a leading ~ in a path to the user's home directory.
@@ -52,15 +57,23 @@ func contractHome(path string) string {
 	return path
 }
 
-// Load reads the registry from ~/.klaus/projects.json.
+// Load reads the project registry, wherever location finds it.
 // Returns an empty registry with defaults if the file doesn't exist.
 func Load() (*Registry, error) {
 	p, err := registryPath()
 	if err != nil {
 		return nil, err
 	}
-	return loadFrom(p)
+	r, err := loadFrom(p)
+	if err != nil {
+		return nil, err
+	}
+	r.path = p
+	return r, nil
 }
+
+// Path is where the registry was read from, and Save writes it.
+func (r *Registry) Path() string { return r.path }
 
 // loadFrom reads a registry from the given path. Exported for testing via LoadFrom.
 func loadFrom(path string) (*Registry, error) {
@@ -98,11 +111,14 @@ func defaultRegistry() (*Registry, error) {
 	}, nil
 }
 
-// Save writes the registry to ~/.klaus/projects.json.
+// Save writes the registry back where Load read it.
 func (r *Registry) Save() error {
-	p, err := registryPath()
-	if err != nil {
-		return err
+	p := r.path
+	if p == "" {
+		var err error
+		if p, err = registryPath(); err != nil {
+			return err
+		}
 	}
 	return r.saveTo(p)
 }
@@ -214,7 +230,11 @@ func (r *Registry) ExpandedProjectsDir() (string, error) {
 
 // LoadFrom reads a registry from the given path (for testing).
 func LoadFrom(path string) (*Registry, error) {
-	return loadFrom(path)
+	r, err := loadFrom(path)
+	if err == nil {
+		r.path = path
+	}
+	return r, err
 }
 
 // SaveTo writes the registry to the given path (for testing).

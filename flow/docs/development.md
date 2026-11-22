@@ -114,7 +114,7 @@ against a real, isolated tmux server and real git repositories: pane creation, t
 | Concern   | Isolation                                                                                                                                                                            |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | tmux      | a private server per test on `tmux -S <tmpdir>/tmux.sock`; flow reaches it through `$TMUX`; its panes get a per-test `TMUX_TMPDIR` and no `KLAUS_TMUX_SOCKET`; killed in `t.Cleanup` |
-| state     | `HOME` is a per-test temporary directory, so `~/.klaus` lands under it                                                                                                               |
+| state     | `HOME` is a per-test temporary directory, so `~/.klaus` lands under it; the harness's session exists there before the test runs                                                      |
 | externals | a per-test bin directory first on `PATH` holds klaus and fake `claude` and `gh`; git, tmux and (where a scenario asks for it) `valley` stay real                                     |
 | git       | a sandbox repository with a bare local `origin`, so pushes need no network                                                                                                           |
 

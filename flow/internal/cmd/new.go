@@ -12,7 +12,7 @@ import (
 
 	"the-valley/flow/internal/backend"
 	"the-valley/flow/internal/config"
-	"the-valley/flow/internal/project"
+	"the-valley/flow/internal/location"
 	"the-valley/flow/internal/run"
 	"the-valley/flow/internal/tmux"
 	"github.com/spf13/cobra"
@@ -121,11 +121,14 @@ func runNew(cmd *cobra.Command, args []string) error {
 	}
 
 	// Load project registry to determine clone directory
-	reg, regErr := project.Load()
+	reg, err := registryUnlessConflict()
+	if err != nil {
+		return err
+	}
 
 	// If projects_dir is set, clone there instead of cwd
 	cloneDir := cwd
-	if regErr == nil {
+	if reg != nil {
 		if projDir, expandErr := reg.ExpandedProjectsDir(); expandErr == nil && projDir != "" {
 			// Only use projects_dir if it's explicitly configured (not the default ~/src)
 			if reg.ProjectsDir != "" {
@@ -152,7 +155,7 @@ func runNew(cmd *cobra.Command, args []string) error {
 	}
 
 	// Auto-register the new project
-	if regErr == nil {
+	if reg != nil {
 		if addErr := reg.Add(name, repoDir); addErr == nil {
 			if saveErr := reg.Save(); saveErr != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not save project registry: %v\n", saveErr)
@@ -173,7 +176,15 @@ func runNew(cmd *cobra.Command, args []string) error {
 
 	// We need a .git dir for state tracking — the cloned repo has one
 	gitCommonDir := resolveGitCommonDir(repoDir)
-	store := run.NewGitDirStore(gitCommonDir)
+	l, err := location.Host()
+	if err != nil {
+		return err
+	}
+	storeDir, err := l.StandaloneStore(gitCommonDir)
+	if err != nil {
+		return err
+	}
+	store := run.NewGitDirStore(storeDir)
 	if err := store.EnsureDirs(); err != nil {
 		return err
 	}
@@ -201,7 +212,7 @@ func runNew(cmd *cobra.Command, args []string) error {
 	)
 
 	// Launch the scaffolding agent's tmux pane (detached by default)
-	paneID, _, err := startAgentPane(ctx, tmuxClient, cfg.AgentDisplayMode(),
+	paneID, _, tmuxSession, err := startAgentPane(ctx, tmuxClient, cfg.AgentDisplayMode(),
 		id, repoDir, paneCmd, FormatPaneTitle(id, "", "new "+name))
 	if err != nil {
 		return err
@@ -214,16 +225,17 @@ func runNew(cmd *cobra.Command, args []string) error {
 	}
 	createdAt := time.Now().Format(time.RFC3339)
 	state := &run.State{
-		Backend:   string(kind),
-		ID:        id,
-		Prompt:    prompt,
-		Branch:    "main",
-		Worktree:  repoDir,
-		TmuxPane:  &paneID,
-		Budget:    budgetPtr,
-		LogFile:   &logFile,
-		CreatedAt: createdAt,
-		Type:      "new",
+		Backend:     string(kind),
+		ID:          id,
+		Prompt:      prompt,
+		Branch:      "main",
+		Worktree:    repoDir,
+		TmuxPane:    &paneID,
+		TmuxSession: tmuxSession,
+		Budget:      budgetPtr,
+		LogFile:     &logFile,
+		CreatedAt:   createdAt,
+		Type:        "new",
 	}
 	if err := store.Save(state); err != nil {
 		return fmt.Errorf("saving state: %w", err)

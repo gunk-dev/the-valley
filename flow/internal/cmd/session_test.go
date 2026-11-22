@@ -84,9 +84,10 @@ func TestScaffoldCmdRegistered(t *testing.T) {
 }
 
 func TestSessionDefaultResumesExisting(t *testing.T) {
-	// Create a fake sessions directory with one session
-	tmpDir := t.TempDir()
-	sessDir := filepath.Join(tmpDir, "session-20260401-1200-abcd")
+	// A sessions root with one session
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sessDir := filepath.Join(home, ".klaus", "sessions", "session-20260401-1200-abcd")
 	store := run.NewHomeDirStoreFromPath(sessDir)
 	if err := store.EnsureDirs(); err != nil {
 		t.Fatal(err)
@@ -101,10 +102,9 @@ func TestSessionDefaultResumesExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// FindMostRecentSession should find it
-	found, err := run.FindMostRecentSession(tmpDir)
+	found, err := run.MostRecentSession()
 	if err != nil {
-		t.Fatalf("FindMostRecentSession: %v", err)
+		t.Fatalf("MostRecentSession: %v", err)
 	}
 	if found != "session-20260401-1200-abcd" {
 		t.Errorf("expected session-20260401-1200-abcd, got %s", found)
@@ -112,9 +112,9 @@ func TestSessionDefaultResumesExisting(t *testing.T) {
 }
 
 func TestSessionDefaultCreatesNewWhenNoneExist(t *testing.T) {
-	tmpDir := t.TempDir()
-	// Empty sessions dir — should error
-	_, err := run.FindMostRecentSession(tmpDir)
+	t.Setenv("HOME", t.TempDir())
+	// No sessions — should error
+	_, err := run.MostRecentSession()
 	if err == nil {
 		t.Error("expected error when no sessions exist")
 	}

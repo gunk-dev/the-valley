@@ -3,8 +3,6 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	"the-valley/flow/internal/event"
@@ -111,22 +109,13 @@ func reportSessionDirs(current bool) ([]string, error) {
 		}
 		return []string{hds.BaseDir()}, nil
 	}
-	root, err := run.SessionsDir()
+	sessions, err := run.Sessions()
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(root)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("reading sessions dir: %w", err)
-	}
 	var dirs []string
-	for _, e := range entries {
-		if e.IsDir() {
-			dirs = append(dirs, filepath.Join(root, e.Name()))
-		}
+	for _, s := range sessions {
+		dirs = append(dirs, s.Dir)
 	}
 	return dirs, nil
 }

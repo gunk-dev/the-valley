@@ -92,7 +92,7 @@ func cleanupAll(ctx context.Context, root string, store run.StateStore, gitClien
 			fmt.Printf("  warning: failed to clean up %s: %v\n", s.ID, err)
 		}
 	}
-	killEmptyAgentsSession(ctx, store, tc)
+	killEmptyAgentsSession(ctx, states, store, tc)
 	return nil
 }
 

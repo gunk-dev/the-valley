@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,6 +22,10 @@ func TestConsultThreadIntegration(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv(sessionIDEnv, "session-consult-test")
 	t.Setenv("KLAUS_BACKEND", "claude")
+	// The session exists: a consult looks it up, never creates it.
+	if err := os.MkdirAll(filepath.Join(home, ".klaus", "sessions", "session-consult-test"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
 	for _, args := range [][]string{{"init", "-q"}, {"-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "initial"}} {
 		c := exec.Command("git", args...)
@@ -237,5 +242,30 @@ func TestConsultAgyGetsAttachedFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(stdinFile); !os.IsNotExist(err) {
 		t.Fatal("agy ran for a refused consult")
+	}
+}
+
+// A snapshot takes main when its project config can't be loaded, unless
+// the file that can't is under the flow names: that stops the snapshot.
+func TestRepoSnapshotStopsAtBrokenFlowConfig(t *testing.T) {
+	home, clone := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	writeJSON(t, filepath.Join(home, ".klaus", "projects.json"), map[string]any{"projects": map[string]string{"widget": clone}})
+	for _, tc := range []struct {
+		file, want string
+	}{
+		{filepath.Join(clone, ".klaus", "config.json"), "origin/main"},
+		{filepath.Join(clone, ".valley", "flow", "config.json"), filepath.Join(clone, ".valley", "flow", "config.json")},
+	} {
+		if err := os.MkdirAll(filepath.Dir(tc.file), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(tc.file, []byte("{"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := prepareRepoSnapshot(context.Background(), "widget", t.TempDir(), io.Discard)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("snapshot with a malformed %s: %v; want an error naming %s", tc.file, err, tc.want)
+		}
 	}
 }

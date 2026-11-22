@@ -186,7 +186,7 @@ func reviewsJSON(bodies []string) string {
 }
 
 func postOpts(t *testing.T) PROptions {
-	return PROptions{Backend: backend.Codex, Post: true, LockDir: t.TempDir()}
+	return PROptions{Backend: backend.Codex, Post: true, LockDirs: []string{t.TempDir()}}
 }
 
 func TestRunPRReview(t *testing.T) {
@@ -314,7 +314,7 @@ func TestRunPRReviewLock(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "posted.json")); err != nil {
 		t.Error("lock holder did not post")
 	}
-	unlock, err := lockPR(opts.LockDir, "o/r", "7")
+	unlock, err := lockPR(opts.LockDirs, "o/r", "7")
 	if err != nil {
 		t.Fatalf("lock not released: %v", err)
 	}

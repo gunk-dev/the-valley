@@ -50,7 +50,10 @@ exits 1 when there is one; never prints the term list itself.`,
 			return fmt.Errorf("loading config: %w", err)
 		}
 		out := cmd.OutOrStdout()
-		entries := forbiddenTermsFor(cfg, dir, repoRef)
+		entries, err := forbiddenTermsFor(cfg, dir, repoRef)
+		if err != nil {
+			return err
+		}
 		if len(entries) == 0 {
 			fmt.Fprintln(out, "No forbidden terms are configured for this repo.")
 			return nil
@@ -115,12 +118,17 @@ func printForbiddenTerms(w io.Writer, hits []forbiddenHit) {
 // name or owner/repo; it names the repo when it is repoRef itself, when it is
 // owner/repo and the repo's origin is that GitHub repo, or when it is a
 // registered project that shares the repo's git directory or origin. Every
-// entry that names the repo applies, each with its own allow_paths.
-func forbiddenTermsFor(cfg config.Config, dir, repoRef string) []config.ForbiddenTermsConfig {
+// entry that names the repo applies, each with its own allow_paths. A
+// registry at both its names is an error: it would leave out the entries
+// that name a project.
+func forbiddenTermsFor(cfg config.Config, dir, repoRef string) ([]config.ForbiddenTermsConfig, error) {
 	if len(cfg.ForbiddenTerms) == 0 {
-		return nil
+		return nil, nil
 	}
-	reg, _ := project.Load()
+	reg, err := registryUnlessConflict()
+	if err != nil {
+		return nil, err
+	}
 	slug, common := repoSlugForDir(dir), gitCommonDir(dir)
 	if repoRef != "" {
 		slug, common = repoSlug(repoRef), ""
@@ -141,7 +149,7 @@ func forbiddenTermsFor(cfg config.Config, dir, repoRef string) []config.Forbidde
 			entries = append(entries, cfg.ForbiddenTerms[key])
 		}
 	}
-	return entries
+	return entries, nil
 }
 
 // forbiddenKeyNames reports whether key names the repo with origin slug and

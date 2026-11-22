@@ -19,7 +19,7 @@ const (
 // seedSession saves states into a fresh session store under the test HOME.
 func seedSession(t *testing.T, sessionID string, states ...*run.State) *run.HomeDirStore {
 	t.Helper()
-	store, err := run.NewHomeDirStore(sessionID)
+	store, err := run.CreateSession(sessionID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"the-valley/flow/internal/event"
 	"the-valley/flow/internal/flowenv"
 	"the-valley/flow/internal/git"
+	"the-valley/flow/internal/location"
 	"the-valley/flow/internal/nix"
 	"the-valley/flow/internal/project"
 	"the-valley/flow/internal/projectsync"
@@ -93,11 +95,6 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	if err != nil {
 		return err
 	}
-	sessionsDir, err := run.SessionsDir()
-	if err != nil {
-		return err
-	}
-
 	var id string
 	var resuming bool
 
@@ -110,7 +107,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 		}
 		id = "session-" + baseID
 	case continueFlag:
-		found, err := run.FindMostRecentSession(sessionsDir)
+		found, err := run.MostRecentSession()
 		if err != nil {
 			return fmt.Errorf("finding most recent session: %w", err)
 		}
@@ -118,18 +115,18 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 		resuming = true
 	case resumeFlag != "":
 		id = resumeFlag
-		dir := filepath.Join(sessionsDir, id)
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			return fmt.Errorf("session directory does not exist: %s", id)
-		}
 		resuming = true
 	default:
 		// Default: resume most recent session if one exists
-		found, findErr := run.FindMostRecentSession(sessionsDir)
-		if findErr == nil {
+		found, findErr := run.MostRecentSession()
+		switch {
+		case findErr == nil:
 			id = found
 			resuming = true
-		} else {
+		case !errors.Is(findErr, run.ErrNoSessions):
+			// A lookup that failed is not proof that no session exists.
+			return findErr
+		default:
 			// No existing session — create a new one
 			baseID, err := run.GenID()
 			if err != nil {
@@ -139,11 +136,18 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 		}
 	}
 
-	store, err := run.NewHomeDirStore(id)
-	if err != nil {
-		return err
+	// A session resumes in the directory it has, under either root; a new
+	// one goes where location allocates it.
+	var store *run.HomeDirStore
+	if resuming {
+		store, err = run.OpenSession(id)
+		if err == nil {
+			err = store.EnsureDirs()
+		}
+	} else {
+		store, err = run.CreateSession(id)
 	}
-	if err := store.EnsureDirs(); err != nil {
+	if err != nil {
 		return err
 	}
 	// A coordinator may follow klaus watch from the start, before anything
@@ -260,6 +264,8 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 			Branch:           branch,
 			Worktree:         worktree,
 			CreatedAt:        prevState.CreatedAt,
+			CreatedBy:        prevState.CreatedBy,
+			NamingGeneration: prevState.NamingGeneration,
 			RepoRoot:         prevState.RepoRoot,
 			ClaudeSessionID:  prevState.ClaudeSessionID,
 			BackendSessionID: prevState.BackendSessionID,
@@ -325,15 +331,17 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 			repoRoot = &root
 		}
 		state = &run.State{
-			Backend:      string(kind),
-			AgentBackend: string(workerKind),
-			ID:           id,
-			Type:         "session",
-			Prompt:       "(interactive session)",
-			Branch:       branch,
-			Worktree:     worktree,
-			CreatedAt:    createdAt,
-			RepoRoot:     repoRoot,
+			Backend:          string(kind),
+			AgentBackend:     string(workerKind),
+			ID:               id,
+			Type:             "session",
+			Prompt:           "(interactive session)",
+			Branch:           branch,
+			Worktree:         worktree,
+			CreatedAt:        createdAt,
+			CreatedBy:        version,
+			NamingGeneration: string(location.Allocates(cfg.Generation())),
+			RepoRoot:         repoRoot,
 		}
 		if err := store.Save(state); err != nil {
 			return fmt.Errorf("saving state: %w", err)
@@ -342,7 +350,11 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 
 	// Load project list for session prompt
 	var projectList string
-	if reg, loadErr := project.Load(); loadErr == nil {
+	reg, err := registryUnlessConflict()
+	if err != nil {
+		return err
+	}
+	if reg != nil {
 		projectList = config.FormatProjectList(reg.List(), reg.Descriptions)
 	}
 

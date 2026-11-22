@@ -276,18 +276,13 @@ func runWatch(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("valley flow watch must be run inside a flow session (KLAUS_SESSION_ID is not set; use --session-id to override)")
 	}
 
-	sessionsDir, err := run.SessionsDir()
+	cmd.SilenceUsage = true // flags are valid; later errors are not usage errors
+
+	session, err := run.OpenSession(sessionID)
 	if err != nil {
 		return err
 	}
-	cmd.SilenceUsage = true // flags are valid; later errors are not usage errors
-
-	sessionDir := filepath.Join(sessionsDir, sessionID)
-	if _, err := os.Stat(sessionDir); errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("unknown session %s: %s does not exist", sessionID, sessionDir)
-	} else if err != nil {
-		return fmt.Errorf("stat session dir: %w", err)
-	}
+	sessionDir := session.BaseDir()
 	eventsPath := event.NewLog(sessionDir).Path()
 
 	flt := buildFilter(filterIn, filterOut, runs)

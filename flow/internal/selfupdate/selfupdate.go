@@ -21,10 +21,10 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 
 	"the-valley/flow/internal/git"
+	"the-valley/flow/internal/location"
 	"the-valley/flow/internal/nix"
 )
 
@@ -83,7 +83,7 @@ type Failure struct {
 type Updater struct {
 	Repo    string    // git URL (or absolute path) of the klaus repository
 	Branch  string    // the branch to install, e.g. main
-	Dir     string    // state directory, holding the lock and self-update.json
+	Dir     string    // one directory holding the lock and self-update.json, unless Locks and StateFile say otherwise
 	Version string    // the running klaus's version, e.g. 0.4.1-e949dba
 	Out     io.Writer // where each step's line goes
 	Verbose bool      // also report runs that find klaus up to date
@@ -91,6 +91,12 @@ type Updater struct {
 	// or ValleyFlow; empty is Klaus. The self-update command leaves it
 	// empty.
 	Attribute string
+	// Locks are the lock files every update holds, in order, and StateFile
+	// where self-update.json is, resolved once they are held
+	// (location.Layout's SelfUpdateLocks and SelfUpdateState).
+	Locks     []string
+	StateFile func() (string, error)
+	state     string // StateFile's answer, once asked: one per locked operation
 
 	nix nixTool // nil is the nix on PATH (systemNix)
 }
@@ -152,18 +158,6 @@ func (u *Updater) attribute() string {
 		return Klaus
 	}
 	return u.Attribute
-}
-
-// DefaultDir returns $XDG_STATE_HOME/klaus, or ~/.local/state/klaus.
-func DefaultDir() (string, error) {
-	if d := os.Getenv("XDG_STATE_HOME"); filepath.IsAbs(d) {
-		return filepath.Join(d, "klaus"), nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".local", "state", "klaus"), nil
 }
 
 // StatePath is the state file in dir.
@@ -648,39 +642,52 @@ func flakeSource(repo, branch, sha string) string {
 
 var errBusy = errors.New("another self-update is in progress")
 
-// lock takes the state directory's lock. Without wait it returns errBusy
-// when another run holds it; with wait it says so and waits.
+// lock takes u's locks. Without wait it returns errBusy when another run
+// holds one; with wait it says so and waits.
 func (u *Updater) lock(wait bool) (func(), error) {
-	if err := os.MkdirAll(u.Dir, 0o755); err != nil {
-		return nil, err
+	paths := u.Locks
+	if len(paths) == 0 {
+		paths = []string{filepath.Join(u.Dir, "self-update.lock")}
 	}
-	path := filepath.Join(u.Dir, "self-update.lock")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return nil, err
-	}
-	err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-	if errors.Is(err, syscall.EWOULDBLOCK) {
+	l, err := location.TryLock(paths...)
+	if errors.Is(err, location.ErrBusy) {
 		if !wait {
-			f.Close()
 			return nil, errBusy
 		}
 		u.say("waiting for the self-update in progress to finish")
-		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+		l, err = location.WaitLock(paths...)
 	}
 	if err != nil {
-		f.Close()
-		return nil, fmt.Errorf("locking %s: %w", path, err)
+		return nil, err
 	}
-	return func() { f.Close() }, nil // close drops the flock
+	return l.Release, nil
 }
 
-// Load reads the state file in dir; a missing file is the zero State. An
-// install recorded without an element or attribute, as an updater that
+// statePath is where u's self-update.json is, resolved once, under the
+// locks: load and save of one operation use the same file.
+func (u *Updater) statePath() (string, error) {
+	if u.StateFile == nil {
+		return StatePath(u.Dir), nil
+	}
+	if u.state == "" {
+		path, err := u.StateFile()
+		if err != nil {
+			return "", err
+		}
+		u.state = path
+	}
+	return u.state, nil
+}
+
+// Load reads the state file in dir; a missing file is the zero State.
+func Load(dir string) (State, error) { return LoadFile(StatePath(dir)) }
+
+// LoadFile reads the state file at path; a missing file is the zero State.
+// An install recorded without an element or attribute, as an updater that
 // knows klaus alone records it, is klaus's.
-func Load(dir string) (State, error) {
+func LoadFile(path string) (State, error) {
 	var st State
-	data, err := os.ReadFile(StatePath(dir))
+	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return st, nil
 	}
@@ -688,7 +695,7 @@ func Load(dir string) (State, error) {
 		return st, err
 	}
 	if err := json.Unmarshal(data, &st); err != nil {
-		return st, fmt.Errorf("parsing %s: %w", StatePath(dir), err)
+		return st, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	for _, i := range []*Install{st.Current, st.Previous} {
 		if i == nil {
@@ -704,16 +711,30 @@ func Load(dir string) (State, error) {
 	return st, nil
 }
 
-func (u *Updater) load() (State, error) { return Load(u.Dir) }
+func (u *Updater) load() (State, error) {
+	path, err := u.statePath()
+	if err != nil {
+		return State{}, err
+	}
+	return LoadFile(path)
+}
 
-// save writes the state file through a rename, so a reader never sees half.
+// save writes the state file back where load read it, through a rename,
+// so a reader never sees half.
 func (u *Updater) save(st State) error {
+	path, err := u.statePath()
+	if err != nil {
+		return err
+	}
 	st.UpdatedAt = u.clock()
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(u.Dir, "self-update-*.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "self-update-*.json")
 	if err != nil {
 		return err
 	}
@@ -725,7 +746,7 @@ func (u *Updater) save(st State) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), StatePath(u.Dir))
+	return os.Rename(tmp.Name(), path)
 }
 
 func (u *Updater) say(format string, args ...any) {

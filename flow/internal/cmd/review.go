@@ -18,6 +18,7 @@ import (
 	"the-valley/flow/internal/event"
 	"the-valley/flow/internal/github"
 	"the-valley/flow/internal/jobs"
+	"the-valley/flow/internal/location"
 	"the-valley/flow/internal/review"
 	"the-valley/flow/internal/run"
 	"github.com/spf13/cobra"
@@ -130,7 +131,7 @@ Examples:
 		finish := startReviewJob(store, ownerRepo, prNumber, author, reviewer, model, post, cmd.ErrOrStderr())
 		result, err := review.RunPRReview(ctx, ownerRepo, prNumber, review.PROptions{
 			Backend: reviewer, Model: model, Post: post, MaxRounds: cfg.CrossReviewMaxRounds(),
-			LockDir: reviewLockDir(store),
+			LockDirs: reviewLockDirs(store),
 		})
 		finish(result, err, ctx.Err() != nil)
 		if result != nil {
@@ -191,15 +192,16 @@ func startReviewJob(store run.StateStore, ownerRepo, prNumber string, author, re
 	}
 }
 
-// reviewLockDir: <session>/locks, else ~/.klaus/locks when no session exists.
-func reviewLockDir(store run.StateStore) string {
+// reviewLockDirs: <session>/locks, else the global review lock directories
+// when no session exists.
+func reviewLockDirs(store run.StateStore) []string {
 	if hds, ok := store.(*run.HomeDirStore); ok {
-		return filepath.Join(hds.BaseDir(), "locks")
+		return []string{filepath.Join(hds.BaseDir(), "locks")}
 	}
-	if dir, err := run.SessionsDir(); err == nil {
-		return filepath.Join(filepath.Dir(dir), "locks")
+	if l, err := location.Host(); err == nil {
+		return l.ReviewLockDirs()
 	}
-	return ""
+	return nil
 }
 
 // reviewRepoSlug normalizes owner/repo, URLs, and registered project names to owner/repo; "" → the current checkout's repo.

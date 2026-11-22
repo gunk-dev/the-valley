@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 
 	"the-valley/flow/internal/flowenv"
@@ -27,25 +28,25 @@ func tmuxSessionEnvPrefix() string {
 }
 
 // sessionStore returns a HomeDirStore for the current session (from
-// VALLEY_FLOW_SESSION_ID or KLAUS_SESSION_ID). This is the canonical way to get
-// the store for the active session.
+// VALLEY_FLOW_SESSION_ID or KLAUS_SESSION_ID), under either sessions root.
+// This is the canonical way to get the store for the active session. A
+// session ID with no directory is an error: it never creates one.
 func sessionStore() (run.StateStore, error) {
 	sessionID := sessionIDFromEnv()
 	if sessionID == "" {
 		// Fall back to most recent session
-		sessionsDir, err := run.SessionsDir()
-		if err != nil {
-			return nil, fmt.Errorf("KLAUS_SESSION_ID is not set and could not find sessions directory: %w", err)
+		found, err := run.MostRecentSession()
+		if err != nil && !errors.Is(err, run.ErrNoSessions) {
+			return nil, err
 		}
-		found, err := run.FindMostRecentSession(sessionsDir)
 		if err != nil {
 			return nil, fmt.Errorf("KLAUS_SESSION_ID is not set and no sessions found (are you inside a flow session?)")
 		}
 		sessionID = found
 	}
-	store, err := run.NewHomeDirStore(sessionID)
+	store, err := run.OpenSession(sessionID)
 	if err != nil {
-		return nil, err
+		return nil, err // a nil interface, not one holding a nil store
 	}
 	return store, nil
 }

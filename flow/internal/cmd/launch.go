@@ -386,7 +386,10 @@ are synced back after completion. Use --local to force local execution, or
 		}
 
 		// Resolve which repo to use. Priority: --repo > session target > hostRoot
-		reg, _ := project.Load()
+		reg, err := registryUnlessConflict()
+		if err != nil {
+			return err
+		}
 		repoRef, projectLocalPath := resolveRepoTarget(repoRef, sessionTarget, reg)
 
 		if hostRoot == "" && repoRef == "" && projectLocalPath == "" {
@@ -1084,7 +1087,7 @@ are synced back after completion. Use --local to force local execution, or
 		// the agents session); splitFrom is non-empty only when agent_display
 		// is "pane" and the coordinator's window was split.
 		workerStarting = true
-		paneID, splitFrom, err := startAgentPane(ctx, tmuxClient, hostCfg.AgentDisplayMode(),
+		paneID, splitFrom, tmuxSession, err := startAgentPane(ctx, tmuxClient, hostCfg.AgentDisplayMode(),
 			id, worktree, paneCmd, FormatPaneTitle(id, issue, prompt))
 		if err != nil {
 			return err
@@ -1122,6 +1125,7 @@ are synced back after completion. Use --local to force local execution, or
 			Branch:      branch,
 			Worktree:    worktree,
 			TmuxPane:    &paneID,
+			TmuxSession: tmuxSession,
 			Budget:      budgetPtr,
 			LogFile:     logFilePtr,
 			CreatedAt:   createdAt,

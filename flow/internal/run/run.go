@@ -73,6 +73,17 @@ type State struct {
 	// DataRefPush is what happened at finalize when it published the run's
 	// data ref to origin. Nothing changes it afterwards.
 	DataRefPush *DataRefPush `json:"data_ref_push,omitempty"`
+	// CreatedBy is the flow build (its version) that created a session, and
+	// NamingGeneration the location.Generation whose names it was given.
+	// Both are empty in a session a build before them created: a legacy
+	// one. A resumed session keeps both.
+	CreatedBy        string `json:"created_by,omitempty"`
+	NamingGeneration string `json:"naming_generation,omitempty"`
+	// TmuxSession is the detached tmux session launch put a run's pane in.
+	// Empty in a run launched before it was recorded, or into the
+	// coordinator's window: cleanup then computes the legacy name, as it
+	// does for a name location doesn't give the run's session.
+	TmuxSession string `json:"tmux_session,omitempty"`
 }
 
 // DataRefPush statuses.

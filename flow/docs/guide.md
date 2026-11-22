@@ -13,8 +13,9 @@ key is in the [reference](./reference.md); how the pieces fit is in the [design]
 2. Optionally run `valley flow init`: in a repository it writes `.klaus/config.json` and the worker
    prompt template `.klaus/prompt.md`; elsewhere it writes the host config `~/.klaus/config.json`.
    flow works without either. The host config holds what a repository must not choose (self-update,
-   forbidden terms); a repository's `.klaus/config.json` overrides the rest
-   ([configuration](./reference.md#configuration)).
+   forbidden terms, naming generation); a repository's `.klaus/config.json` overrides the rest
+   ([configuration](./reference.md#configuration)). When one of these files exists under
+   `.valley/flow/` (`~/.valley/flow/` for the host config), flow reads it instead.
 3. Register the repositories you work on, so runs and consults can name them:
 
    ```bash
@@ -428,3 +429,23 @@ valley flow self-update --retry      # rebuild a tip that failed before
 
 `valley flow self-update` installs flow; `valley self-update` is the valley CLI's own command and
 does not touch flow ([self-update](./reference.md#valley-flow-self-update)).
+
+## Which names state gets
+
+flow keeps its state under `~/.klaus/` and a repository's `.klaus/`, and finds it under
+`~/.valley/flow/` and `.valley/flow/` too, so rolling back to this build keeps working on state a
+newer build wrote. Nothing moves: a session stays in its directory for its whole life.
+
+The host config's `naming_generation` (`legacy`, `bridge` or `flow`) says which names new state
+gets; this build gives new state the legacy names under all three (the switch to the flow names is
+not built). To see where your state is and what blocks the next generation, run:
+
+```bash
+valley flow naming status          # or --json
+```
+
+It changes nothing. It shows where each kind of state is, any kind found under both names, the live
+sessions and the build that made each, commit hooks older than the current ones, self-update's
+previous build, and what blocks the next generation with its reason. It cannot see other machines,
+or timers and helpers that run outside flow: check those yourself
+([naming generations](./reference.md#naming-generations)).

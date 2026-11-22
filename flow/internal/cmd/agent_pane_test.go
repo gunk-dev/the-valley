@@ -5,11 +5,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"the-valley/flow/internal/backend"
 	"the-valley/flow/internal/flowenv"
+	"the-valley/flow/internal/location"
 	"the-valley/flow/internal/run"
 )
 
@@ -173,7 +175,7 @@ func TestKillEmptyAgentsSession(t *testing.T) {
 		store := newFakeStore()
 
 		out := captureStdout(t, func() {
-			killEmptyAgentsSession(context.Background(), store, tc)
+			killEmptyAgentsSession(context.Background(), nil, store, tc)
 		})
 
 		if len(tc.killedSessions) != 1 || tc.killedSessions[0] != session {
@@ -194,7 +196,7 @@ func TestKillEmptyAgentsSession(t *testing.T) {
 		store := newFakeStore()
 
 		out := captureStdout(t, func() {
-			killEmptyAgentsSession(context.Background(), store, tc)
+			killEmptyAgentsSession(context.Background(), nil, store, tc)
 		})
 
 		if len(tc.killedSessions) != 0 {
@@ -213,7 +215,7 @@ func TestKillEmptyAgentsSession(t *testing.T) {
 		store := newFakeStore(&run.State{ID: "run-1", TmuxPane: &pane})
 
 		captureStdout(t, func() {
-			killEmptyAgentsSession(context.Background(), store, tc)
+			killEmptyAgentsSession(context.Background(), nil, store, tc)
 		})
 
 		if len(tc.killedSessions) != 0 {
@@ -221,11 +223,79 @@ func TestKillEmptyAgentsSession(t *testing.T) {
 		}
 	})
 
+	// A run that recorded its tmux session is cleaned up by that name, the
+	// one flow gives the store's session, not one computed from this
+	// process's session ID; a run that recorded none by the computed legacy
+	// name.
+	t.Run("kills the session a run recorded", func(t *testing.T) {
+		tc := isolatedTmux(t)
+		store := run.NewHomeDirStoreFromPath(filepath.Join(t.TempDir(), "session-other"))
+		legacy, recorded := agentsSessionName(), location.AgentsSession("session-other")
+		tc.panes = map[string][]string{legacy: {"%1"}, recorded: {"%2"}}
+		for _, s := range []*run.State{{ID: "run-1", TmuxSession: recorded}, {ID: "run-2"}} {
+			if err := store.Save(s); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		captureStdout(t, func() {
+			killEmptyAgentsSession(context.Background(), nil, store, tc)
+		})
+
+		if want := []string{legacy, recorded}; !reflect.DeepEqual(tc.killedSessions, want) {
+			t.Fatalf("killed %v, want %v", tc.killedSessions, want)
+		}
+	})
+
+	// cleanup --all removes the runs first: the names come from them as they
+	// were.
+	t.Run("kills the session a removed run recorded", func(t *testing.T) {
+		tc := isolatedTmux(t)
+		store := run.NewHomeDirStoreFromPath(filepath.Join(t.TempDir(), "session-other"))
+		recorded := location.AgentsSession("session-other")
+		tc.panes = map[string][]string{recorded: {"%2"}}
+		before := []*run.State{{ID: "run-1", TmuxSession: recorded}}
+
+		captureStdout(t, func() {
+			killEmptyAgentsSession(context.Background(), before, store, tc)
+		})
+
+		if want := []string{recorded}; !reflect.DeepEqual(tc.killedSessions, want) {
+			t.Fatalf("killed %v, want %v", tc.killedSessions, want)
+		}
+	})
+
+	// A record can name any tmux session: one flow gives no agents session
+	// of the run's is never killed, however idle, and is warned about once.
+	t.Run("never kills a session flow did not name", func(t *testing.T) {
+		tc := isolatedTmux(t)
+		legacy := agentsSessionName()
+		tc.panes = map[string][]string{legacy: {"%1"}, "workstation": {"%2"}}
+		foreign := &run.State{ID: "run-1", TmuxSession: "workstation"}
+
+		out := captureStdout(t, func() {
+			killEmptyAgentsSession(context.Background(), []*run.State{foreign}, newFakeStore(foreign), tc)
+		})
+
+		if want := []string{legacy}; !reflect.DeepEqual(tc.killedSessions, want) {
+			t.Fatalf("killed %v, want %v", tc.killedSessions, want)
+		}
+		var warnings []string
+		for _, line := range strings.Split(out, "\n") {
+			if strings.Contains(line, "warning") {
+				warnings = append(warnings, line)
+			}
+		}
+		if len(warnings) != 1 || !strings.Contains(warnings[0], "run-1") || !strings.Contains(warnings[0], "workstation") {
+			t.Errorf("want one warning naming run-1 and workstation, got %q", warnings)
+		}
+	})
+
 	t.Run("no-op when the session does not exist", func(t *testing.T) {
 		tc := isolatedTmux(t)
 		store := newFakeStore()
 
-		killEmptyAgentsSession(context.Background(), store, tc)
+		killEmptyAgentsSession(context.Background(), nil, store, tc)
 
 		if len(tc.killedSessions) != 0 {
 			t.Fatalf("expected no KillSession calls, got %v", tc.killedSessions)

@@ -61,8 +61,11 @@ uses this target. Useful when the coordinator session is not inside a git repo.
 
 		// If no "/" in the reference, try resolving as a registered project name
 		if !strings.Contains(repoRef, "/") {
-			reg, loadErr := project.Load()
-			if loadErr == nil {
+			reg, err := registryUnlessConflict()
+			if err != nil {
+				return err
+			}
+			if reg != nil {
 				if _, ok := reg.Get(repoRef); ok {
 					// It's a known project name — use it as the canonical name
 					if err := run.SaveTarget(baseDir, repoRef); err != nil {
@@ -81,7 +84,10 @@ uses this target. Useful when the coordinator session is not inside a git repo.
 		}
 
 		// Normalize: if the repo portion matches a registered project, use the short name
-		reg, _ := project.Load()
+		reg, err := registryUnlessConflict()
+		if err != nil {
+			return err
+		}
 		normalized := project.NormalizeRepoName(owner+"/"+repo, reg)
 
 		if err := run.SaveTarget(baseDir, normalized); err != nil {

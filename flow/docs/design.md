@@ -52,13 +52,13 @@ the main clone and other worktrees their own hooks, and chains to the repository
 
 ## Persistence
 
-Session state (`~/.klaus/sessions/`) is machine-local and disposable. A finalized run's state, log
-and Claude conversation are committed to `refs/klaus/data` in the local clone: a ref outside
-`refs/heads`, so it shows as no branch, written with git plumbing and a temporary index, so no
-working tree changes. Before a log is stored a regex scan looks for private addresses, keys and
-credentials; a log it flags, or cannot scan in full, is held back. The ref stays local unless
-`push_data_ref` is on, because transcripts hold prompts, file contents and environment details and a
-pushed ref is readable by anyone who can read the repository.
+Session state (`~/.klaus/sessions/`, or `~/.valley/flow/sessions/`) is machine-local and disposable.
+A finalized run's state, log and Claude conversation are committed to `refs/klaus/data` in the local
+clone: a ref outside `refs/heads`, so it shows as no branch, written with git plumbing and a
+temporary index, so no working tree changes. Before a log is stored a regex scan looks for private
+addresses, keys and credentials; a log it flags, or cannot scan in full, is held back. The ref stays
+local unless `push_data_ref` is on, because transcripts hold prompts, file contents and environment
+details and a pushed ref is readable by anyone who can read the repository.
 
 **Observed, not recorded.** Whether a pushed branch landed is checked against the run's clone each
 time flow looks and never written to the run; where a valley lists the change, its listing decides.

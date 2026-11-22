@@ -213,7 +213,10 @@ func TestForbiddenTermsForMatchesRepo(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := forbiddenTermsFor(config.Config{ForbiddenTerms: tt.entries}, tt.dir, tt.repoRef)
+			got, err := forbiddenTermsFor(config.Config{ForbiddenTerms: tt.entries}, tt.dir, tt.repoRef)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("forbiddenTermsFor = %+v, want %+v", got, tt.want)
 			}

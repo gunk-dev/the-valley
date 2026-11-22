@@ -1,11 +1,11 @@
 package cmd
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
 	"the-valley/flow/internal/config"
+	"the-valley/flow/internal/location"
 	"the-valley/flow/internal/selfupdate"
 	"github.com/spf13/cobra"
 )
@@ -15,8 +15,8 @@ var selfUpdateCmd = &cobra.Command{
 	Short: "Install the tip of the configured branch into the nix profile",
 	Long: `Brings the installed flow up to the tip of a configured branch, for a host
 whose install should follow upstream without a system rebuild. It is off until
-the host config, ~/.klaus/config.json, has a self_update block (a repo's
-.klaus/config.json can't set it):
+the host config (~/.valley/flow/config.json where it is, else
+~/.klaus/config.json) has a self_update block (a repo's config can't set it):
 
   "self_update": {"repo": "git@valley-host:~/the-valley", "branch": "main"}
 
@@ -77,7 +77,7 @@ A running flow dashboard notices the new build on PATH and restarts onto it.`,
 		unpin, _ := cmd.Flags().GetBool("unpin")
 		verbose, _ := cmd.Flags().GetBool("verbose")
 
-		dir, err := selfupdate.DefaultDir()
+		l, err := location.Host()
 		if err != nil {
 			return err
 		}
@@ -86,7 +86,7 @@ A running flow dashboard notices the new build on PATH and restarts onto it.`,
 		if err != nil {
 			return err
 		}
-		u := &selfupdate.Updater{Dir: dir, Version: version, Out: os.Stdout, Verbose: verbose, Branch: "main"}
+		u := &selfupdate.Updater{Locks: l.SelfUpdateLocks(), StateFile: l.SelfUpdateState, Version: version, Out: os.Stdout, Verbose: verbose, Branch: "main"}
 		if su := cfg.SelfUpdate; su != nil {
 			u.Repo, u.Branch = su.Repo, su.BranchName()
 		}
@@ -97,8 +97,12 @@ A running flow dashboard notices the new build on PATH and restarts onto it.`,
 			return u.Pin(cmd.Context(), pin)
 		}
 		if u.Repo == "" {
-			return errors.New(`self-update is off: add a self_update block to ~/.klaus/config.json, e.g.
-  "self_update": {"repo": "git@valley-host:~/the-valley", "branch": "main"}`)
+			where, err := l.HostConfig()
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf(`self-update is off: add a self_update block to %s, e.g.
+  "self_update": {"repo": "git@valley-host:~/the-valley", "branch": "main"}`, where)
 		}
 		if err := u.Update(cmd.Context(), retry); err != nil {
 			return fmt.Errorf("self-update: %w", err)

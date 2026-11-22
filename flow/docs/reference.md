@@ -39,6 +39,7 @@ agent opened or that flow tracks, and `<pr>` names one by number, URL or `owner/
 | `valley flow init`                                      | Write default configuration                                   |
 | `valley flow webhook check\|setup`                      | GitHub webhooks for registered projects                       |
 | `valley flow self-update`                               | Install the tip of the configured branch into the nix profile |
+| `valley flow naming status`                             | Where state is, and what blocks the next naming generation    |
 
 `valley flow --version` prints `valley flow version <v>` (run directly as `klaus`, it prints
 `klaus version <v>`).
@@ -166,9 +167,9 @@ session is running on that branch or change in the target repository, naming it.
 with or without `--force-takeover`, while any worktree has the branch checked out (naming it, its
 run, and whether it holds uncommitted changes or commits origin lacks), and while the local branch
 holds commits `origin/<branch>` lacks. `--force-takeover` passes the running-run check and resets
-the local branch to origin's tip, discarding such commits. In one clone these launches hold
-`klaus-continue.lock` from the check through the new run's registration; a second waits up to 5
-minutes, then refuses. `valley flow ready` takes the same lock.
+the local branch to origin's tip, discarding such commits. In one clone these launches hold the
+[continuation lock](#files-and-state) from the check through the new run's registration; a second
+waits up to 5 minutes, then refuses. `valley flow ready` takes the same lock.
 
 #### Dispatcher launches
 
@@ -628,12 +629,11 @@ also needs `webhook.secret_file`. Hooks subscribe to `push`, `check_run`, `check
 ### valley flow self-update
 
 Off until the host config has `self_update` (`repo`, and `branch`, default `main`); a repository's
-`.klaus/config.json` cannot set it. `repo` is an `https://`, `ssh://`, `git://` or `file:///` URL,
-an absolute path, or `user@host:path` (read as `ssh://user@host/path`; write `user@host:~/path` for
-a home-relative path). Other transports (`ext::`, `fd::`) and characters outside
-`[A-Za-z0-9._~/:@-]` are refused; git and nix read the same URL, with
-`GIT_ALLOW_PROTOCOL=https:ssh:git:file`. A `git://` repository needs a nix that accepts `git+git://`
-flake references; nix 2.31 refuses them.
+config cannot set it. `repo` is an `https://`, `ssh://`, `git://` or `file:///` URL, an absolute
+path, or `user@host:path` (read as `ssh://user@host/path`; write `user@host:~/path` for a
+home-relative path). Other transports (`ext::`, `fd::`) and characters outside `[A-Za-z0-9._~/:@-]`
+are refused; git and nix read the same URL, with `GIT_ALLOW_PROTOCOL=https:ssh:git:file`. A `git://`
+repository needs a nix that accepts `git+git://` flake references; nix 2.31 refuses them.
 
 The flake offers flow as two packages of one program, `packages.<system>.valley-flow` and
 `packages.<system>.klaus`, each holding it as both `valley-flow` and `klaus`. Self-update builds
@@ -642,9 +642,8 @@ profile as `klaus` or as `valley-flow`, and self-update replaces whichever it fi
 holding both is refused before anything else, with nothing built or changed, by every run and by
 `--rollback`, `--pin` and `--unpin`. A run:
 
-1. takes a lock under `$XDG_STATE_HOME/klaus/` (a run finding another exits 0, saying so) and lists
-   the profile, refusing one holding both or one nix cannot list; a pinned install exits 0 with a
-   note;
+1. takes the self-update lock (a run finding another exits 0, saying so) and lists the profile,
+   refusing one holding both or one nix cannot list; a pinned install exits 0 with a note;
 2. resolves the branch with `git ls-remote <repo> refs/heads/<branch>`;
 3. exits 0 when the installed flow was built from that commit (`-v` says so);
 4. reads the packages the flake offers at that commit and, unless it offers
@@ -664,8 +663,8 @@ holding both is refused before anything else, with nothing built or changed, by 
    profile holds no flow: the state records no install and no failure, so the next run installs the
    tip, and the error gives the `nix profile add` command to put the old build back by hand;
 9. records the current and previous store paths, commits, profile elements and packages, the time
-   and any failure in `$XDG_STATE_HOME/klaus/self-update.json`. An entry without an element or
-   package reads as `klaus`.
+   and any failure in the self-update state, `self-update.json`, where it found it
+   ([Files and state](#files-and-state)). An entry without an element or package reads as `klaus`.
 
 Removing the element and adding the build are two profile operations. Putting the element back
 covers a failed add, not a killed run: a run killed between the two leaves the profile without flow,
@@ -677,6 +676,25 @@ instead, run `nix profile add 'git+<repo>?ref=refs/heads/<branch>#packages.<syst
 the element name it came from (run again to switch back); `--pin` holds the current install until
 `--unpin`; `--retry`, `--rollback`, `--pin` and `--unpin` are exclusive.
 
+### valley flow naming status
+
+Reports, and changes nothing:
+
+- the host's `naming_generation` and the names this build gives new state under it;
+- where each kind of state is, and any single-valued kind found under both names;
+- the live sessions, each with the build and the generation that created it (`legacy` when the
+  session records none);
+- for each registered project, whether its worktrees' commit hooks are the current ones;
+- self-update's current and previous builds;
+- what blocks advancing to the next generation, each with its reason: among them a single-valued
+  kind under both names, a registry, session, self-update state or project's hooks it cannot read,
+  and self-update's previous build (the rollback target). Because it runs no program named in
+  self-update's state, it leaves that build's support for the operator to check with
+  `<store path>/bin/klaus _naming-support`.
+
+`--json` prints the same report as JSON. It cannot see other machines, or timers and helpers that
+run outside flow.
+
 ### Internal commands
 
 | Command                                                 | Use                                                      |
@@ -686,6 +704,7 @@ the element name it came from (run again to switch back); `--pin` holds the curr
 | `klaus _pre-review [--dir <worktree>]`                  | Forbidden terms, linters, peer review and prose rewrites |
 | `klaus _forbidden-terms [--repo <r>] [<base>] [<head>]` | Check a range for forbidden terms; exit 1 on a match     |
 | `klaus _event --run-id <id> --type <t> --data <json>`   | Append an event to the session's log                     |
+| `klaus _naming-support`                                 | Print, as JSON, the naming generations this build serves |
 
 `_pre-review` runs [forbidden terms](#forbidden-terms) first, even with `pre_review.enabled` false,
 then the linters (`pre_review.linters`, else detected), then the peer review with the
@@ -701,10 +720,11 @@ unless git itself takes it for binary.
 
 ## Configuration
 
-Configuration layers: built-in defaults, then the host config `~/.klaus/config.json`, then the
-repository's `.klaus/config.json`. Two keys are read from the host config only: `forbidden_terms` (a
-repository's value is ignored) and `self_update`. Finalize reads `ready_at_finalize` and
-`push_data_ref` from the checkout the run's worktree belongs to, never from the agent's worktree.
+Configuration layers: built-in defaults, then the host config, then the repository's config, each
+found as [Files and state](#files-and-state) says. Three keys are read from the host config only:
+`forbidden_terms` (a repository's value is ignored), `self_update`, and `naming_generation` (a
+repository's is ignored with a warning). Finalize reads `ready_at_finalize` and `push_data_ref` from
+the checkout the run's worktree belongs to, never from the agent's worktree.
 
 ### Configuration keys
 
@@ -753,6 +773,7 @@ repository's value is ignored) and `self_update`. Finalize reads `ready_at_final
 | `dashboard.approve_command`                         | empty                                    | Footer approve template (`submit_command`: deprecated name)   |
 | `webhook.*`                                         | absent                                   | [Webhook receiver](#webhook-receiver)                         |
 | `self_update.repo`, `.branch`                       | absent, `main`                           | Host only: [self-update](#valley-flow-self-update) source     |
+| `naming_generation`                                 | `legacy`                                 | Host only: [which names new state gets](#naming-generations)  |
 
 **Cross-review choice.** The reviewer family is `backends.<author>.review_backend`, else the first
 `cross_review.order` entry that is not the author and whose CLI is on `PATH`, else the author's own;
@@ -845,7 +866,7 @@ Files equal to or under an `allow_paths` entry are skipped. The report lists `fi
 | `VALLEY_FLOW_SCRATCH`, `KLAUS_SCRATCH`             | launch, local workers | The run's scratch directory                                                                       |
 | `VALLEY_FLOW_TMUX_SOCKET`, `KLAUS_TMUX_SOCKET`     | launch, local workers | The real tmux server's socket, for flow's own commands                                            |
 | `TMUX_TMPDIR`                                      | launch, local workers | The run's own empty tmux directory; `TMUX`, `TMUX_PANE` unset                                     |
-| `XDG_STATE_HOME`                                   | user                  | Self-update's lock and state go in `$XDG_STATE_HOME/klaus` (default `~/.local/state/klaus`)       |
+| `XDG_STATE_HOME`                                   | user                  | Self-update's legacy lock and state are in `$XDG_STATE_HOME/klaus` (default `~/.local/state`)     |
 | `CODEX_HOME`                                       | user                  | Codex authentication, also for consults                                                           |
 
 Flow exports the `KLAUS_*` names, and removes the `VALLEY_FLOW_*` name of each variable it sets so
@@ -855,17 +876,72 @@ socket variables.
 
 ## Files and state
 
-| Path                                              | Holds                                           |
-| ------------------------------------------------- | ----------------------------------------------- |
-| `~/.klaus/config.json`                            | Host config                                     |
-| `~/.klaus/projects.json`                          | The project registry                            |
-| `~/.klaus/memory/`                                | Shared Claude coordinator memory                |
-| `~/.klaus/sync.log`                               | Background project syncs                        |
-| `~/.klaus/consult-snapshots/`                     | One-shot consult snapshots                      |
-| `~/.klaus/sessions/<id>/`                         | A session (below); machine-local                |
-| `<worktree_base>/`                                | Run and coordinator worktrees; `.repos/` clones |
-| `<clone's git common dir>/klaus-continue.lock`    | The continuation lock                           |
-| `$XDG_STATE_HOME/klaus/self-update.json`, `.lock` | Self-update state and lock                      |
+Flow's state has legacy names and flow names. Flow finds and operates state under either, by the
+rule of its kind, and gives new state the legacy names (switching via
+[`naming_generation`](#naming-generations) is not built). Nothing moves: each object keeps the place
+it has.
+
+| State                            | Legacy name                                    | Flow name                           | Rule        |
+| -------------------------------- | ---------------------------------------------- | ----------------------------------- | ----------- |
+| Host config                      | `~/.klaus/config.json`                         | `~/.valley/flow/config.json`        | declaration |
+| Repository config                | `<repo>/.klaus/config.json`                    | `<repo>/.valley/flow/config.json`   | declaration |
+| Prompt templates and principles  | `<repo>/.klaus/<name>.md`                      | `<repo>/.valley/flow/<name>.md`     | declaration |
+| Project registry                 | `~/.klaus/projects.json`                       | `~/.valley/flow/projects.json`      | single      |
+| Shared Claude coordinator memory | `~/.klaus/memory/`                             | `~/.valley/flow/memory/`            | single      |
+| Self-update state                | `$XDG_STATE_HOME/klaus/self-update.json`       | `~/.valley/flow/self-update.json`   | single      |
+| Sessions (below)                 | `~/.klaus/sessions/<id>/`                      | `~/.valley/flow/sessions/<id>/`     | sessions    |
+| Global review locks              | `~/.klaus/locks/`                              | `~/.valley/flow/locks/`             | lock        |
+| Continuation lock                | `<clone's git common dir>/klaus-continue.lock` | `<…>/valley/flow/continuation.lock` | lock        |
+| Self-update lock                 | `$XDG_STATE_HOME/klaus/self-update.lock`       | `~/.valley/flow/self-update.lock`   | lock        |
+| Background project syncs         | `~/.klaus/sync.log`                            | `~/.valley/flow/sync.log`           | new         |
+| One-shot consult snapshots       | `~/.klaus/consult-snapshots/`                  | `~/.valley/flow/consult-snapshots/` | new         |
+| Scaffolding runs                 | `<clone's git common dir>/klaus/`              | `<…>/valley/flow/`                  | new         |
+
+The templates are `prompt.md`, `pr-fix-prompt.md` and `session-prompt.md`, and the principles
+`principles.md`. `$XDG_STATE_HOME` defaults to `~/.local/state`. `<worktree_base>/` holds run and
+coordinator worktrees and `.repos/` clones; sessions are machine-local.
+
+- **declaration**: the file under the flow name when one is there, else the legacy one, file by
+  file. A file under the flow name that cannot be read or parsed is an error, never a fallback; a
+  legacy file is read by its reader's own rule, which skips a host config it cannot read. Precedence
+  and host-only keys hold whichever names the files have.
+- **single**: the one place that exists; both existing is an error naming both, until one is removed
+  or merged by hand. Writes go back where the state was read. With neither, new state follows the
+  **new** rule (the legacy name in this build). Looking up a registered project's checkout by name,
+  as merge, review by `owner/repo#n` and `track <project>:<handle>` do, does not report a registry
+  under both names: it proceeds as if the project were unregistered.
+- **sessions**: both roots are listed, by `status`, `queue`, `watch`, `report`, the dashboard,
+  cleanup and latest-session selection. A session ID names one directory; the same ID under both is
+  an error naming both. A session's runs, logs, events, prompts, workspace, jobs, consults, ledgers,
+  scratch and session-local locks stay in its directory. Looking up an unknown session fails and
+  creates nothing.
+- **lock**: held at the legacy path, then the flow path, released in reverse; a process holding
+  either path alone excludes flow and is excluded by it, and two paths that are one file are locked
+  once. Lock files are never removed.
+- **new**: where new state of the kind goes (the legacy name in this build; switching via
+  `naming_generation` is not built). An operation given a path keeps using that path.
+
+### Naming generations
+
+`naming_generation`, host config only, is which names new state gets: `legacy` (the default),
+`bridge` or `flow`. Under every value this build gives new state the legacy names (implemented), and
+operates state under either name. What `bridge` and `flow` switch is not built:
+
+| Value    | New state gets                                                                                    |
+| -------- | ------------------------------------------------------------------------------------------------- |
+| `legacy` | The legacy names                                                                                  |
+| `bridge` | The flow names for home and repository state: config, registry, memory, sessions, logs, snapshots |
+| `flow`   | The flow names for the plumbing too: locks, scaffolding runs, tmux sessions, hooks, the data ref  |
+
+Existing objects keep their recorded identities: changing the setting moves no session, renames no
+tmux session and rewrites no stored path. A session records the build that created it (`created_by`)
+and the generation whose names it got (`naming_generation`), and keeps both when resumed; a run
+records the tmux session its pane is in (`tmux_session`). A record without them is legacy, and
+cleanup uses the computed legacy tmux name; it does the same, with a warning, for a recorded
+`tmux_session` that is not one flow gives the run's session. Rolling back changes the program, never
+the stored generation; if you roll back to this build, it operates state a newer build created under
+either name. [`valley flow naming status`](#valley-flow-naming-status) shows what blocks the next
+value.
 
 In a session directory:
 
@@ -890,7 +966,8 @@ Run state records, among others: `id`, `prompt`, `issue`, `pr`, `pr_url`, `branc
 `resolved_model`, `effort`, `target_repo`, `clone_dir`, `host`, `approved`, `merged_at`,
 `failure_reason`, `needs_attention`, `pushed_branch`, `pushed_sha`, `pushed_subject`, `change_id`,
 `delivery` (`pr` or `push`), `valley`, `unready`, `change_repo`, `knot`, `dispatch_reason`,
-`repo_key`, `head_sha`, `took_over`, `house_rules`, `shared_git` and `data_ref_push`.
+`repo_key`, `head_sha`, `took_over`, `house_rules`, `shared_git`, `data_ref_push` and
+`tmux_session`; session state also records `created_by` and `naming_generation`.
 
 ## The data ref
 

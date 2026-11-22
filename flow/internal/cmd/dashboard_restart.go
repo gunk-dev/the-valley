@@ -21,8 +21,13 @@ const restartQuiet = 10 * time.Second
 // the nix profile, so the dashboard can restart onto it.
 type binCheck struct {
 	running string          // the running binary, symlinks resolved
+	name    string          // the program name the dashboard was started as (invokedAs)
 	path    func() string   // the PATH to search
 	failed  map[string]bool // files an exec failed for: never tried again
+	// home is the PATH directory whose valley-flow was the running binary
+	// when a dashboard started as valley-flow began, else "". It tells a
+	// rollback of that installation from another klaus on PATH.
+	home string
 	// version runs a klaus with --version; nil runs it for real.
 	version func(path string) (string, error)
 }
@@ -35,30 +40,76 @@ func newBinCheck() *binCheck {
 	if r, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = r
 	}
-	return &binCheck{running: exe, path: func() string { return os.Getenv("PATH") }, failed: map[string]bool{}}
+	return startBinCheck(exe, invokedAs(os.Args[0]), func() string { return os.Getenv("PATH") })
 }
 
-// candidate returns the file klaus on PATH resolves to, symlinks resolved,
-// when that is not the running binary or a file an exec failed for.
+// startBinCheck is the check of a dashboard running the binary running,
+// started as program name, searching path. It notes the dashboard's home
+// as path is now, so call it as the dashboard starts.
+func startBinCheck(running, name string, path func() string) *binCheck {
+	b := &binCheck{running: running, name: name, path: path, failed: map[string]bool{}}
+	if name == helperName {
+		if dir, p, ok := firstOnPath(path(), name); ok {
+			if r, err := filepath.EvalSymlinks(p); err == nil && r == running {
+				b.home = dir
+			}
+		}
+	}
+	return b
+}
+
+// firstOnPath returns the first executable name in path's absolute
+// directories, and that directory. A relative entry is skipped, as valley
+// flow skips it, where exec.LookPath would stop at it.
+func firstOnPath(path, name string) (dir, file string, ok bool) {
+	for _, dir := range filepath.SplitList(path) {
+		if !filepath.IsAbs(dir) {
+			continue
+		}
+		if p, err := exec.LookPath(filepath.Join(dir, name)); err == nil {
+			return dir, p, true
+		}
+	}
+	return "", "", false
+}
+
+// candidate returns the file the dashboard would restart onto, symlinks
+// resolved, when that is not the running binary or a file an exec failed
+// for. That is the first file on PATH with the name the dashboard was
+// started as, since the restart keeps its arguments, the program name
+// among them: for valley-flow, the file valley flow runs. The exception is
+// a home that lost valley-flow but holds klaus, as a profile rolled back
+// to a klaus that ships no valley-flow does: that klaus is the candidate,
+// so a valley-flow elsewhere on PATH does not hide the rollback.
 func (b *binCheck) candidate() (string, bool) {
 	if b == nil {
 		return "", false
 	}
-	for _, dir := range filepath.SplitList(b.path()) {
-		if !filepath.IsAbs(dir) {
-			continue // as exec.LookPath, which refuses relative entries
-		}
-		p, err := exec.LookPath(filepath.Join(dir, "klaus"))
-		if err != nil {
-			continue
-		}
-		r, err := filepath.EvalSymlinks(p)
-		if err != nil || r == b.running || b.failed[r] {
-			return "", false
-		}
-		return r, true
+	p, ok := b.rolledBack()
+	if !ok {
+		_, p, ok = firstOnPath(b.path(), b.name)
 	}
-	return "", false
+	if !ok {
+		return "", false
+	}
+	r, err := filepath.EvalSymlinks(p)
+	if err != nil || r == b.running || b.failed[r] {
+		return "", false
+	}
+	return r, true
+}
+
+// rolledBack returns the home's klaus when the home no longer holds the
+// name the dashboard was started as.
+func (b *binCheck) rolledBack() (string, bool) {
+	if b.home == "" {
+		return "", false
+	}
+	if _, err := exec.LookPath(filepath.Join(b.home, b.name)); err == nil {
+		return "", false
+	}
+	p, err := exec.LookPath(filepath.Join(b.home, "klaus"))
+	return p, err == nil
 }
 
 // binUpdateMsg reports a new klaus on PATH that runs.

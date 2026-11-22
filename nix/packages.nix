@@ -1204,7 +1204,11 @@ rec {
   # same modules as the package. The package's source holds no test and no
   # prose, and it runs no tests: the checks do. It runs git, tmux, nix and
   # the agent CLIs it launches from the user's PATH; none of them is a
-  # dependency of the package.
+  # dependency of the package. bin/valley-flow is a symlink to bin/klaus:
+  # the one binary names itself by the name it runs under, and `valley flow`
+  # runs valley-flow from PATH. The attribute, the name and bin/klaus are
+  # what an installed klaus's self-update builds, installs and smoke-tests
+  # (flow/internal/selfupdate).
   flowComplete = lib.fileset.toSource {
     root = ../.;
     fileset = lib.fileset.difference ../flow unread;
@@ -1233,6 +1237,9 @@ rec {
     };
     ldflags = [ "-X the-valley/flow/internal/cmd.version=${version}" ];
     doCheck = false;
+    postInstall = ''
+      ln -s klaus $out/bin/valley-flow
+    '';
     meta.mainProgram = "klaus";
   };
 }

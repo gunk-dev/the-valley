@@ -21,10 +21,14 @@ import (
 
 // TestMain runs the test binary as the fake ssh the telemetry tests put
 // on PATH, when it is invoked under that name, as the checks read a
-// review starts, which runs this program's checkline (walk_test.go), and
-// as a signed approval's PIV device and racing receive-pack
-// (approvalsign_test.go).
+// review starts, which runs this program's checkline (walk_test.go), as a
+// signed approval's PIV device and racing receive-pack
+// (approvalsign_test.go), and as the valley-flow valley flow runs
+// (flow_test.go).
 func TestMain(m *testing.M) {
+	if filepath.Base(os.Args[0]) == flowHelper {
+		os.Exit(fakeFlow())
+	}
 	if filepath.Base(os.Args[0]) == "ssh" {
 		if dir := os.Getenv("FAKE_SSH_UPLOAD"); dir != "" {
 			os.Exit(fakeUpload(dir, os.Args[1:]))

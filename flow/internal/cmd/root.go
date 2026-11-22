@@ -3,6 +3,8 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 )
@@ -10,6 +12,11 @@ import (
 var (
 	version = "dev"
 )
+
+// helperName is the program name under which this binary is the valley
+// client's flow verb: `valley flow` runs valley-flow from PATH, and the
+// package installs it beside klaus as the same binary.
+const helperName = "valley-flow"
 
 var rootCmd = &cobra.Command{
 	Use:   "klaus",
@@ -29,7 +36,34 @@ a fresh session.`,
 }
 
 func Execute() error {
+	nameRoot(invokedAs(os.Args[0]))
 	return rootCmd.Execute()
+}
+
+// invokedAs is the program name argv0 starts this binary under:
+// helperName, or klaus for any other name.
+func invokedAs(argv0 string) string {
+	if filepath.Base(argv0) == helperName {
+		return helperName
+	}
+	return "klaus"
+}
+
+// nameRoot has the root command name itself as program, which invokedAs
+// gave: `valley flow` in usage, help and --version under helperName, and
+// klaus otherwise.
+func nameRoot(program string) {
+	name := "klaus"
+	if program == helperName {
+		name = "valley flow"
+		if rootCmd.Annotations == nil {
+			rootCmd.Annotations = map[string]string{}
+		}
+		rootCmd.Annotations[cobra.CommandDisplayNameAnnotation] = name
+	} else {
+		delete(rootCmd.Annotations, cobra.CommandDisplayNameAnnotation)
+	}
+	rootCmd.SetVersionTemplate(fmt.Sprintf("%s version %s\n", name, version))
 }
 
 // exitError is an error that sets klaus's exit status.
@@ -52,5 +86,5 @@ func ExitCode(err error) int {
 }
 
 func init() {
-	rootCmd.SetVersionTemplate(fmt.Sprintf("klaus version %s\n", version))
+	nameRoot("klaus")
 }

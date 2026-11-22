@@ -21,7 +21,8 @@
 // fill it from a repository's refs (bus.go). self-update installs the tip
 // of a branch of the-valley into the user's nix profile (selfupdate.go),
 // and telemetry reads a host's diagnostics and sends the workstation's
-// own (telemetry.go).
+// own (telemetry.go). flow runs valley-flow, the client that launches and
+// follows agent runs, from PATH (flow.go).
 //
 // The internal verbs are in neither the usage nor any help topic. resolve
 // turns the name of a change into its record or branch (changes.go), stack
@@ -61,7 +62,7 @@ import (
 
 func main() {
 	takeEnvironment()
-	// A public verb records its command record once it has run
+	// A public verb but flow records its command record once it has run
 	// (command.go), in the current checkout. A verb a signal ends records
 	// it too, through end.
 	inv := commandOf(os.Args[1:])
@@ -80,15 +81,21 @@ func main() {
 // names the producer of its records with it.
 var versionStamp string
 
+// callerEnvironment is the environment valley was started in, less the
+// stamp: what valley flow's helper runs in (flow.go).
+var callerEnvironment []string
+
 // takeEnvironment sets up the environment this process, and every program
-// it starts, runs in. The stamp is taken from VALLEY_VERSION, which is
-// removed, so no program this one starts takes the stamp for its own. git
-// ignores replacement refs, whatever configuration says, and loses the
-// variables that point it at other objects or at another replacement
-// namespace, for the reason gitEnvironment gives.
+// it starts but valley flow's helper, runs in. The stamp is taken from
+// VALLEY_VERSION, which is removed, so no program this one starts takes
+// the stamp for its own. git ignores replacement refs, whatever
+// configuration says, and loses the variables that point it at other
+// objects or at another replacement namespace, for the reason
+// gitEnvironment gives.
 func takeEnvironment() {
 	versionStamp = os.Getenv("VALLEY_VERSION")
 	os.Unsetenv("VALLEY_VERSION")
+	callerEnvironment = os.Environ()
 	os.Setenv("GIT_NO_REPLACE_OBJECTS", "1")
 	for _, name := range []string{"GIT_REPLACE_REF_BASE", "GIT_GRAFT_FILE",
 		"GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"} {
@@ -107,16 +114,21 @@ type failure string
 
 func (f failure) Error() string { return string(f) }
 
-// cli runs the valley command line args. No verb at all is help. A public
-// verb given one argument, -h or --help, prints its help topic before
-// anything reads its arguments. pending and rebase read origin's branches
-// through this checkout's remote-tracking refs, so they fetch origin
-// first, and a fetch that fails exits with git's status. end ends the
-// process from a verb a signal interrupts, as run's does.
+// cli runs the valley command line args. No verb at all is help. flow
+// hands every argument after it, help flags included, to its helper
+// (flow.go), and needs no checkout. Any other public verb given one
+// argument, -h or --help, prints its help topic before anything reads its
+// arguments. pending and rebase read origin's branches through this
+// checkout's remote-tracking refs, so they fetch origin first, and a
+// fetch that fails exits with git's status. end ends the process from a
+// verb a signal interrupts, as run's does.
 func cli(args []string, stdout, stderr io.Writer, end func(int)) int {
 	verb := "help"
 	if len(args) > 0 {
 		verb, args = args[0], args[1:]
+	}
+	if verb == "flow" {
+		return runFlow(args, stderr)
 	}
 	if publicVerb(verb) && len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
 		return runHelp([]string{verb}, stdout, stderr)

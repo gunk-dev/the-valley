@@ -41,6 +41,7 @@ status
 changes
 plan
 knot
+flow
 tail
 replay
 self-update
@@ -50,6 +51,8 @@ test "$verbs" = "$expected_verbs"
 for v in $verbs; do
   valley help "$v" > "help-$v.txt"
   grep -q "^usage: valley $v" "help-$v.txt"
+  # flow's help flags are valley-flow's (nix/checks/flow.nix).
+  if [ "$v" = flow ]; then continue; fi
   valley "$v" --help > "help-$v-flag.txt"
   cmp -s "help-$v.txt" "help-$v-flag.txt"
   valley "$v" -h > "help-$v-short.txt"
@@ -57,7 +60,7 @@ for v in $verbs; do
 done
 if valley help unknown-verb > /dev/null 2> err.txt; then exit 1; fi
 grep -q 'unknown help topic: unknown-verb' err.txt
-# Both zsh and bash completions complete all 16 verbs after `valley help`.
+# Both zsh and bash completions complete all 17 verbs after `valley help`.
 cat > complete-help.zsh <<'ZSH'
 _describe() { print -r -- "describe $*"; print -rl -- "${(P@)${@[-1]}}" | sed 's/^/  /'; }
 compadd() { print -r -- "compadd $*"; }

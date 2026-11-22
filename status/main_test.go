@@ -51,6 +51,9 @@ func TestDispatch(t *testing.T) {
 	}
 	refused := map[string][]string{"knot": {"zx81q"}, "telemetry": {"zx81q"}, "tail": {"a", "b"}, "replay": {"a", "b"}}
 	for verb := range helpTopics {
+		if verb == "flow" {
+			continue // its arguments are its helper's (flow_test.go)
+		}
 		args, ok := refused[verb]
 		if !ok {
 			args = []string{"--zx81q"}
@@ -66,14 +69,17 @@ func TestDispatch(t *testing.T) {
 // another argument the verb reads them as its own.
 func TestVerbHelp(t *testing.T) {
 	for verb := range helpTopics {
+		if status, out, _ := command(t, "help", verb); status != 0 || out != helpText(verb) {
+			t.Errorf("valley help %s: %d", verb, status)
+		}
+		if verb == "flow" {
+			continue // its help flags are its helper's (flow_test.go)
+		}
 		for _, flag := range []string{"-h", "--help"} {
 			status, out, errs := command(t, verb, flag)
 			if status != 0 || out != helpText(verb) || errs != "" {
 				t.Errorf("valley %s %s: %d %q", verb, flag, status, errs)
 			}
-		}
-		if status, out, _ := command(t, "help", verb); status != 0 || out != helpText(verb) {
-			t.Errorf("valley help %s: %d", verb, status)
 		}
 	}
 	for _, args := range [][]string{{"tail", "-h", "x"}, {"rebase", "--help", "x"}} {

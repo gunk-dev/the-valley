@@ -21,7 +21,8 @@ import (
 // the names of the flags it was given, its exit status, its wall time,
 // and the time and processes each phase of it took. It carries no
 // argument's value, since a report goes to the host and a project may be
-// public. Each public verb records its own, once it has run.
+// public. Each public verb but flow, whose helper replaces the process,
+// records its own, once it has run.
 
 // phaseClock is where this process's wall time goes: to the phase current
 // when it passes, and to "other" outside every phase. A phase's time
@@ -83,7 +84,7 @@ type invocation struct {
 // none.
 func commandOf(args []string) *invocation {
 	switch {
-	case len(args) == 0 || !publicVerb(args[0]):
+	case len(args) == 0 || !publicVerb(args[0]) || args[0] == "flow":
 		return nil
 	case len(args) == 2 && (args[1] == "-h" || args[1] == "--help"):
 		return nil

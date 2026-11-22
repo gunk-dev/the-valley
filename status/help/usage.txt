@@ -17,9 +17,10 @@ Reviewing, approving, and inspecting changes:
   status       read a change's integration request and last outcome
   changes      print every recorded change as valley-changes/v1 JSON
 
-Planning work:
+Planning and running work:
   plan         show the project's plan graph as a milestone tree
   knot         read and write knots in the plan graph at refs/the-valley/knots
+  flow         run valley-flow, the client that launches and follows agent runs
 
 Bus and client maintenance:
   tail         watch NATS bus events scroll by

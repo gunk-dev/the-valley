@@ -72,17 +72,24 @@ let
 in
 {
   # The package as it ships, and the version it reports: the CLI's,
-  # stamped through the-valley/flow/internal/cmd.version.
+  # stamped through the-valley/flow/internal/cmd.version. bin/klaus prints
+  # it as klaus, which an installed self-update's smoke test reads; the
+  # same binary run as bin/valley-flow names itself valley flow, and so
+  # does the valley package's `valley flow`, which runs valley-flow from
+  # PATH.
   flow-build =
     pkgs.runCommand "klaus-flow-build"
       {
         nativeBuildInputs = [
           klaus
+          packages.valley
           checker.unit
         ];
       }
       ''
-        flow-checker version klaus "klaus version ${version}"
+        flow-checker version "klaus version ${version}" ${klaus}/bin/klaus
+        flow-checker version "valley flow version ${version}" ${klaus}/bin/valley-flow
+        flow-checker version "valley flow version ${version}" valley flow
         touch $out
       '';
 

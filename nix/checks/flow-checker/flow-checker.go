@@ -1,9 +1,10 @@
 // Command flow-checker holds what the flow checks (nix/checks/flow.nix)
 // verify beside klaus's own tests:
 //
-//	flow-checker version PROGRAM WANT
+//	flow-checker version WANT PROGRAM [ARG...]
 //
-// runs PROGRAM --version and fails unless its first line is WANT, and
+// runs PROGRAM ARG... --version and fails unless it exits 0 having printed
+// exactly the line WANT, and nothing on stderr, and
 //
 //	flow-checker sockets DIR
 //
@@ -32,26 +33,28 @@ func main() {
 
 func run(args []string) error {
 	switch {
-	case len(args) == 3 && args[0] == "version":
-		return version(args[1], args[2])
+	case len(args) >= 3 && args[0] == "version":
+		return version(args[1], args[2:])
 	case len(args) == 2 && args[0] == "sockets":
 		return sockets(args[1])
 	}
-	return errors.New("usage: flow-checker version PROGRAM WANT | flow-checker sockets DIR")
+	return errors.New("usage: flow-checker version WANT PROGRAM [ARG...] | flow-checker sockets DIR")
 }
 
-// version fails unless program --version prints want as its first line.
-func version(program, want string) error {
+// version fails unless command, a program and its arguments, given
+// --version, exits 0 having printed exactly the line want, and nothing on
+// stderr.
+func version(want string, command []string) error {
 	var stderr bytes.Buffer
-	cmd := exec.Command(program, "--version")
+	cmd := exec.Command(command[0], append(command[1:], "--version")...)
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
+	name := strings.Join(cmd.Args, " ")
 	if err != nil {
-		return fmt.Errorf("%s --version: %v: %s", program, err, strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("%s: %v: %s", name, err, strings.TrimSpace(stderr.String()))
 	}
-	got, _, _ := strings.Cut(string(out), "\n")
-	if got != want {
-		return fmt.Errorf("%s --version printed %q, want %q", program, got, want)
+	if got := string(out); got != want+"\n" || stderr.Len() > 0 {
+		return fmt.Errorf("%s printed %q and %q on stderr, want %q and nothing", name, got, stderr.String(), want+"\n")
 	}
 	return nil
 }

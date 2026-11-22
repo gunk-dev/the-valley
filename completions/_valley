@@ -21,6 +21,7 @@ _valley() {
     'withdraw:mark a ready change or a draft withdrawn'
     'knot:read and write the plan graph at refs/the-valley/knots'
     'plan:show the plan graph as a tree, and what waits on you'
+    'flow:run valley-flow, the client that launches and follows agent runs'
     'checks:print the checks the composed policy requires of a change'
     'tail:watch bus events scroll by'
     'replay:publish ref-updated events for the current refs of a repo'

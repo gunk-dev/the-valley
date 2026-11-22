@@ -45,17 +45,62 @@ func (f *profileFixture) build(name, version string) string {
 	return p
 }
 
-// link points the profile's klaus at target, as a profile install does.
-func (f *profileFixture) link(target string) {
+// buildWithHelper makes a klaus build that also ships valley-flow, a
+// symlink to its klaus, as the package does, and returns its bin/klaus.
+func (f *profileFixture) buildWithHelper(name, version string) string {
 	f.t.Helper()
-	_ = os.Remove(filepath.Join(f.profile, "klaus"))
-	if err := os.Symlink(target, filepath.Join(f.profile, "klaus")); err != nil {
+	p := f.build(name, version)
+	f.shipHelper(p)
+	return p
+}
+
+// shipHelper adds valley-flow beside klaus, a symlink to it.
+func (f *profileFixture) shipHelper(klaus string) {
+	f.t.Helper()
+	if err := os.Symlink("klaus", filepath.Join(filepath.Dir(klaus), helperName)); err != nil {
 		f.t.Fatal(err)
 	}
 }
 
+// link points the profile's klaus at target, as a profile install does.
+func (f *profileFixture) link(target string) {
+	f.t.Helper()
+	f.linkAs("klaus", target)
+}
+
+// linkAs points the profile's program name at target; "" removes it.
+func (f *profileFixture) linkAs(name, target string) {
+	f.t.Helper()
+	_ = os.Remove(filepath.Join(f.profile, name))
+	if target == "" {
+		return
+	}
+	if err := os.Symlink(target, filepath.Join(f.profile, name)); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// install links every program of the build whose bin/klaus is klaus into
+// the profile, and removes the profile's valley-flow when the build has
+// none, as a profile install of that build does.
+func (f *profileFixture) install(klaus string) {
+	f.t.Helper()
+	f.link(klaus)
+	helper := filepath.Join(filepath.Dir(klaus), helperName)
+	if _, err := os.Lstat(helper); err != nil {
+		helper = ""
+	}
+	f.linkAs(helperName, helper)
+}
+
 func (f *profileFixture) check(running string) *binCheck {
-	return &binCheck{running: running, path: func() string { return f.path }, failed: map[string]bool{}}
+	return f.checkAs("klaus", running)
+}
+
+// checkAs is the check of a dashboard started as program name, which notes
+// its home from PATH as it is now.
+func (f *profileFixture) checkAs(name, running string) *binCheck {
+	return startBinCheck(running, name, func() string { return f.path })
 }
 
 // TestBinCheckFindsChangedKlaus drives the check with an injected PATH and
@@ -83,6 +128,100 @@ func TestBinCheckFindsChangedKlaus(t *testing.T) {
 	if got, ok := b.candidate(); ok {
 		t.Errorf("exec of %s failed before: got %q, want it left alone", newStore, got)
 	}
+}
+
+// TestBinCheckFollowsTheStartedName: a dashboard started as valley-flow
+// restarts onto valley-flow on PATH, and onto klaus from its home when the
+// home has no valley-flow any more, as after a rollback to a build without
+// one, even when a later directory has a valley-flow. One started as klaus
+// looks for klaus alone.
+func TestBinCheckFollowsTheStartedName(t *testing.T) {
+	f := newProfileFixture(t)
+	running := f.buildWithHelper("old", "0.4.1-1111111")
+	newStore := f.buildWithHelper("new", "0.4.1-2222222")
+	before := f.build("before", "0.4.0-3333333")
+	f.install(running)
+	asHelper, asKlaus := f.checkAs(helperName, running), f.checkAs("klaus", running)
+
+	for _, b := range []*binCheck{asHelper, asKlaus} {
+		if got, ok := b.candidate(); ok {
+			t.Errorf("started as %s, the profile holds the running build: got %q, want no change", b.name, got)
+		}
+	}
+	f.install(newStore)
+	for _, b := range []*binCheck{asHelper, asKlaus} {
+		if got, ok := b.candidate(); !ok || got != newStore {
+			t.Errorf("started as %s, the profile holds a new build: got %q, %v; want %q", b.name, got, ok, newStore)
+		}
+	}
+	// Each name finds its own program.
+	f.link(running)
+	if got, ok := asHelper.candidate(); !ok || got != newStore {
+		t.Errorf("started as valley-flow, PATH's valley-flow is new: got %q, %v; want %q", got, ok, newStore)
+	}
+	if got, ok := asKlaus.candidate(); ok {
+		t.Errorf("started as klaus, PATH's klaus is the running one: got %q, want no change", got)
+	}
+	f.install(before)
+	if err := os.Symlink(filepath.Join(filepath.Dir(newStore), helperName), filepath.Join(filepath.Dir(f.system), helperName)); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range []*binCheck{asHelper, asKlaus} {
+		if got, ok := b.candidate(); !ok || got != before {
+			t.Errorf("started as %s, the profile rolled back to a build without valley-flow: got %q, %v; want %q", b.name, got, ok, before)
+		}
+	}
+}
+
+// TestBinCheckBesideAnotherInstallation: with two installations on PATH,
+// a dashboard started as valley-flow restarts onto what valley flow runs,
+// and one started as klaus onto the first klaus, as before valley-flow.
+func TestBinCheckBesideAnotherInstallation(t *testing.T) {
+	sep := string(filepath.ListSeparator)
+	t.Run("an older klaus ahead", func(t *testing.T) {
+		// The system's klaus, from before valley-flow, comes first on PATH.
+		f := newProfileFixture(t)
+		f.path = filepath.Dir(f.system) + sep + f.profile
+		running, newStore := f.buildWithHelper("old", "0.4.1-1111111"), f.buildWithHelper("new", "0.4.1-2222222")
+		f.install(running)
+		b := f.checkAs(helperName, running)
+		if got, ok := b.candidate(); ok {
+			t.Errorf("valley flow runs the running build: got %q, want no change", got)
+		}
+		f.install(newStore)
+		if got, ok := b.candidate(); !ok || got != newStore {
+			t.Errorf("the profile holds a new build: got %q, %v; want %q", got, ok, newStore)
+		}
+	})
+	t.Run("a new build lands ahead", func(t *testing.T) {
+		// The dashboard runs the system's build; self-update fills the
+		// profile, which comes first on PATH.
+		f := newProfileFixture(t)
+		f.path = f.profile + sep + filepath.Dir(f.system)
+		f.shipHelper(f.system)
+		newStore := f.buildWithHelper("new", "0.4.1-2222222")
+		b := f.checkAs(helperName, f.system)
+		f.install(newStore)
+		if got, ok := b.candidate(); !ok || got != newStore {
+			t.Errorf("got %q, %v; want %q", got, ok, newStore)
+		}
+	})
+	t.Run("started as klaus", func(t *testing.T) {
+		// A valley-flow ahead goes unseen; a klaus ahead is taken, although
+		// the dashboard's klaus is further down.
+		f := newProfileFixture(t)
+		f.path = f.profile + sep + filepath.Dir(f.system)
+		newStore := f.buildWithHelper("new", "0.4.1-2222222")
+		b := f.checkAs("klaus", f.system)
+		f.linkAs(helperName, filepath.Join(filepath.Dir(newStore), helperName))
+		if got, ok := b.candidate(); ok {
+			t.Errorf("a valley-flow ahead: got %q, want no change", got)
+		}
+		f.link(newStore)
+		if got, ok := b.candidate(); !ok || got != newStore {
+			t.Errorf("a klaus ahead: got %q, %v; want %q", got, ok, newStore)
+		}
+	})
 }
 
 // pendingRestart returns a dashboard that found newStore on PATH just after

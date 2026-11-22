@@ -468,10 +468,27 @@ func TestSelfUpdateConcurrentRuns(t *testing.T) {
 // TestDashboardRestartsOntoNewKlaus runs the real dashboard in a tmux pane,
 // with a nix profile's bin ahead of the klaus it runs on PATH. When a new
 // klaus appears there, the dashboard shuts down, releasing its webhook
-// port, and execs it with the same arguments and environment.
+// port, and execs it with the same arguments and environment. A dashboard
+// started as valley-flow, which the package installs as the same binary,
+// finds the new build by that name: the profile holds only valley-flow, and
+// klaus on PATH is the one running.
 func TestDashboardRestartsOntoNewKlaus(t *testing.T) {
 	t.Parallel()
+	for _, program := range []string{"klaus", "valley-flow"} {
+		t.Run(program, func(t *testing.T) {
+			t.Parallel()
+			dashboardRestartsOntoNewKlaus(t, program)
+		})
+	}
+}
+
+func dashboardRestartsOntoNewKlaus(t *testing.T, program string) {
 	h := NewHarness(t)
+	if program != "klaus" {
+		if err := os.Symlink("klaus", filepath.Join(h.BinDir, program)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -488,7 +505,7 @@ func TestDashboardRestartsOntoNewKlaus(t *testing.T) {
 		t.Fatal(err)
 	}
 	pane := strings.TrimSpace(h.tmux("new-session", "-d", "-s", "dash", "-x", "120", "-y", "20", "-c", h.RepoDir, "-P", "-F", "#{pane_id}",
-		fmt.Sprintf("env KLAUS_SESSION_ID=%s PATH=%s:$PATH %s dashboard", h.SessionID, profileBin, filepath.Join(h.BinDir, "klaus"))))
+		fmt.Sprintf("env KLAUS_SESSION_ID=%s PATH=%s:$PATH %s dashboard", h.SessionID, profileBin, filepath.Join(h.BinDir, program))))
 	screen := func(timeout time.Duration, want string) string {
 		t.Helper()
 		var last string
@@ -522,7 +539,10 @@ exec sleep 600
 	if err := os.WriteFile(filepath.Join(store, "klaus"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(store, "klaus"), filepath.Join(profileBin, "klaus")); err != nil {
+	if err := os.Symlink("klaus", filepath.Join(store, "valley-flow")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(store, program), filepath.Join(profileBin, program)); err != nil {
 		t.Fatal(err)
 	}
 

@@ -18,7 +18,9 @@ var helpFiles embed.FS
 
 // helpTopics is each public verb's help topic, as the parts it prints in
 // order. The public verbs are exactly its keys: each is in usage.txt and
-// has a topic, and only they write a command record (command.go).
+// has a topic, and only they write a command record (command.go). flow,
+// whose helper replaces the process, writes none, and its help flags reach
+// that helper rather than its topic.
 var helpTopics = map[string][]string{
 	"pending":     {"pending", "runtime"},
 	"changes":     {"changes", "runtime"},
@@ -36,6 +38,7 @@ var helpTopics = map[string][]string{
 	"replay":      {"replay", "runtime"},
 	"self-update": {"self-update", "runtime"},
 	"telemetry":   {"telemetry"},
+	"flow":        {"flow"},
 }
 
 // publicVerb reports whether verb is one of valley's public verbs.

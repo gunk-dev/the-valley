@@ -84,7 +84,8 @@ valley status origin/topic                # explicitly as a branch
 ### Exit codes and git environment sanitization
 
 Every `valley` command sanitizes git object-replacement environment variables before running git and
-exits with a small set of status codes.
+exits with a small set of status codes. `valley flow` runs no git and exits with the status of the
+program it runs ([`valley flow`](#valley-flow)).
 
 ```sh
 export GIT_NO_REPLACE_OBJECTS=1
@@ -97,6 +98,8 @@ unset GIT_REPLACE_REF_BASE GIT_GRAFT_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJ
 | `1`       | Command refused or failed (invalid state, failed check, rejected push, missing git config, runtime error, invalid CLI flags in `status`, `ready`, `unready`, `withdraw`, `changes`, `pending`, `rebase`, `plan`, `tail`, `replay` or `help`, or an unknown verb). |
 | `2`       | Invalid `valley knot` or `valley self-update` CLI usage, or bad `VALLEY_NOW` timestamp in `knot` or `plan`.                                                                                                                                                       |
 | `3`       | Plan graph compare-and-set or precondition conflict in `valley knot` (such as concurrent modification of a field without `--force`, a failed `--if <field>=<value>` check, or a claim held by another run).                                                       |
+| `126`     | `valley flow` found `valley-flow` on `PATH`, but executing it failed.                                                                                                                                                                                             |
+| `127`     | `valley flow` found no executable `valley-flow` on `PATH` (relative entries do not count).                                                                                                                                                                        |
 | `130`     | Interrupted by `SIGINT` or `SIGTERM` during `valley review`, `valley approve`, `valley rebase`, `valley checks --build`, or `valley self-update`.                                                                                                                 |
 
 ### `valley ready`
@@ -978,6 +981,34 @@ valley replay [repo-dir]
   `{"event":"ref-updated","repo":"<repo>","ref":"<ref>","old":"0000...","new":"<sha>"}` to
   `valley.git.<repo>.ref-updated` for each ref, the payload the host's publisher hook builds.
 
+### `valley flow`
+
+`valley flow` runs `valley-flow`, the client that launches and follows agent runs (`flow/`).
+
+```sh
+valley flow [<args>]
+```
+
+- Replaces itself with `valley-flow` and passes every argument after `flow`, so the terminal,
+  signals, and exit status are `valley-flow`'s. It looks for `valley-flow` on `PATH` alone, never
+  beside its own binary: the installed `valley` is a wrapper, and `valley-flow` is installed and
+  updated separately. The flake's `klaus` package installs `valley-flow` beside `klaus` as the same
+  binary.
+- `valley-flow` runs in the environment the `valley` binary started in, less `VALLEY_VERSION`. That
+  includes what the installed package's wrapper sets (its tools ahead on `PATH` and
+  `VALLEY_VERIFICATION_SCHEMA`) and leaves out the git variables `valley` sets for its own git.
+- It reads no checkout and fetches nothing, so it runs from any directory. It writes no command
+  record.
+- Every argument is `valley-flow`'s: `valley flow --help`, `valley flow <command> --help`, and
+  `valley flow --version` are its help and version, while `valley --version` stays `valley`'s.
+  `valley help flow` prints a short topic.
+- The program names itself by the name it runs under: `valley flow` in its usage, help, and
+  `--version` (`valley flow version <version>`) when run as `valley-flow`, and `klaus` when run as
+  `klaus`.
+- Without an executable `valley-flow` on `PATH` (relative entries do not count), it prints
+  `valley: flow runs valley-flow, which is not on PATH` and exits `127`. When executing the
+  `valley-flow` it found fails, it says why and exits `126`.
+
 ### `valley self-update`, `--version`, and `help`
 
 `valley self-update` builds, smoke-tests, and installs the tip of a configured branch of the-valley
@@ -1009,8 +1040,9 @@ valley help [<verb>]
 - **`valley help [<verb>]`** (also `valley -h`, `valley --help`, or `valley` with no arguments):
   Prints a one-screen command summary when called with no `<verb>`, or detailed usage for `<verb>`
   (`pending`, `changes`, `review`, `approve`, `rebase`, `status`, `ready`, `unready`, `withdraw`,
-  `knot`, `plan`, `checks`, `tail`, `replay`, `telemetry`, or `self-update`). `valley <verb> --help`
-  and `valley <verb> -h` print the same per-verb help.
+  `knot`, `plan`, `flow`, `checks`, `tail`, `replay`, `telemetry`, or `self-update`).
+  `valley <verb> --help` and `valley <verb> -h` print the same per-verb help, except for `flow`,
+  whose arguments are all `valley-flow`'s.
 
 ### `valley telemetry`
 

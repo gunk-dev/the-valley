@@ -1,0 +1,9 @@
+usage: valley flow [<args>]
+
+Runs valley-flow, the client that launches and follows agent runs, in place
+of valley, with the arguments after flow and the environment valley started
+in: the terminal, signals and exit status are valley-flow's. valley-flow is
+found on PATH; the flake's klaus package installs it. flow needs no checkout,
+and every argument is valley-flow's, so valley flow --help and
+valley flow --version are its help and version. Without an executable
+valley-flow on PATH, flow says so and exits 127.

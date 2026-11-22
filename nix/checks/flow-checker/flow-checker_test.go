@@ -29,18 +29,34 @@ func TestSocketsRefusesASocketAtAnyDepth(t *testing.T) {
 	}
 }
 
-func TestVersionComparesTheFirstLine(t *testing.T) {
-	bin := filepath.Join(t.TempDir(), "klaus")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho 'klaus version 0.1.0-unknown'\necho more\n"), 0o755); err != nil {
-		t.Fatal(err)
+func TestVersionComparesTheWholeOutput(t *testing.T) {
+	dir := t.TempDir()
+	script := func(name, body string) string {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
 	}
-	if err := version(bin, "klaus version 0.1.0-unknown"); err != nil {
-		t.Fatalf("the stamp it prints: %v", err)
+	exact := script("klaus", `[ "$*" = "flow --version" ] && echo 'klaus version 0.1.0-unknown'`+"\n")
+	if err := version("klaus version 0.1.0-unknown", []string{exact, "flow"}); err != nil {
+		t.Fatalf("the stamp it prints, given its arguments before --version: %v", err)
 	}
-	if err := version(bin, "klaus version 0.1.0-1111111"); err == nil {
+	if err := version("klaus version 0.1.0-1111111", []string{exact, "flow"}); err == nil {
 		t.Fatal("another stamp was accepted")
 	}
-	if err := version(filepath.Join(t.TempDir(), "missing"), "x"); err == nil {
+	for name, body := range map[string]string{
+		"more":    "echo 'klaus version 0.1.0-unknown'; echo more\n",
+		"unended": "printf 'klaus version 0.1.0-unknown'\n",
+		"stderr":  "echo 'klaus version 0.1.0-unknown'; echo note >&2\n",
+		"failing": "echo 'klaus version 0.1.0-unknown'; exit 1\n",
+	} {
+		if err := version("klaus version 0.1.0-unknown", []string{script(name, body)}); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if err := version("x", []string{filepath.Join(dir, "missing")}); err == nil {
 		t.Fatal("a program that does not run was accepted")
 	}
 }

@@ -289,10 +289,14 @@ The header summarises prose passes that finished in the same period. Select a ru
 finished prose passes in the footer. Each summary gives the total and any failures and appears only
 when there are passes to count. Job row counts and `tab` selection cover only job rows.
 
-**Restart.** Every 30 seconds the dashboard resolves `klaus` on `PATH`; when it names a different
-file that runs `--version`, the footer says `klaus updated to <version>; restarting`, and after 10
-seconds without a key press the dashboard shuts down as on `q` and execs the new klaus with the same
-arguments and environment. A failed exec is shown and that file is not tried again.
+**Restart.** Every 30 seconds the dashboard looks for the name it was started as, `klaus` or
+`valley-flow`, in the absolute directories on `PATH`. When the first match is a different file that
+runs `--version`, the footer says `klaus updated to <version>; restarting`, and after 10 seconds
+without a key press the dashboard shuts down as on `q` and execs that file with the same arguments
+and environment. A dashboard started as `valley-flow` notes the `PATH` directory it was found in. If
+that directory later holds `klaus` without `valley-flow`, as when a profile is rolled back to a
+build that lacks it, the dashboard restarts onto that `klaus`. A failed exec is shown and that file
+is not tried again.
 
 Notes go to `dashboard.log` in the session directory, never to the screen. A narrow or short pane
 drops spacing, status, job and help lines before rows.

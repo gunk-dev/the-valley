@@ -19,6 +19,7 @@ import (
 	"the-valley/flow/internal/config"
 	"the-valley/flow/internal/consult"
 	"the-valley/flow/internal/event"
+	"the-valley/flow/internal/flowenv"
 	"the-valley/flow/internal/git"
 	"the-valley/flow/internal/jobs"
 	"the-valley/flow/internal/project"
@@ -31,8 +32,8 @@ func newConsultCmd() *cobra.Command {
 		Use:   "consult [flags] (\"<question>\" | --prompt-file PATH)",
 		Short: "Ask another model a read-only question without launching a worker",
 		Long: `Consult a model as a thinking partner, critic, or code reviewer. Answers stream
-as plain text. Defaults to the first installed backend other than KLAUS_BACKEND,
-using consult.order and per-backend model/effort defaults.
+as plain text. Defaults to the first installed backend other than VALLEY_FLOW_BACKEND
+(or KLAUS_BACKEND), using consult.order and per-backend model/effort defaults.
 
 Use --thread NAME for a persistent conversation in the current flow session
 (or the most recent session outside a pane). Its backend, model, effort, role,
@@ -262,7 +263,7 @@ func runConsult(cmd *cobra.Command, args []string) error {
 		if panel {
 			order = append(append([]string{}, order...), "codex", "claude", "agy")
 		}
-		kinds, err = consult.Installed(order, os.Getenv("KLAUS_BACKEND"))
+		kinds, err = consult.Installed(order, flowenv.Backend.Get())
 		if err != nil {
 			return err
 		}

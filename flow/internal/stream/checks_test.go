@@ -29,10 +29,23 @@ func TestCheckKind(t *testing.T) {
 		{"grep -rn 'go test' Makefile", "", false},
 		{"echo go test", "", false},
 		{"klaus _pre-review", "", true},
+		{"valley flow _pre-review", "", true},
+		{"valley-flow _pre-review", "", true},
+		{"/nix/store/abc/bin/valley flow _pre-review --dir .", "", true},
+		{"/nix/store/abc/bin/valley-flow _pre-review --dir .", "", true},
 		{"go build ./... && klaus _pre-review", "build", true},
+		{"go build ./... && valley flow _pre-review", "build", true},
+		{"go test ./... && VALLEY_FLOW_BACKEND=codex valley-flow _pre-review --dir .", "test", true},
 		{"go test ./... && KLAUS_BACKEND=codex ~/bin/klaus _pre-review --dir .", "test", true},
+		{"klaus _pre-review && valley flow _pre-review", "", true},
 		{"grep -rn 'klaus _pre-review' README.md", "", false},
+		{"grep -rn 'valley flow _pre-review' README.md", "", false},
 		{"echo klaus _pre-review", "", false},
+		{"echo valley flow _pre-review", "", false},
+		{"valley _pre-review", "", false},
+		{"valley flow status", "", false},
+		{"myvalley flow _pre-review", "", false},
+		{"my-valley-flow _pre-review", "", false},
 		{"", "", false},
 	} {
 		if got := CheckKind(tc.line); got != tc.want {
@@ -168,5 +181,70 @@ func TestCheckWatcherPreReviewCalls(t *testing.T) {
 	}
 	if len(reports) != 1 {
 		t.Errorf("sandbox run reports %+v, want the first call's pre-review only", reports)
+	}
+}
+
+func TestCheckReportsBothPrefixes(t *testing.T) {
+	payload := `{"kind":"pre-review","source":"pre-review","started_at":"2026-10-20T12:00:01Z","ended_at":"2026-10-20T12:00:03Z","duration_ms":2000,"success":true,"findings":0}`
+	otherPayload := `{"kind":"pre-review","source":"pre-review","started_at":"2026-10-20T12:01:01Z","ended_at":"2026-10-20T12:01:03Z","duration_ms":2000,"success":true,"findings":1}`
+
+	result := func(id, output string) string {
+		b, _ := json.Marshal(output)
+		return `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"` + id + `","is_error":false,"content":[{"type":"text","text":` + string(b) + `}]}]}}`
+	}
+
+	tests := []struct {
+		name    string
+		cmd     string
+		output  string
+		wantCnt int
+	}{
+		{
+			name:    "legacy prefix with legacy command",
+			cmd:     "klaus _pre-review",
+			output:  ReportPrefix + payload,
+			wantCnt: 1,
+		},
+		{
+			name:    "new prefix with valley flow command",
+			cmd:     "valley flow _pre-review",
+			output:  FlowReportPrefix + payload,
+			wantCnt: 1,
+		},
+		{
+			name:    "new prefix with valley-flow command",
+			cmd:     "valley-flow _pre-review",
+			output:  FlowReportPrefix + payload,
+			wantCnt: 1,
+		},
+		{
+			name:    "both prefixes with identical report act once",
+			cmd:     "valley flow _pre-review",
+			output:  ReportPrefix + payload + "\n" + FlowReportPrefix + payload,
+			wantCnt: 1,
+		},
+		{
+			name:    "two distinct reports across both prefixes both kept",
+			cmd:     "klaus _pre-review && valley flow _pre-review",
+			output:  ReportPrefix + payload + "\n" + FlowReportPrefix + otherPayload,
+			wantCnt: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var reports []map[string]interface{}
+			w := &CheckWatcher{
+				Sandbox:  true,
+				OnReport: func(data map[string]interface{}) { reports = append(reports, data) },
+			}
+			cmdJSON, _ := json.Marshal(tt.cmd)
+			t0 := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+			w.Observe(NormalizeLine([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":`+string(cmdJSON)+`}}]}}`)), t0)
+			w.Observe(NormalizeLine([]byte(result("a", tt.output))), t0.Add(time.Second))
+			if len(reports) != tt.wantCnt {
+				t.Errorf("got %d reports %+v, want %d", len(reports), reports, tt.wantCnt)
+			}
+		})
 	}
 }

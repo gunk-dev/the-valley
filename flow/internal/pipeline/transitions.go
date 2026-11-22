@@ -772,14 +772,14 @@ func hasTrustedComments(_ *Controller, _ *PRPipelineState, status *PRStatus, _ [
 
 // Label guards.
 
-// isBudgetPausedDraft reports whether the PR carries the klaus:budget-paused
-// label. We treat the label as the canonical paused-state signal: it persists
-// across klaus restarts and survives the worktree being cleaned up. Whether
-// the PR is currently draft or ready-for-review doesn't change the signal;
-// the label IS the signal.
+// isBudgetPausedDraft reports whether the PR carries either spelling of the
+// budget-paused label. We treat the label as the canonical paused-state signal:
+// it persists across restarts and survives the worktree being cleaned up.
+// Whether the PR is currently draft or ready-for-review doesn't change the
+// signal; the label IS the signal.
 func isBudgetPausedDraft(_ *Controller, _ *PRPipelineState, status *PRStatus, _ []*run.State) bool {
 	for _, label := range status.Labels {
-		if label == event.BudgetPausedLabel {
+		if event.IsBudgetPausedLabel(label) {
 			return true
 		}
 	}
@@ -851,23 +851,62 @@ func dispatchRepo(c *Controller, status *PRStatus) string {
 // AgentReplyMarker is embedded in every reply a review-fix agent posts. Agents
 // run gh as the operator, who is often a trusted reviewer, so the comment
 // author can't distinguish an agent's reply from real feedback; review
-// detection skips comments carrying this marker. It is an HTML comment so it
-// doesn't render on GitHub.
-const AgentReplyMarker = "<!-- klaus-agent-reply -->"
+// detection skips comments carrying either spelling of this marker. It is an
+// HTML comment so it doesn't render on GitHub.
+const (
+	AgentReplyMarker     = "<!-- klaus-agent-reply -->"
+	FlowAgentReplyMarker = "<!-- flow-agent-reply -->"
+)
 
-// CrossReviewMarker opens the hidden line in a `klaus review --post` review body. Such a review counts as trusted when posted by the operator's gh account.
-const CrossReviewMarker = review.CrossReviewMarker
+// IsAgentReply reports whether body carries either spelling of the agent-reply
+// marker.
+func IsAgentReply(body string) bool {
+	return strings.Contains(body, AgentReplyMarker) || strings.Contains(body, FlowAgentReplyMarker)
+}
+
+// CrossReviewMarker opens the hidden line in a posted cross-review body. Such
+// a review counts as trusted when posted by the operator's gh account.
+const (
+	CrossReviewMarker     = review.CrossReviewMarker
+	FlowCrossReviewMarker = review.FlowCrossReviewMarker
+)
+
+// HasCrossReviewMarker reports whether body carries either spelling of the
+// cross-review marker.
+func HasCrossReviewMarker(body string) bool {
+	return review.HasCrossReviewMarker(body)
+}
 
 // FixCommand and ActionableMarker are the two ways a PR author opts a PR
 // conversation comment in as review feedback. The operator and fix agents post
 // through the same account, so author conversation comments are ignored by
-// review detection unless the first non-blank line is FixCommand or a line
-// consists of ActionableMarker alone. Comments from trusted reviewers other
-// than the PR author need neither.
+// review detection unless the first non-blank line is FixCommand (or
+// FlowFixCommand) or a line consists of ActionableMarker (or
+// FlowActionableMarker) alone. Comments from trusted reviewers other than the
+// PR author need neither.
 const (
-	FixCommand       = "/klaus fix"
-	ActionableMarker = "<!-- klaus-actionable -->"
+	FixCommand           = "/klaus fix"
+	FlowFixCommand       = "/flow fix"
+	ActionableMarker     = "<!-- klaus-actionable -->"
+	FlowActionableMarker = "<!-- flow-actionable -->"
 )
+
+// IsActionableMarker reports whether line is either spelling of the actionable
+// marker.
+func IsActionableMarker(line string) bool {
+	return line == ActionableMarker || line == FlowActionableMarker
+}
+
+// HasFixCommand reports whether line starts with either spelling of the fix
+// directive, standing alone or followed by whitespace.
+func HasFixCommand(line string) bool {
+	for _, cmd := range []string{FixCommand, FlowFixCommand} {
+		if rest, ok := strings.CutPrefix(line, cmd); ok && (rest == "" || rest[0] == ' ' || rest[0] == '\t') {
+			return true
+		}
+	}
+	return false
+}
 
 // reviewFixPrompt builds the prompt sent to a review-fix agent. The leadIn is
 // the situation-specific opening sentence (e.g. "PR #X has changes requested
@@ -889,18 +928,19 @@ func reviewFixPrompt(leadIn, prNumber string) string {
 			"Review comments come in two kinds; fetch both:\n"+
 			"  inline review comments: gh api repos/{owner}/{repo}/pulls/%s/comments\n"+
 			"  PR conversation comments: gh api repos/{owner}/{repo}/issues/%s/comments\n"+
-			"Ignore comments whose body contains %s — those are earlier agent replies.\n"+
-			"Conversation comments from the PR author are feedback only if their first line is %s or a line is exactly %s; ignore the author's other conversation comments.\n"+
+			"Ignore comments whose body contains %s or %s — those are earlier agent replies.\n"+
+			"Conversation comments from the PR author are feedback only if their first line is %s or %s, or a line is exactly %s or %s; ignore the author's other conversation comments.\n"+
 			"Address each comment in the code, then push your fixes.\n"+
 			"After pushing, reply to EACH review comment that you haven't already replied to with a concise (1-2 sentence) explanation of what you changed. "+
 			"If a comment was intentionally not addressed, reply explaining why it was discounted.\n"+
-			"End every reply body with the line %s so flow doesn't mistake your reply for new review feedback. Never start a reply with %s or copy a %s line into it; link to the original comment instead of quoting such lines.\n"+
+			"End every reply body with the line %s so flow doesn't mistake your reply for new review feedback. Never start a reply with %s or %s or copy a %s or %s line into it; link to the original comment instead of quoting such lines.\n"+
 			"Use this exact command to reply to an inline comment, substituting the comment id and your explanation:\n"+
 			"  gh api repos/{owner}/{repo}/pulls/%s/comments/{commentId}/replies -f body='<explanation> %s'\n"+
 			"A conversation comment has no reply thread; reply with a new PR comment that quotes or links the original:\n"+
 			"  gh pr comment %s --body '<quote or link to the original> <explanation> %s'",
-		leadIn, prNumber, prNumber, AgentReplyMarker, FixCommand, ActionableMarker,
-		AgentReplyMarker, FixCommand, ActionableMarker,
+		leadIn, prNumber, prNumber, AgentReplyMarker, FlowAgentReplyMarker,
+		FixCommand, FlowFixCommand, ActionableMarker, FlowActionableMarker,
+		AgentReplyMarker, FixCommand, FlowFixCommand, ActionableMarker, FlowActionableMarker,
 		prNumber, AgentReplyMarker, prNumber, AgentReplyMarker,
 	)
 }

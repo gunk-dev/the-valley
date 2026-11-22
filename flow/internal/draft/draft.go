@@ -10,6 +10,7 @@ package draft
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -136,41 +137,63 @@ func HandleBudgetPause(ctx context.Context, r Runner, in PauseInput) (PauseOutpu
 	return out, nil
 }
 
-// ClearBudgetPausedLabel removes the klaus:budget-paused label from the
-// given PR if it's present. Used by _finalize on follow-up runs against a
-// paused PR so the dashboard reflects that the pause was resolved.
+// ClearBudgetPausedLabel removes any budget-paused label spelling from the
+// given PR. Used by _finalize on follow-up runs against a paused PR so the
+// dashboard reflects that the pause was resolved.
 //
-// Idempotent: if the label isn't present, this is a no-op.
+// Idempotent: if a label isn't present, this is a no-op.
 func ClearBudgetPausedLabel(ctx context.Context, r Runner, workdir, repo, prNumber string) error {
-	args := []string{"pr", "edit", prNumber, "--remove-label", event.BudgetPausedLabel}
-	if repo != "" {
-		args = []string{"pr", "edit", prNumber, "--repo", repo, "--remove-label", event.BudgetPausedLabel}
-	}
-	_, err := r.GH(ctx, workdir, args...)
-	if err != nil && !strings.Contains(err.Error(), "not found") {
-		return err
-	}
-	return nil
+	return ClearBudgetPausedLabels(ctx, r, workdir, repo, prNumber, []string{event.BudgetPausedLabel, event.FlowBudgetPausedLabel})
 }
 
-// HasBudgetPausedLabel reports whether the given PR currently carries the
-// klaus:budget-paused label. Used at klaus launch --pr time to decide
-// whether to emit agent:resumed.
-func HasBudgetPausedLabel(ctx context.Context, r Runner, workdir, repo, prNumber string) (bool, error) {
+// ClearBudgetPausedLabels removes each given label from the PR, tolerating
+// "not found" errors so removing an already-absent label is a no-op.
+func ClearBudgetPausedLabels(ctx context.Context, r Runner, workdir, repo, prNumber string, labels []string) error {
+	var errs []error
+	for _, label := range labels {
+		args := []string{"pr", "edit", prNumber, "--remove-label", label}
+		if repo != "" {
+			args = []string{"pr", "edit", prNumber, "--repo", repo, "--remove-label", label}
+		}
+		_, err := r.GH(ctx, workdir, args...)
+		if err != nil && !strings.Contains(err.Error(), "not found") {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// BudgetPausedLabels returns whichever accepted budget-paused label spellings
+// are currently present on the PR, deduplicated in the order reported by GitHub.
+func BudgetPausedLabels(ctx context.Context, r Runner, workdir, repo, prNumber string) ([]string, error) {
 	args := []string{"pr", "view", prNumber, "--json", "labels", "-q", ".labels[].name"}
 	if repo != "" {
 		args = []string{"pr", "view", prNumber, "--repo", repo, "--json", "labels", "-q", ".labels[].name"}
 	}
 	stdout, err := r.GH(ctx, workdir, args...)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
+	var found []string
+	seen := map[string]bool{}
 	for _, line := range strings.Split(stdout, "\n") {
-		if strings.TrimSpace(line) == event.BudgetPausedLabel {
-			return true, nil
+		label := strings.TrimSpace(line)
+		if event.IsBudgetPausedLabel(label) && !seen[label] {
+			seen[label] = true
+			found = append(found, label)
 		}
 	}
-	return false, nil
+	return found, nil
+}
+
+// HasBudgetPausedLabel reports whether the given PR currently carries either
+// spelling of the budget-paused label.
+func HasBudgetPausedLabel(ctx context.Context, r Runner, workdir, repo, prNumber string) (bool, error) {
+	labels, err := BudgetPausedLabels(ctx, r, workdir, repo, prNumber)
+	if err != nil {
+		return false, err
+	}
+	return len(labels) > 0, nil
 }
 
 // ── internal helpers ────────────────────────────────────────────────────

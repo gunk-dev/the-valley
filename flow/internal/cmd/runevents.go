@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"the-valley/flow/internal/event"
+	"the-valley/flow/internal/flowenv"
 	"the-valley/flow/internal/git"
 	"the-valley/flow/internal/github"
 	"the-valley/flow/internal/integration"
@@ -18,30 +19,23 @@ import (
 	"the-valley/flow/internal/valley"
 )
 
-// runIDEnv names the run whose pane a process runs in. Launch exports it in
-// the agent's pane, and on a sandbox host in the agent's command, so
-// _format-stream and the klaus commands the agent runs (_pre-review) put
-// their events on the run.
-const runIDEnv = "KLAUS_RUN_ID"
-
-// runEventsEnv, set to runEventsOutput, tells the klaus commands in a run
+// runEventsOutput, as flowenv.RunEvents, tells the klaus commands in a run
 // that they can't reach its event log, as on a sandbox host, so they report
 // their events in their output (stream.ReportPrefix). The agent's stream
 // carries the output back to the pane's _format-stream, which records them.
-const (
-	runEventsEnv    = "KLAUS_RUN_EVENTS"
-	runEventsOutput = "output"
-)
+const runEventsOutput = "output"
 
-// runEnvPrefix exports runIDEnv for a pane command.
+// runEnvPrefix exports the run's ID (flowenv.RunID) for a pane command, so
+// _format-stream and the klaus commands the agent runs (_pre-review) put
+// their events on the run.
 func runEnvPrefix(id string) string {
-	return fmt.Sprintf("export %s=%s; ", runIDEnv, shellQuote(id))
+	return flowenv.RunID.Export(id)
 }
 
-// remoteRunEnvPrefix exports runIDEnv for a command on a sandbox host, with
-// runEventsEnv set so its klaus commands report in their output.
+// remoteRunEnvPrefix exports the run's ID for a command on a sandbox host,
+// with flowenv.RunEvents set so its klaus commands report in their output.
 func remoteRunEnvPrefix(id string) string {
-	return fmt.Sprintf("export %s=%s %s=%s; ", runIDEnv, shellQuote(id), runEventsEnv, runEventsOutput)
+	return flowenv.RunID.Export(id) + flowenv.RunEvents.Export(runEventsOutput)
 }
 
 // runFields returns the fields that say what a run worked on and why, which
@@ -284,7 +278,7 @@ func emitAgentPhase(baseDir string, s *run.State, end time.Time) {
 // after the pane starts, so a fast agent can finish first.
 const paneRunSaveWait = 2 * time.Second
 
-// paneRun is the run whose pane this process runs in (runIDEnv).
+// paneRun is the run whose pane this process runs in (flowenv.RunID).
 type paneRun struct {
 	baseDir string     // the session's directory
 	id      string     // the run's ID
@@ -294,7 +288,7 @@ type paneRun struct {
 // currentPaneRun returns the run whose pane this process runs in, with its
 // state if launch has saved it, or nil outside a run's pane.
 func currentPaneRun() *paneRun {
-	id := os.Getenv(runIDEnv)
+	id := flowenv.RunID.Get()
 	if id == "" {
 		return nil
 	}

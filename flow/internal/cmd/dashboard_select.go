@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"regexp"
 	"slices"
 	"sort"
@@ -867,7 +866,7 @@ func (m *dashboardModel) selectedPR(action string) (dashRow, bool) {
 // for the current dashboard, or "" if it can't be determined (e.g. an older
 // session that predates the persisted coordinator pane).
 func (m dashboardModel) coordinatorPane() string {
-	sessionID := os.Getenv(sessionIDEnv)
+	sessionID := sessionIDFromEnv()
 	if sessionID == "" {
 		return ""
 	}

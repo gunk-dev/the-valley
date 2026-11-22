@@ -11,6 +11,7 @@ import (
 	"the-valley/flow/internal/backend"
 	"the-valley/flow/internal/config"
 	"the-valley/flow/internal/event"
+	"the-valley/flow/internal/flowenv"
 	"the-valley/flow/internal/project"
 	"the-valley/flow/internal/review"
 	"the-valley/flow/internal/stream"
@@ -121,7 +122,7 @@ var preReviewCmd = &cobra.Command{
 		}
 
 		// Run peer review with a different model family than the worker's.
-		authorName := os.Getenv("KLAUS_BACKEND")
+		authorName := flowenv.Backend.Get()
 		if authorName == "" {
 			selected, err := resolveAgentBackend(cmd, cfg)
 			if err != nil {
@@ -195,8 +196,8 @@ var preReviewCmd = &cobra.Command{
 }
 
 // preReviewCheck reports a _pre-review run as a check of the run whose pane
-// it runs in (runIDEnv): check:started when it starts, check:completed when
-// it finishes. On a sandbox host (runEventsEnv) it prints check:completed in
+// it runs in (flowenv.RunID): check:started when it starts, check:completed when
+// it finishes. On a sandbox host (flowenv.RunEvents) it prints check:completed in
 // its output instead, for the pane's _format-stream to record. Outside a
 // run's pane it reports nothing.
 type preReviewCheck struct {
@@ -211,7 +212,7 @@ type preReviewCheck struct {
 func startPreReviewCheck() *preReviewCheck {
 	c := &preReviewCheck{start: time.Now()}
 	c.data = map[string]interface{}{"kind": event.CheckPreReview, "command": "klaus _pre-review", "source": "pre-review", "started_at": eventTime(c.start)}
-	if os.Getenv(runIDEnv) != "" && os.Getenv(runEventsEnv) == runEventsOutput {
+	if flowenv.RunID.Get() != "" && flowenv.RunEvents.Get() == runEventsOutput {
 		c.report = os.Stdout
 		return c
 	}

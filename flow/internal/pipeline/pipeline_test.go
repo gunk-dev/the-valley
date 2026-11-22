@@ -294,9 +294,17 @@ func TestReviewFixPromptsInstructAgentToReplyToComments(t *testing.T) {
 			if !strings.Contains(launchedPrompt, "gh pr comment 42 --body") {
 				t.Errorf("prompt missing conversation comment reply command: %q", launchedPrompt)
 			}
-			// Replies must carry the marker review detection uses to skip them.
-			if !strings.Contains(launchedPrompt, AgentReplyMarker) {
-				t.Errorf("prompt missing agent reply marker: %q", launchedPrompt)
+			// Replies must carry the marker review detection uses to skip
+			// them, the spelling every flow reads.
+			if !strings.Contains(launchedPrompt, AgentReplyMarker+"'") || strings.Contains(launchedPrompt, FlowAgentReplyMarker+"'") {
+				t.Errorf("prompt's reply commands lack the agent reply marker %q: %q", AgentReplyMarker, launchedPrompt)
+			}
+			// It names every spelling review detection reads, so the agent
+			// heeds the comments it was dispatched for.
+			for _, spelling := range []string{AgentReplyMarker, FlowAgentReplyMarker, FixCommand, FlowFixCommand, ActionableMarker, FlowActionableMarker} {
+				if !strings.Contains(launchedPrompt, spelling) {
+					t.Errorf("prompt does not name %q: %q", spelling, launchedPrompt)
+				}
 			}
 			// Must instruct replying to each comment.
 			if !strings.Contains(launchedPrompt, "reply to EACH") {
@@ -2468,6 +2476,42 @@ func TestBudgetPausedEmitsEventOnTransition(t *testing.T) {
 func TestStageLabelBudgetPaused(t *testing.T) {
 	if got := StageLabel(StageBudgetPaused); got != "budget paused, awaiting decision" {
 		t.Errorf("StageLabel(budget_paused) = %q", got)
+	}
+}
+
+func TestBudgetPausedAcceptsBothSpellings(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		labels []string
+	}{
+		{"legacy only", []string{"klaus:budget-paused"}},
+		{"new only", []string{"flow:budget-paused"}},
+		{"both together", []string{"klaus:budget-paused", "flow:budget-paused"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newTestController(t)
+			launchCount := 0
+			c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+				launchCount++
+				return "agent-x", nil
+			})
+			statuses := map[string]*PRStatus{
+				"42": {
+					PRNumber:   "42",
+					State:      "OPEN",
+					CI:         "failing",
+					TargetRepo: "owner/repo",
+					Labels:     tc.labels,
+				},
+			}
+			actions := c.HandleGHStatus(context.Background(), statuses, nil)
+			if launchCount != 0 || len(actions) != 0 {
+				t.Errorf("expected no dispatch/actions for paused PR, got launches=%d actions=%v", launchCount, actions)
+			}
+			if got := c.PipelineStates()["42"].Stage; got != StageBudgetPaused {
+				t.Errorf("stage = %s, want %s", got, StageBudgetPaused)
+			}
+		})
 	}
 }
 

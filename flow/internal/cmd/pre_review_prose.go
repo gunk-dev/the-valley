@@ -11,6 +11,7 @@ import (
 
 	"the-valley/flow/internal/backend"
 	"the-valley/flow/internal/config"
+	"the-valley/flow/internal/flowenv"
 	"the-valley/flow/internal/jobs"
 	"the-valley/flow/internal/prose"
 	"the-valley/flow/internal/run"
@@ -41,7 +42,7 @@ func startProsePass(ctx context.Context, dir, base string, cfg config.Config, au
 func runProsePass(ctx context.Context, w io.Writer, dir, base string, cfg config.Config, pc config.ProseConfig, author backend.Kind, houseRules string) {
 	// A sandbox host has no session to record the pass in.
 	var store *jobs.Store
-	if os.Getenv(runEventsEnv) != runEventsOutput {
+	if flowenv.RunEvents.Get() != runEventsOutput {
 		if s, err := sessionStore(); err == nil {
 			if hds, ok := s.(*run.HomeDirStore); ok {
 				js := jobs.NewStore(hds.BaseDir())
@@ -49,7 +50,7 @@ func runProsePass(ctx context.Context, w io.Writer, dir, base string, cfg config
 			}
 		}
 	}
-	job := &jobs.Job{ID: eventID("prose"), Kind: jobs.KindProse, Dir: dir, Run: os.Getenv(runIDEnv)}
+	job := &jobs.Job{ID: eventID("prose"), Kind: jobs.KindProse, Dir: dir, Run: flowenv.RunID.Get()}
 	r := prose.Run(ctx, prose.Options{
 		Dir: dir, Base: base, Author: author,
 		Order: pc.Order, Patterns: pc.Paths, MaxInput: pc.MaxInputBytes,

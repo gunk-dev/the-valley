@@ -3,6 +3,7 @@ package git
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -1101,6 +1102,79 @@ func CommitChangeID(ctx context.Context, dir, rev string) (string, error) {
 	}
 	first, _, _ := strings.Cut(out, "\n")
 	return strings.TrimSpace(first), nil
+}
+
+// Run-ID provenance trailer keys.
+const (
+	KlausRunTrailer = "Klaus-Run"
+	FlowRunTrailer  = "Flow-Run"
+)
+
+// ErrConflictingRunTrailers is returned when a commit carries both Flow-Run
+// and Klaus-Run trailers that disagree.
+var ErrConflictingRunTrailers = errors.New("conflicting Flow-Run and Klaus-Run trailers")
+
+// CommitRunID returns the run ID trailer of commit rev in dir, reading either
+// Flow-Run or Klaus-Run, or "" when the commit carries neither. When both
+// trailer keys are present they must agree; if they disagree, CommitRunID
+// returns "" and an error wrapping ErrConflictingRunTrailers.
+func CommitRunID(ctx context.Context, dir, rev string) (string, error) {
+	out, err := runGit(ctx, dir, "log", "-1", "--format=%(trailers:key="+FlowRunTrailer+",key="+KlausRunTrailer+",unfold,separator=%x0A)", rev)
+	if err != nil {
+		return "", err
+	}
+	return parseRunIDTrailers(out)
+}
+
+func parseRunIDTrailers(out string) (string, error) {
+	var flowIDs, klausIDs []string
+	var sawFlow, sawKlaus bool
+	appendUnique := func(dst []string, v string) []string {
+		if slices.Contains(dst, v) {
+			return dst
+		}
+		return append(dst, v)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		k, v, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		switch {
+		case strings.EqualFold(k, FlowRunTrailer):
+			sawFlow = true
+			flowIDs = appendUnique(flowIDs, v)
+		case strings.EqualFold(k, KlausRunTrailer):
+			sawKlaus = true
+			klausIDs = appendUnique(klausIDs, v)
+		}
+	}
+	nonEmpty := func(vals []string) string {
+		for _, v := range vals {
+			if v != "" {
+				return v
+			}
+		}
+		return ""
+	}
+	switch {
+	case !sawFlow && !sawKlaus:
+		return "", nil
+	case sawFlow && !sawKlaus:
+		return nonEmpty(flowIDs), nil
+	case sawKlaus && !sawFlow:
+		return nonEmpty(klausIDs), nil
+	case slices.Equal(flowIDs, klausIDs):
+		return nonEmpty(flowIDs), nil
+	default:
+		return "", fmt.Errorf("%w: %s=%s, %s=%s",
+			ErrConflictingRunTrailers,
+			FlowRunTrailer, strings.Join(flowIDs, ","),
+			KlausRunTrailer, strings.Join(klausIDs, ","),
+		)
+	}
 }
 
 // ensureTimeout returns a context with the given default timeout applied if

@@ -8,18 +8,19 @@ import (
 	"the-valley/flow/internal/pipeline"
 )
 
-// isAgentReply reports whether a comment body was posted by a klaus fix agent.
+// isAgentReply reports whether a comment body was posted by a fix agent.
 // Agents run gh as the operator, who is often a trusted reviewer, so the
 // author login can't tell their replies apart; the prompt has them tag each
-// reply with pipeline.AgentReplyMarker instead. Counting those replies would
+// reply with an agent-reply marker instead. Counting those replies would
 // make every agent reply look like fresh trusted feedback and redispatch.
 func isAgentReply(body string) bool {
-	return strings.Contains(body, pipeline.AgentReplyMarker)
+	return pipeline.IsAgentReply(body)
 }
 
 // isOptedIn reports whether a conversation comment explicitly asks for a fix:
-// its first non-blank line is pipeline.FixCommand (optionally followed by
-// text), or some line is exactly pipeline.ActionableMarker. Both must stand on
+// its first non-blank line is a fix directive (/klaus fix or /flow fix,
+// optionally followed by text), or some line is exactly an actionable marker
+// (<!-- klaus-actionable --> or <!-- flow-actionable -->). Both must stand on
 // their own line, so a reply that quotes an opted-in comment ("> /klaus fix")
 // doesn't inherit the opt-in.
 func isOptedIn(body string) bool {
@@ -29,12 +30,12 @@ func isOptedIn(body string) bool {
 		if line == "" {
 			continue
 		}
-		if line == pipeline.ActionableMarker {
+		if pipeline.IsActionableMarker(line) {
 			return true
 		}
 		if first {
 			first = false
-			if rest, ok := strings.CutPrefix(line, pipeline.FixCommand); ok && (rest == "" || rest[0] == ' ' || rest[0] == '\t') {
+			if pipeline.HasFixCommand(line) {
 				return true
 			}
 		}
@@ -101,7 +102,7 @@ func latestTrustedReviewTime(a *github.PRActivity, trustedSet map[string]bool) t
 	var latest time.Time
 	for _, r := range a.Reviews {
 		if !trustedSet[r.Author] {
-			if !strings.Contains(r.Body, pipeline.CrossReviewMarker) || a.Operator == "" || r.Author != a.Operator {
+			if !pipeline.HasCrossReviewMarker(r.Body) || a.Operator == "" || r.Author != a.Operator {
 				continue
 			}
 		}

@@ -24,11 +24,17 @@ type Check struct {
 	IncludesPreReview bool
 }
 
-// ReportPrefix starts a line a klaus command prints to report a check of the
+// ReportPrefix starts a line a flow command prints to report a check of the
 // run it runs in when it can't reach the run's event log, as on a sandbox
 // host: the prefix, then the check:completed event's data as JSON. The line
 // reaches the pane's _format-stream in the tool result of the agent's call.
-const ReportPrefix = "klaus-check-completed: "
+// FlowReportPrefix is the new spelling of ReportPrefix; readers accept both.
+const (
+	ReportPrefix     = "klaus-check-completed: "
+	FlowReportPrefix = "flow-check-completed: "
+)
+
+var reportPrefixes = []string{FlowReportPrefix, ReportPrefix}
 
 // CheckWatcher finds the checks in an agent's stream as it arrives, and times
 // each from the line that calls its command to the line with its result.
@@ -189,23 +195,49 @@ func resultText(raw json.RawMessage) string {
 	return b.String()
 }
 
-// checkReports returns the data of the checks output reports (ReportPrefix).
+// checkReports returns the data of the checks output reports (ReportPrefix or
+// FlowReportPrefix), deduplicating identical reports within one output.
 func checkReports(output string) []map[string]interface{} {
 	var reports []map[string]interface{}
+	seen := map[string]bool{}
 	for _, line := range strings.Split(output, "\n") {
-		i := strings.Index(line, ReportPrefix)
-		if i < 0 {
+		payload, ok := cutReportPrefix(line)
+		if !ok {
 			continue
 		}
 		var data map[string]interface{}
-		if json.Unmarshal([]byte(strings.TrimSpace(line[i+len(ReportPrefix):])), &data) != nil {
+		if json.Unmarshal([]byte(strings.TrimSpace(payload)), &data) != nil {
 			continue
 		}
-		if kind, _ := data["kind"].(string); kind != "" {
-			reports = append(reports, data)
+		if kind, _ := data["kind"].(string); kind == "" {
+			continue
 		}
+		if canon, err := json.Marshal(data); err == nil {
+			key := string(canon)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+		}
+		reports = append(reports, data)
 	}
 	return reports
+}
+
+// cutReportPrefix returns the text after the earliest report prefix on line.
+func cutReportPrefix(line string) (string, bool) {
+	bestIdx := -1
+	bestLen := 0
+	for _, p := range reportPrefixes {
+		if i := strings.Index(line, p); i >= 0 && (bestIdx < 0 || i < bestIdx) {
+			bestIdx = i
+			bestLen = len(p)
+		}
+	}
+	if bestIdx < 0 {
+		return "", false
+	}
+	return line[bestIdx+bestLen:], true
 }
 
 // toolCommand returns the shell command a tool call runs, "" for a call that
@@ -327,13 +359,28 @@ func CheckKind(line string) string {
 	return best
 }
 
-// RunsPreReview reports whether a shell command line runs klaus _pre-review,
-// alone or among other commands.
+// RunsPreReview reports whether a shell command line runs _pre-review under
+// any supported command spelling (klaus _pre-review, valley flow _pre-review,
+// or valley-flow _pre-review), alone or among other commands.
 func RunsPreReview(line string) bool {
 	for _, f := range lineCommands(line) {
-		if len(f) > 1 && (f[0] == "klaus" || strings.HasSuffix(f[0], "/klaus")) && f[1] == "_pre-review" {
+		if isPreReviewCommand(f) {
 			return true
 		}
+	}
+	return false
+}
+
+func isBaseCommand(word, name string) bool {
+	return word == name || strings.HasSuffix(word, "/"+name)
+}
+
+func isPreReviewCommand(f []string) bool {
+	if len(f) > 1 && (isBaseCommand(f[0], "klaus") || isBaseCommand(f[0], "valley-flow")) && f[1] == "_pre-review" {
+		return true
+	}
+	if len(f) > 2 && isBaseCommand(f[0], "valley") && f[1] == "flow" && f[2] == "_pre-review" {
+		return true
 	}
 	return false
 }

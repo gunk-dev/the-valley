@@ -226,8 +226,11 @@ func TestClearBudgetPausedLabel_NoOpWhenAbsent(t *testing.T) {
 	if err := ClearBudgetPausedLabel(context.Background(), r, "/tmp/wt", "owner/repo", "42"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if c := r.findGHCall("pr", "edit", "42", "--remove-label"); c == nil {
-		t.Error("expected gh pr edit --remove-label call")
+	if c := r.findGHCall("pr", "edit", "42", "--remove-label", "klaus:budget-paused"); c == nil {
+		t.Error("expected gh pr edit --remove-label klaus:budget-paused call")
+	}
+	if c := r.findGHCall("pr", "edit", "42", "--remove-label", "flow:budget-paused"); c == nil {
+		t.Error("expected gh pr edit --remove-label flow:budget-paused call")
 	}
 }
 
@@ -239,17 +242,34 @@ func TestClearBudgetPausedLabel_ToleratesNotFound(t *testing.T) {
 	}
 }
 
+func TestClearBudgetPausedLabels(t *testing.T) {
+	r := &recorderRunner{}
+	if err := ClearBudgetPausedLabels(context.Background(), r, "/tmp/wt", "owner/repo", "42", []string{"flow:budget-paused"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c := r.findGHCall("pr", "edit", "42", "--remove-label", "flow:budget-paused"); c == nil {
+		t.Error("expected gh pr edit --remove-label flow:budget-paused call")
+	}
+	if c := r.findGHCall("pr", "edit", "42", "--remove-label", "klaus:budget-paused"); c != nil {
+		t.Errorf("did not expect removal of absent label, got %v", c)
+	}
+}
+
 func TestHasBudgetPausedLabel(t *testing.T) {
 	tests := []struct {
-		name    string
-		output  string
-		want    bool
-		wantErr bool
+		name       string
+		output     string
+		want       bool
+		wantLabels []string
+		wantErr    bool
 	}{
-		{"label present", "klaus:budget-paused\nother\n", true, false},
-		{"label absent", "other\nfoo\n", false, false},
-		{"no labels", "", false, false},
-		{"only the label", "klaus:budget-paused", true, false},
+		{"legacy label present", "klaus:budget-paused\nother\n", true, []string{"klaus:budget-paused"}, false},
+		{"new label present", "flow:budget-paused\nother\n", true, []string{"flow:budget-paused"}, false},
+		{"both labels present", "klaus:budget-paused\nflow:budget-paused\n", true, []string{"klaus:budget-paused", "flow:budget-paused"}, false},
+		{"duplicate label deduplicated", "flow:budget-paused\nflow:budget-paused\n", true, []string{"flow:budget-paused"}, false},
+		{"label absent", "other\nfoo\n", false, nil, false},
+		{"no labels", "", false, nil, false},
+		{"only the label", "klaus:budget-paused", true, []string{"klaus:budget-paused"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -261,6 +281,13 @@ func TestHasBudgetPausedLabel(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Errorf("got %v, want %v", got, tt.want)
+			}
+			labels, err := BudgetPausedLabels(context.Background(), r, "/tmp/wt", "owner/repo", "42")
+			if (err != nil) != tt.wantErr {
+				t.Errorf("BudgetPausedLabels err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if strings.Join(labels, ",") != strings.Join(tt.wantLabels, ",") {
+				t.Errorf("BudgetPausedLabels = %v, want %v", labels, tt.wantLabels)
 			}
 		})
 	}

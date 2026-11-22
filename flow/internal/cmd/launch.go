@@ -14,6 +14,7 @@ import (
 	"the-valley/flow/internal/config"
 	"the-valley/flow/internal/draft"
 	"the-valley/flow/internal/event"
+	"the-valley/flow/internal/flowenv"
 	"the-valley/flow/internal/git"
 	gh "the-valley/flow/internal/github"
 	"the-valley/flow/internal/integration"
@@ -1378,7 +1379,7 @@ func agentPaneCommand(kind backend.Kind, o backend.Options, inputFile, sandboxHo
 	}
 	args := kind.Worker(o)
 	// Propagate worker identity to nested klaus commands such as _pre-review.
-	agentCmd := "KLAUS_BACKEND=" + string(kind) + " " + backend.ShellCommand(args)
+	agentCmd := flowenv.Backend.EnvPrefix(string(kind)) + backend.ShellCommand(args)
 	const selfBin = "klaus" // assumes klaus is in PATH
 	var paneCmd string
 	if sandboxHost != "" {
@@ -1641,8 +1642,8 @@ func buildSandboxPaneCommand(host, worktree, agentCmd, promptFile, logFile, self
 // pane in the window. This is called after RebalanceLayout which may have
 // moved the dashboard out of position.
 func pinDashboardToBottom(ctx context.Context, currentPane string, store run.StateStore, tc tmux.Client) {
-	// Load the session state directly via KLAUS_SESSION_ID
-	sessionID := os.Getenv("KLAUS_SESSION_ID")
+	// Load the session state directly via VALLEY_FLOW_SESSION_ID / KLAUS_SESSION_ID
+	sessionID := sessionIDFromEnv()
 	if sessionID == "" {
 		return
 	}

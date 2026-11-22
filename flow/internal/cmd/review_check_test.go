@@ -323,3 +323,99 @@ func TestHasUnaddressedTrustedComments_OperatorCrossReview(t *testing.T) {
 		})
 	}
 }
+
+func TestReviewCheckAcceptsFlowSpellings(t *testing.T) {
+	t.Run("agent reply exclusion", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			body string
+		}{
+			{"legacy", "done " + pipeline.AgentReplyMarker},
+			{"new", "done " + pipeline.FlowAgentReplyMarker},
+			{"both", "done " + pipeline.AgentReplyMarker + " " + pipeline.FlowAgentReplyMarker},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if !isAgentReply(tc.body) {
+					t.Errorf("isAgentReply(%q) = false, want true", tc.body)
+				}
+				reply := `"` + tc.body + `"`
+				a := activityFixtureWithConversation(t,
+					`[{"id": 200, "user": {"login": "gemini-code-assist[bot]"}, "state": "COMMENTED", "submitted_at": "2026-09-14T12:00:00Z"}]`,
+					`[{"pull_request_review_id": 200, "body": `+reply+`}]`,
+					`[{"user": {"login": "gemini-code-assist[bot]"}, "body": `+reply+`, "created_at": "2026-09-14T12:00:00Z"}]`,
+					`[{"commit": {"committer": {"date": "2026-09-14T11:00:00Z"}}}]`,
+				)
+				if unaddressed(a) {
+					t.Errorf("reply %q must not count as unaddressed", tc.body)
+				}
+			})
+		}
+	})
+
+	t.Run("opt-in directive and actionable marker", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			body string
+			want bool
+		}{
+			{"legacy fix command", "/klaus fix", true},
+			{"new fix command", "/flow fix", true},
+			{"new fix command with text", "/flow fix please rename", true},
+			{"new fix command with tab", "/flow fix\tplease rename", true},
+			{"new fix command after blank lines", "\n  \n/flow fix\n", true},
+			{"new fix command prefix mismatch", "/flow fixable", false},
+			{"new fix command quoted", "> /flow fix please rename", false},
+			{"new fix command not first line", "hello\n/flow fix", false},
+			{"legacy actionable marker", "please fix\n<!-- klaus-actionable -->", true},
+			{"new actionable marker", "please fix\n<!-- flow-actionable -->", true},
+			{"new actionable marker quoted", "> <!-- flow-actionable -->", false},
+			{"both opt-in forms together", "/flow fix\n<!-- klaus-actionable -->\n<!-- flow-actionable -->", true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if got := isOptedIn(tc.body); got != tc.want {
+					t.Errorf("isOptedIn(%q) = %v, want %v", tc.body, got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("operator cross-review with new and combined markers", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			login string
+			body  string
+			want  bool
+		}{
+			{
+				name:  "operator with flow marker",
+				login: "maintainer",
+				body:  `**Cross-model review** by codex\n\n` + pipeline.FlowCrossReviewMarker + ` backend=codex model= sha=abc -->`,
+				want:  true,
+			},
+			{
+				name:  "operator with both markers",
+				login: "maintainer",
+				body:  pipeline.CrossReviewMarker + ` backend=codex model= sha=abc -->\n` + pipeline.FlowCrossReviewMarker + ` backend=codex model= sha=abc -->`,
+				want:  true,
+			},
+			{
+				name:  "drive-by user with flow marker",
+				login: "drive-by-user",
+				body:  pipeline.FlowCrossReviewMarker + ` backend=codex model= sha=abc -->`,
+				want:  false,
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				a := activityFixtureWithAuthor(t, "maintainer",
+					`[{"id": 300, "user": {"login": "`+tc.login+`"}, "state": "COMMENTED", "submitted_at": "2026-09-18T10:00:00Z", "body": "`+tc.body+`"}]`,
+					`[{"pull_request_review_id": 300, "body": "nil deref"}]`,
+					`[]`,
+					`[{"commit": {"committer": {"date": "2026-09-18T09:00:00Z"}}}]`,
+				)
+				if got := unaddressed(a); got != tc.want {
+					t.Errorf("unaddressed = %v, want %v", got, tc.want)
+				}
+			})
+		}
+	})
+}

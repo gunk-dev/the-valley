@@ -15,6 +15,7 @@ import (
 	"the-valley/flow/internal/backend"
 	"the-valley/flow/internal/config"
 	"the-valley/flow/internal/event"
+	"the-valley/flow/internal/flowenv"
 	"the-valley/flow/internal/git"
 	"the-valley/flow/internal/nix"
 	"the-valley/flow/internal/project"
@@ -388,8 +389,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	// Launch dashboard in a bottom pane before starting the coordinator.
 	var dashPane string
 	if currentPane != "" {
-		dashCmd := fmt.Sprintf("KLAUS_SESSION_ID=%s klaus dashboard", id)
-		paneID, err := tmuxClient.SplitWindowSized(ctx, currentPane, worktree, dashCmd, "-v", "30%")
+		paneID, err := tmuxClient.SplitWindowSized(ctx, currentPane, worktree, dashboardPaneCommand(id), "-v", "30%")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not open dashboard pane: %v\n", err)
 		} else {
@@ -442,7 +442,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	coordinator.Stdin = os.Stdin
 	coordinator.Stdout = os.Stdout
 	coordinator.Stderr = os.Stderr
-	coordinator.Env = append(os.Environ(), sessionIDEnv+"="+id, "KLAUS_BACKEND="+string(kind), "KLAUS_AGENT_BACKEND="+string(workerKind))
+	coordinator.Env = coordinatorEnv(os.Environ(), id, kind, workerKind)
 	coordinatorErr := coordinator.Run()
 	if kind == backend.Agy {
 		if sid := backend.AgyConversationID(worktree); sid != "" {
@@ -559,4 +559,18 @@ func init() {
 	sessionCmd.Flags().String("resume", "", "Resume a specific session by ID")
 	rootCmd.AddCommand(sessionCmd)
 	rootCmd.AddCommand(newSessionCmd)
+}
+
+// dashboardPaneCommand runs the dashboard of session id in a pane.
+func dashboardPaneCommand(id string) string {
+	return flowenv.SessionID.EnvPrefix(id) + "klaus dashboard"
+}
+
+// coordinatorEnv is the environment a session's coordinator starts with:
+// environ, with the session's ID, the coordinator's backend and the
+// session's default worker backend.
+func coordinatorEnv(environ []string, id string, kind, workerKind backend.Kind) []string {
+	env := flowenv.SessionID.Set(environ, id)
+	env = flowenv.Backend.Set(env, string(kind))
+	return flowenv.AgentBackend.Set(env, string(workerKind))
 }

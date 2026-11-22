@@ -1,11 +1,11 @@
 package cmd
 
 import (
-	"os"
 	"path/filepath"
 
 	"the-valley/flow/internal/backend"
 	"the-valley/flow/internal/config"
+	"the-valley/flow/internal/flowenv"
 	"the-valley/flow/internal/run"
 	"github.com/spf13/cobra"
 )
@@ -16,13 +16,13 @@ func resolveAgentBackend(cmd *cobra.Command, cfg config.Config) (backend.Kind, e
 		// Read saved session state so dashboard dispatch works even when its tmux
 		// pane did not inherit the coordinator process's environment.
 		if store, err := sessionStore(); err == nil {
-			if s, err := store.Load(os.Getenv(sessionIDEnv)); err == nil && s != nil {
+			if s, err := store.Load(sessionIDFromEnv()); err == nil && s != nil {
 				name = s.AgentBackend
 			}
 		}
 	}
 	if name == "" {
-		name = os.Getenv("KLAUS_AGENT_BACKEND")
+		name = flowenv.AgentBackend.Get()
 	}
 	if name == "" {
 		name = cfg.DefaultAgentBackend

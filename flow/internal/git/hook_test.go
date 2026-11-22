@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -397,5 +398,81 @@ func TestCommitChangeID(t *testing.T) {
 	commitFile(t, wt, "a.txt", "add a")
 	if id, err := CommitChangeID(ctx, wt, "HEAD"); err != nil || id != testChangeID {
 		t.Errorf("CommitChangeID = %q, %v; want %s", id, err, testChangeID)
+	}
+}
+
+func TestCommitRunID(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name        string
+		msg         string
+		wantID      string
+		wantErrIs   error
+		wantErrSub  []string
+	}{
+		{
+			name:   "no run trailer",
+			msg:    "plain commit",
+			wantID: "",
+		},
+		{
+			name:   "legacy Klaus-Run only",
+			msg:    "add a\n\nKlaus-Run: " + testRunA,
+			wantID: testRunA,
+		},
+		{
+			name:   "new Flow-Run only",
+			msg:    "add b\n\nFlow-Run: " + testRunA,
+			wantID: testRunA,
+		},
+		{
+			name:   "case-insensitive keys",
+			msg:    "add c\n\nflow-run: " + testRunA,
+			wantID: testRunA,
+		},
+		{
+			name:   "both present and agreeing",
+			msg:    "add d\n\nKlaus-Run: " + testRunA + "\nFlow-Run: " + testRunA,
+			wantID: testRunA,
+		},
+		{
+			name:       "both present and disagreeing yields none with error",
+			msg:        "add e\n\nKlaus-Run: " + testRunA + "\nFlow-Run: " + testRunB,
+			wantID:     "",
+			wantErrIs:  ErrConflictingRunTrailers,
+			wantErrSub: []string{testRunA, testRunB},
+		},
+		{
+			name:       "empty Flow-Run with nonempty Klaus-Run disagrees",
+			msg:        "add f\n\nKlaus-Run: " + testRunA + "\nFlow-Run:",
+			wantID:     "",
+			wantErrIs:  ErrConflictingRunTrailers,
+			wantErrSub: []string{testRunA},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clone := testClone(t)
+			wt := addWorktree(t, clone, "run-id-test")
+			commitFile(t, wt, "f.txt", tc.msg)
+
+			got, err := CommitRunID(ctx, wt, "HEAD")
+			if tc.wantErrIs != nil {
+				if !errors.Is(err, tc.wantErrIs) {
+					t.Fatalf("err = %v, want errors.Is(_, %v)", err, tc.wantErrIs)
+				}
+				for _, sub := range tc.wantErrSub {
+					if !strings.Contains(err.Error(), sub) {
+						t.Errorf("err %q missing %q", err.Error(), sub)
+					}
+				}
+			} else if err != nil {
+				t.Fatalf("CommitRunID error: %v", err)
+			}
+			if got != tc.wantID {
+				t.Errorf("CommitRunID = %q, want %q", got, tc.wantID)
+			}
+		})
 	}
 }

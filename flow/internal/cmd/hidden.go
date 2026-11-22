@@ -46,7 +46,7 @@ var formatStreamCmd = &cobra.Command{
 
 // streamCheckEvents returns a watcher that emits check:started and
 // check:completed for the checks in the stream of the run whose pane this
-// is (runIDEnv), or nil outside one, and a flush for the end of the stream.
+// is (flowenv.RunID), or nil outside one, and a flush for the end of the stream.
 // Those are the stream's build, test and lint commands, and the _pre-review
 // checks a sandbox run's _pre-review reports in its output (a sandbox run
 // says so with sandbox). Launch saves the run's state just after its pane
@@ -655,9 +655,9 @@ func isBudgetExhausted(state *run.State, resultSubtype string) bool {
 	return draft.BudgetExhausted(*state.CostUSD, cap)
 }
 
-// clearLabelIfResumed removes the klaus:budget-paused label if it was set
-// on the run's PR, and emits agent:resumed so the dashboard reflects the
-// pause being resolved. Called only on successful (non-paused) finalize.
+// clearLabelIfResumed removes any budget-paused label spellings present on the
+// run's PR, and emits agent:resumed once so the dashboard reflects the pause
+// being resolved. Called only on successful (non-paused) finalize.
 func clearLabelIfResumed(ctx context.Context, baseDir string, state *run.State) {
 	if state.PR == nil || *state.PR == "" {
 		return
@@ -671,11 +671,11 @@ func clearLabelIfResumed(ctx context.Context, baseDir string, state *run.State) 
 		workdir = *state.CloneDir
 	}
 
-	had, err := draft.HasBudgetPausedLabel(ctx, budgetPauseRunner, workdir, repo, *state.PR)
-	if err != nil || !had {
+	labels, err := draft.BudgetPausedLabels(ctx, budgetPauseRunner, workdir, repo, *state.PR)
+	if err != nil || len(labels) == 0 {
 		return
 	}
-	if err := draft.ClearBudgetPausedLabel(ctx, budgetPauseRunner, workdir, repo, *state.PR); err != nil {
+	if err := draft.ClearBudgetPausedLabels(ctx, budgetPauseRunner, workdir, repo, *state.PR, labels); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: clearing budget-paused label: %v\n", err)
 		return
 	}
@@ -929,7 +929,7 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 			state.ResolvedModel = ev.Model
 		}
 		switch ev.Type {
-		case "klaus_exit":
+		case "klaus_exit", "flow_exit":
 			// Claude structured results distinguish a limit stop from a crash.
 			// Preserve that classification even when the process exits nonzero.
 			if isClaudeRun(state) && sawResult {

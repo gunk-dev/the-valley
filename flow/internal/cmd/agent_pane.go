@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"the-valley/flow/internal/config"
+	"the-valley/flow/internal/flowenv"
 	"the-valley/flow/internal/run"
 	"the-valley/flow/internal/tmux"
 )
@@ -23,7 +24,7 @@ import (
 // session. Tests must never let a real tmux client see this name; use a fake
 // tmux client and t.Setenv(sessionIDEnv, ...) to pin it.
 func agentsSessionName() string {
-	id := os.Getenv(sessionIDEnv)
+	id := sessionIDFromEnv()
 	if id == "" {
 		return "klaus-agents"
 	}
@@ -31,13 +32,10 @@ func agentsSessionName() string {
 	return "klaus-agents-" + strings.NewReplacer(".", "-", ":", "-").Replace(id)
 }
 
-// scratchEnv names a local worker's scratch directory.
-const scratchEnv = "KLAUS_SCRATCH"
-
 // workerDirs are a local worker's own directories, which launch creates.
 type workerDirs struct {
 	tmux    string // TMUX_TMPDIR (workerTmuxDir)
-	scratch string // KLAUS_SCRATCH (workerScratchDir)
+	scratch string // flowenv.Scratch (workerScratchDir)
 }
 
 // workerTmuxDir is the TMUX_TMPDIR a run's worker gets: the run's own, beside
@@ -55,20 +53,21 @@ func workerScratchDir(store run.StateStore, runID string) string {
 }
 
 // workerEnv starts a local worker cut off from the tmux server its pane runs
-// in, with dirs.scratch as KLAUS_SCRATCH. In a pane $TMUX names that server
-// and overrides TMUX_TMPDIR, so a worker's `TMUX_TMPDIR=<test dir> tmux
-// kill-server` once killed the shared server: the operator's session, the
-// coordinator and every agent's pane. The worker gets no $TMUX or $TMUX_PANE,
-// and dirs.tmux as TMUX_TMPDIR, so a bare tmux there finds no server. klaus
-// commands the worker runs (_pre-review, status, logs) reach the shared
-// server through tmux.SocketEnv instead. _finalize, budget pause included,
-// runs after the worker in the pane's own shell and keeps the pane's $TMUX.
+// in, with dirs.scratch as its scratch directory (flowenv.Scratch). In a pane
+// $TMUX names that server and overrides TMUX_TMPDIR, so a worker's
+// `TMUX_TMPDIR=<test dir> tmux kill-server` once killed the shared server: the
+// operator's session, the coordinator and every agent's pane. The worker gets
+// no $TMUX or $TMUX_PANE, and dirs.tmux as TMUX_TMPDIR, so a bare tmux there
+// finds no server. klaus commands the worker runs (_pre-review, status, logs)
+// reach the shared server through flowenv.TmuxSocket instead, which holds the
+// socket flow found or nothing. _finalize, budget pause included, runs after
+// the worker in the pane's own shell and keeps the pane's $TMUX.
 func workerEnv(dirs workerDirs) string {
-	env := "env -u TMUX -u TMUX_PANE TMUX_TMPDIR=" + shellQuote(dirs.tmux) + " " + scratchEnv + "=" + shellQuote(dirs.scratch)
+	env := "env -u TMUX -u TMUX_PANE TMUX_TMPDIR=" + shellQuote(dirs.tmux) + " " + flowenv.Scratch.EnvPrefix(dirs.scratch)
 	if sock := tmux.SocketPath(); sock != "" {
-		env += " " + tmux.SocketEnv + "=" + shellQuote(sock)
+		return env + flowenv.TmuxSocket.EnvPrefix(sock)
 	}
-	return env + " "
+	return env + flowenv.TmuxSocket.UnsetPrefix()
 }
 
 // startAgentPane creates the tmux pane an agent runs in and applies the

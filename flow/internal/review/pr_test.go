@@ -97,11 +97,25 @@ func TestBuildPRReviewInlinesOnlyDiffLines(t *testing.T) {
 
 func TestParseMarker(t *testing.T) {
 	m := Marker{Backend: "agy", Model: "gemini-3-pro", SHA: "d139283"}
+	flowMarker := fmt.Sprintf("%s backend=%s model=%s sha=%s -->", FlowCrossReviewMarker, m.Backend, m.Model, m.SHA)
+
 	if got, ok := ParseMarker("verdict\n\n" + m.String() + "\n"); !ok || got != m {
-		t.Errorf("round trip = %+v, %v; want %+v", got, ok, m)
+		t.Errorf("legacy round trip = %+v, %v; want %+v", got, ok, m)
+	}
+	if got, ok := ParseMarker("verdict\n\n" + flowMarker + "\n"); !ok || got != m {
+		t.Errorf("new round trip = %+v, %v; want %+v", got, ok, m)
+	}
+	if got, ok := ParseMarker(m.String() + "\n" + flowMarker); !ok || got != m {
+		t.Errorf("both markers = %+v, %v; want %+v", got, ok, m)
+	}
+	if !HasCrossReviewMarker(m.String()) || !HasCrossReviewMarker(flowMarker) || HasCrossReviewMarker("LGTM") {
+		t.Error("HasCrossReviewMarker must accept both spellings and reject plain text")
 	}
 	if _, ok := ParseMarker("plain review " + CrossReviewMarker); ok {
-		t.Error("unterminated marker must not parse")
+		t.Error("unterminated legacy marker must not parse")
+	}
+	if _, ok := ParseMarker("plain review " + FlowCrossReviewMarker); ok {
+		t.Error("unterminated new marker must not parse")
 	}
 	if _, ok := ParseMarker("LGTM"); ok {
 		t.Error("body without marker must not parse")
@@ -177,15 +191,20 @@ func postOpts(t *testing.T) PROptions {
 
 func TestRunPRReview(t *testing.T) {
 	other := Marker{Backend: "codex", SHA: "0000000"}.String()
+	flowOther := fmt.Sprintf("%s backend=codex model= sha=0000000 -->", FlowCrossReviewMarker)
+	flowSameHead := fmt.Sprintf("%s backend=codex model= sha=%s -->", FlowCrossReviewMarker, fakeSHA)
 	tests := []struct {
 		name    string
 		reviews []string
 		wantErr error
 	}{
 		{name: "posts one COMMENT review", reviews: []string{"LGTM", other}},
-		{name: "ignores markers copied by other users", reviews: []string{other, "drive-by:" + other, "drive-by:" + Marker{Backend: "codex", SHA: fakeSHA}.String()}},
+		{name: "review carrying both markers counts once", reviews: []string{other + "\n" + flowOther}},
+		{name: "ignores markers copied by other users", reviews: []string{other, "drive-by:" + other, "drive-by:" + Marker{Backend: "codex", SHA: fakeSHA}.String(), "drive-by:" + flowSameHead}},
 		{name: "same backend already reviewed head", reviews: []string{Marker{Backend: "codex", SHA: fakeSHA}.String()}, wantErr: ErrAlreadyReviewed},
+		{name: "same backend already reviewed head (flow marker)", reviews: []string{flowSameHead}, wantErr: ErrAlreadyReviewed},
 		{name: "round limit", reviews: []string{other, Marker{Backend: "agy", SHA: "1111111"}.String()}, wantErr: ErrMaxRounds},
+		{name: "round limit across both marker spellings", reviews: []string{other, fmt.Sprintf("%s backend=agy model= sha=1111111 -->", FlowCrossReviewMarker)}, wantErr: ErrMaxRounds},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

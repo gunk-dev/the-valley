@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"the-valley/flow/internal/flowenv"
 )
 
 func TestBuildArgsSplitWindow(t *testing.T) {
@@ -187,7 +189,7 @@ func privateServer(t *testing.T, session string) (sock, tmuxEnv string) {
 	return sock, sock + "," + ctl("display-message", "-p", "#{pid}") + ",0"
 }
 
-// A worker runs with no $TMUX and the shared server's socket in SocketEnv, and
+// A worker runs with no $TMUX and the shared server's socket in flowenv.TmuxSocket.Legacy, and
 // klaus's own calls there reach that server. In a pane $TMUX wins, so a
 // process in a test's private server never trades it for a socket it
 // inherited.
@@ -197,12 +199,12 @@ func TestCallsReachTheServerTheyAreGiven(t *testing.T) {
 	private, privateEnv := privateServer(t, "private")
 
 	t.Setenv("TMUX", "")
-	t.Setenv(SocketEnv, shared)
+	t.Setenv(flowenv.TmuxSocket.Legacy, shared)
 	if got := SocketPath(); got != shared {
-		t.Errorf("SocketPath() = %q without $TMUX, want %s's %q", got, SocketEnv, shared)
+		t.Errorf("SocketPath() = %q without $TMUX, want %s's %q", got, flowenv.TmuxSocket.Legacy, shared)
 	}
 	if !SessionExists(ctx, "shared") {
-		t.Errorf("without $TMUX, a call did not reach the server in %s", SocketEnv)
+		t.Errorf("without $TMUX, a call did not reach the server in %s", flowenv.TmuxSocket.Legacy)
 	}
 
 	t.Setenv("TMUX", privateEnv)
@@ -210,7 +212,7 @@ func TestCallsReachTheServerTheyAreGiven(t *testing.T) {
 		t.Errorf("SocketPath() = %q in a pane, want $TMUX's %q", got, private)
 	}
 	if !SessionExists(ctx, "private") || SessionExists(ctx, "shared") {
-		t.Errorf("in a pane, a call left $TMUX's server for the one in %s", SocketEnv)
+		t.Errorf("in a pane, a call left $TMUX's server for the one in %s", flowenv.TmuxSocket.Legacy)
 	}
 }
 
@@ -242,4 +244,73 @@ func TestTruncateBytesKeepsRunesWhole(t *testing.T) {
 	if got != "a… [truncated 12 bytes]" {
 		t.Fatalf("got %q", got)
 	}
+}
+
+func TestSocketEnvPrecedence(t *testing.T) {
+	unset := func(t *testing.T) {
+		t.Helper()
+		for _, k := range []string{"TMUX", flowenv.TmuxSocket.New, flowenv.TmuxSocket.Legacy} {
+			t.Setenv(k, "")
+			_ = os.Unsetenv(k)
+		}
+	}
+
+	t.Run("legacy only", func(t *testing.T) {
+		unset(t)
+		t.Setenv(flowenv.TmuxSocket.Legacy, "/tmp/old.sock")
+		if got := SocketPath(); got != "/tmp/old.sock" {
+			t.Errorf("SocketPath() = %q, want /tmp/old.sock", got)
+		}
+		if got := serverArgs(); !reflect.DeepEqual(got, []string{"-S", "/tmp/old.sock"}) {
+			t.Errorf("serverArgs() = %v, want [-S /tmp/old.sock]", got)
+		}
+	})
+
+	t.Run("new only", func(t *testing.T) {
+		unset(t)
+		t.Setenv(flowenv.TmuxSocket.New, "/tmp/new.sock")
+		if got := SocketPath(); got != "/tmp/new.sock" {
+			t.Errorf("SocketPath() = %q, want /tmp/new.sock", got)
+		}
+		if got := serverArgs(); !reflect.DeepEqual(got, []string{"-S", "/tmp/new.sock"}) {
+			t.Errorf("serverArgs() = %v, want [-S /tmp/new.sock]", got)
+		}
+	})
+
+	t.Run("both set prefers new", func(t *testing.T) {
+		unset(t)
+		t.Setenv(flowenv.TmuxSocket.Legacy, "/tmp/old.sock")
+		t.Setenv(flowenv.TmuxSocket.New, "/tmp/new.sock")
+		if got := SocketPath(); got != "/tmp/new.sock" {
+			t.Errorf("SocketPath() = %q, want /tmp/new.sock", got)
+		}
+		if got := serverArgs(); !reflect.DeepEqual(got, []string{"-S", "/tmp/new.sock"}) {
+			t.Errorf("serverArgs() = %v, want [-S /tmp/new.sock]", got)
+		}
+	})
+
+	t.Run("new empty overrides legacy", func(t *testing.T) {
+		unset(t)
+		t.Setenv(flowenv.TmuxSocket.Legacy, "/tmp/old.sock")
+		t.Setenv(flowenv.TmuxSocket.New, "")
+		if got := SocketPath(); got != "" {
+			t.Errorf("SocketPath() = %q, want empty", got)
+		}
+		if got := serverArgs(); got != nil {
+			t.Errorf("serverArgs() = %v, want nil", got)
+		}
+	})
+
+	t.Run("TMUX beats both socket variables", func(t *testing.T) {
+		unset(t)
+		t.Setenv("TMUX", "/tmp/real.sock,123,0")
+		t.Setenv(flowenv.TmuxSocket.Legacy, "/tmp/old.sock")
+		t.Setenv(flowenv.TmuxSocket.New, "/tmp/new.sock")
+		if got := SocketPath(); got != "/tmp/real.sock" {
+			t.Errorf("SocketPath() = %q, want /tmp/real.sock", got)
+		}
+		if got := serverArgs(); got != nil {
+			t.Errorf("serverArgs() = %v, want nil", got)
+		}
+	})
 }

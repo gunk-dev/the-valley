@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"the-valley/flow/internal/flowenv"
 	"the-valley/flow/internal/run"
-	"the-valley/flow/internal/tmux"
 )
 
 // killServerWorker is the fake worker with, once released, what one ran on
@@ -24,7 +24,7 @@ import (
 // runs tmux where every TMUX_TMPDIR it uses exists.
 func (h *Harness) killServerWorker() string {
 	return strings.Replace(h.claudeStubScript(), `cat "$dir/claude.output.jsonl"`,
-		`printf '%s\n' "TMUX=${TMUX-unset}" "TMUX_PANE=${TMUX_PANE-unset}" "TMUX_TMPDIR=${TMUX_TMPDIR-unset}" "`+tmux.SocketEnv+`=${`+tmux.SocketEnv+`-unset}" > "$dir/worker.env"
+		`printf '%s\n' "TMUX=${TMUX-unset}" "TMUX_PANE=${TMUX_PANE-unset}" "TMUX_TMPDIR=${TMUX_TMPDIR-unset}" "`+flowenv.TmuxSocket.Legacy+`=${`+flowenv.TmuxSocket.Legacy+`-unset}" > "$dir/worker.env"
 mkdir -p -m 700 "$dir/x"
 if [ -z "${TMUX-}" ] && [ ! -d "${TMUX_TMPDIR-}" ]; then
   echo "not running tmux: TMUX_TMPDIR ${TMUX_TMPDIR-} is missing, so tmux would use /tmp" > "$dir/worker.tmux"
@@ -82,7 +82,7 @@ func TestWorkerCannotKillTheSharedServer(t *testing.T) {
 
 			tmuxDir := filepath.Join(h.Home, ".klaus", "sessions", h.SessionID, "tmux", st.ID)
 			env := read("worker.env")
-			for _, want := range []string{"TMUX=unset", "TMUX_PANE=unset", "TMUX_TMPDIR=" + tmuxDir, tmux.SocketEnv + "=" + h.Sock} {
+			for _, want := range []string{"TMUX=unset", "TMUX_PANE=unset", "TMUX_TMPDIR=" + tmuxDir, flowenv.TmuxSocket.Legacy + "=" + h.Sock} {
 				if !strings.Contains(env, want+"\n") {
 					t.Errorf("worker environment lacks %q:\n%s", want, env)
 				}

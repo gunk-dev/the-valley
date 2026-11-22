@@ -13,7 +13,24 @@ import (
 )
 
 // CrossReviewMarker opens the hidden line tagging a posted cross-review; re-exported as pipeline.CrossReviewMarker.
-const CrossReviewMarker = "<!-- klaus-cross-review"
+// FlowCrossReviewMarker is the new spelling; readers accept both.
+const (
+	CrossReviewMarker     = "<!-- klaus-cross-review"
+	FlowCrossReviewMarker = "<!-- flow-cross-review"
+)
+
+var crossReviewMarkers = []string{FlowCrossReviewMarker, CrossReviewMarker}
+
+// HasCrossReviewMarker reports whether body carries either spelling of the
+// cross-review marker.
+func HasCrossReviewMarker(body string) bool {
+	for _, prefix := range crossReviewMarkers {
+		if strings.Contains(body, prefix) {
+			return true
+		}
+	}
+	return false
+}
 
 const (
 	defaultMaxRounds = 2
@@ -33,12 +50,21 @@ func (m Marker) String() string {
 	return fmt.Sprintf("%s backend=%s model=%s sha=%s -->", CrossReviewMarker, m.Backend, m.Model, m.SHA)
 }
 
-// ParseMarker reads the first cross-review marker in body.
+// ParseMarker reads the first cross-review marker in body, accepting either
+// spelling.
 func ParseMarker(body string) (Marker, bool) {
-	_, rest, ok := strings.Cut(body, CrossReviewMarker)
-	if !ok {
+	bestIdx := -1
+	bestLen := 0
+	for _, prefix := range crossReviewMarkers {
+		if i := strings.Index(body, prefix); i >= 0 && (bestIdx < 0 || i < bestIdx) {
+			bestIdx = i
+			bestLen = len(prefix)
+		}
+	}
+	if bestIdx < 0 {
 		return Marker{}, false
 	}
+	rest := body[bestIdx+bestLen:]
 	fields, _, ok := strings.Cut(rest, "-->")
 	if !ok {
 		return Marker{}, false

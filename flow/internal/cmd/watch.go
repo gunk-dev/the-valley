@@ -270,7 +270,7 @@ func runWatch(cmd *cobra.Command, args []string) error {
 
 	sessionID := sessionOverride
 	if sessionID == "" {
-		sessionID = os.Getenv(sessionIDEnv)
+		sessionID = sessionIDFromEnv()
 	}
 	if sessionID == "" {
 		return fmt.Errorf("valley flow watch must be run inside a flow session (KLAUS_SESSION_ID is not set; use --session-id to override)")

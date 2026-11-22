@@ -78,7 +78,7 @@ fi
 repo="$(git rev-parse --show-toplevel)"
 commit="$(git -C "$repo" rev-parse --verify "$rev^{commit}")"
 system="$(nix eval --impure --raw --expr builtins.currentSystem)"
-work="$(mktemp -d "${KLAUS_SCRATCH:-${TMPDIR:-/tmp}}/drv-churn.XXXXXX")"
+work="$(mktemp -d "${VALLEY_FLOW_SCRATCH:-${KLAUS_SCRATCH:-${TMPDIR:-/tmp}}}/drv-churn.XXXXXX")"
 trap 'chmod -R u+w "$work" 2>/dev/null; rm -rf "$work"' EXIT
 
 base="$work/base"

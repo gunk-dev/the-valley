@@ -2,34 +2,35 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
+	"the-valley/flow/internal/flowenv"
 	"the-valley/flow/internal/run"
 )
 
-// sessionIDEnv names the klaus session a process belongs to. Agent panes
-// export it (see tmuxSessionEnvPrefix), so every process an agent starts in
-// its worktree inherits it — including `go test`. Anything that turns this
-// value into a tmux target (agentsSessionName) must therefore never be handed
-// a real tmux client from a test; see docs/development.md.
-const sessionIDEnv = "KLAUS_SESSION_ID"
+// sessionIDFromEnv returns the current session ID from VALLEY_FLOW_SESSION_ID
+// or KLAUS_SESSION_ID.
+func sessionIDFromEnv() string { return flowenv.SessionID.Get() }
 
-// tmuxSessionEnvPrefix returns a shell snippet that exports KLAUS_SESSION_ID
+// tmuxSessionEnvPrefix returns a shell snippet that exports the session ID
 // for use in tmux pane commands. Tmux panes start fresh shells that don't
 // inherit the caller's environment, so any env vars they need must be
-// explicitly exported in the command string.
+// explicitly exported in the command string. Every process an agent starts in
+// its worktree inherits the ID, `go test` included, so anything that turns it
+// into a tmux target (agentsSessionName) must never be handed a real tmux
+// client from a test; see docs/development.md.
 func tmuxSessionEnvPrefix() string {
-	sessionID := os.Getenv(sessionIDEnv)
+	sessionID := sessionIDFromEnv()
 	if sessionID == "" {
 		return ""
 	}
-	return fmt.Sprintf("export %s=%s; ", sessionIDEnv, shellQuote(sessionID))
+	return flowenv.SessionID.Export(sessionID)
 }
 
-// sessionStore returns a HomeDirStore for the current session (from KLAUS_SESSION_ID env var).
-// This is the canonical way to get the store for the active session.
+// sessionStore returns a HomeDirStore for the current session (from
+// VALLEY_FLOW_SESSION_ID or KLAUS_SESSION_ID). This is the canonical way to get
+// the store for the active session.
 func sessionStore() (run.StateStore, error) {
-	sessionID := os.Getenv(sessionIDEnv)
+	sessionID := sessionIDFromEnv()
 	if sessionID == "" {
 		// Fall back to most recent session
 		sessionsDir, err := run.SessionsDir()

@@ -9,40 +9,40 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"the-valley/flow/internal/flowenv"
 )
 
 // defaultTimeout is the timeout for tmux commands. These are local IPC calls
 // to the tmux server and should complete almost instantly.
 const defaultTimeout = 5 * time.Second
 
-// SocketEnv holds the shared server's socket path for a process klaus starts
-// with $TMUX removed: a worker, and everything it runs. klaus's own tmux calls
-// there reach the server with -S; tmux itself never reads it, so a worker's
-// bare `tmux kill-server` misses the server every agent's pane is on.
-const SocketEnv = "KLAUS_TMUX_SOCKET"
-
 // InSession returns true if we're currently inside a tmux session.
 func InSession() bool {
 	return os.Getenv("TMUX") != ""
 }
 
-// SocketPath is the socket of the server klaus's tmux calls reach: the one
+// SocketPath is the socket of the server flow's tmux calls reach: the one
 // $TMUX names, cut at the first comma as tmux reads it, or else the one in
-// SocketEnv. "" means tmux's default.
+// VALLEY_FLOW_TMUX_SOCKET / KLAUS_TMUX_SOCKET. "" means tmux's default. The
+// socket variable holds the shared server's socket for a process klaus starts
+// with $TMUX removed: a worker, and everything it runs. klaus's own tmux calls
+// there reach the server with -S; tmux itself never reads it, so a worker's
+// bare `tmux kill-server` misses the server every agent's pane is on.
 func SocketPath() string {
 	if t := os.Getenv("TMUX"); t != "" {
 		path, _, _ := strings.Cut(t, ",")
 		return path
 	}
-	return os.Getenv(SocketEnv)
+	return flowenv.TmuxSocket.Get()
 }
 
 // serverArgs aims a tmux call at SocketPath. $TMUX wins: a process in a pane
 // belongs to that pane's server (a test's private one, say), whatever
-// SocketEnv it inherited, and tmux finds that server on its own.
+// socket variable it inherited, and tmux finds that server on its own.
 func serverArgs() []string {
 	if os.Getenv("TMUX") == "" {
-		if sock := os.Getenv(SocketEnv); sock != "" {
+		if sock := flowenv.TmuxSocket.Get(); sock != "" {
 			return []string{"-S", sock}
 		}
 	}

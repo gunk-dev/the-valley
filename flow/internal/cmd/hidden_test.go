@@ -465,7 +465,8 @@ func TestFinalizeFromLog(t *testing.T) {
 	}{
 		{name: "session limit success with is_error"},
 		{name: "session limit clears earlier failure", prefix: `{"type":"result","subtype":"error_during_execution","is_error":true}` + "\n"},
-		{name: "session limit survives nonzero exit", suffix: "\n" + `{"type":"klaus_exit","exit_code":1}`},
+		{name: "session limit survives nonzero klaus_exit", suffix: "\n" + `{"type":"klaus_exit","exit_code":1}`},
+		{name: "session limit survives nonzero flow_exit", suffix: "\n" + `{"type":"flow_exit","exit_code":1}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			const sessionID = "79dcfb08-4de4-45f4-b7db-056bccbc3a00"

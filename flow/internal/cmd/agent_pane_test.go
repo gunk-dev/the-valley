@@ -9,26 +9,35 @@ import (
 	"testing"
 
 	"the-valley/flow/internal/backend"
+	"the-valley/flow/internal/flowenv"
 	"the-valley/flow/internal/run"
-	"the-valley/flow/internal/tmux"
 )
 
 // A local worker of every backend runs cut off from its pane's tmux server: no
 // $TMUX or $TMUX_PANE, a TMUX_TMPDIR of its own, and the server's socket only
-// in tmux.SocketEnv, for klaus. It gets its scratch directory as
-// KLAUS_SCRATCH. _finalize runs after it in the pane's shell and keeps $TMUX.
-// Runs the real pane command with stand-in binaries; nothing here runs tmux.
+// in socketEnv, for klaus. It gets its scratch directory as
+// KLAUS_SCRATCH. A new spelling of these the pane inherits, which readers
+// would prefer, is gone. _finalize runs after it in the pane's shell and keeps
+// $TMUX. Runs the real pane command with stand-in binaries; nothing here runs
+// tmux.
 func TestWorkerRunsOutOfTmuxReach(t *testing.T) {
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "shared.sock")
 	paneTMUX := sock + ",4242,0"
 	t.Setenv("TMUX", paneTMUX)
 	t.Setenv("TMUX_PANE", "%7")
-	t.Setenv(tmux.SocketEnv, "")
+	t.Setenv(socketEnv, "")
 	t.Setenv(sessionIDEnv, "")
+	stale := []flowenv.Var{flowenv.TmuxSocket, flowenv.Scratch, flowenv.Backend, flowenv.RunID}
+	for _, v := range stale {
+		t.Setenv(v.New, filepath.Join(dir, "stale"))
+	}
 
 	finalized := filepath.Join(dir, "finalize.tmux")
-	report := `printf '%s\n' "TMUX=${TMUX-unset}" "TMUX_PANE=${TMUX_PANE-unset}" "TMUX_TMPDIR=${TMUX_TMPDIR-unset}" "` + tmux.SocketEnv + `=${` + tmux.SocketEnv + `-unset}" "KLAUS_BACKEND=${KLAUS_BACKEND-unset}" "` + scratchEnv + `=${` + scratchEnv + `-unset}"`
+	report := `printf '%s\n' "TMUX=${TMUX-unset}" "TMUX_PANE=${TMUX_PANE-unset}" "TMUX_TMPDIR=${TMUX_TMPDIR-unset}" "` + socketEnv + `=${` + socketEnv + `-unset}" "KLAUS_BACKEND=${KLAUS_BACKEND-unset}" "` + scratchEnv + `=${` + scratchEnv + `-unset}" "` + runIDEnv + `=${` + runIDEnv + `-unset}"`
+	for _, v := range stale {
+		report += ` "` + v.New + `=${` + v.New + `-unset}"`
+	}
 	stubs := map[string]string{
 		"klaus": "#!/bin/sh\ncase \"$1\" in\n_format-stream) cat ;;\n_finalize) printf '%s' \"${TMUX-unset}\" > " + shellQuote(finalized) + " ;;\nesac\n",
 	}
@@ -63,7 +72,11 @@ func TestWorkerRunsOutOfTmuxReach(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%v: %s", err, out)
 			}
-			for _, want := range []string{"TMUX=unset", "TMUX_PANE=unset", "TMUX_TMPDIR=" + dirs.tmux, tmux.SocketEnv + "=" + sock, "KLAUS_BACKEND=" + string(kind), scratchEnv + "=" + dirs.scratch} {
+			wants := []string{"TMUX=unset", "TMUX_PANE=unset", "TMUX_TMPDIR=" + dirs.tmux, socketEnv + "=" + sock, "KLAUS_BACKEND=" + string(kind), scratchEnv + "=" + dirs.scratch, runIDEnv + "=r"}
+			for _, v := range stale {
+				wants = append(wants, v.New+"=unset")
+			}
+			for _, want := range wants {
 				if !strings.Contains(string(out), want+"\n") {
 					t.Errorf("worker environment lacks %q:\n%s", want, out)
 				}

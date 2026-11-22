@@ -114,7 +114,7 @@ func DefaultCleanupDeps(tc tmux.Client) CleanupDeps {
 func defaultIsRunActive(state *run.State, tc tmux.Client) bool {
 	ctx := context.Background()
 	if state.Type == "session" {
-		if sid := os.Getenv(sessionIDEnv); sid != "" && state.ID == sid {
+		if sid := sessionIDFromEnv(); sid != "" && state.ID == sid {
 			return true
 		}
 	}

@@ -186,9 +186,18 @@ const (
 )
 
 // BudgetPausedLabel is the GitHub label applied to PRs whose agents have
-// paused due to budget exhaustion. Klaus uses the label as the persistence
+// paused due to budget exhaustion. Flow uses the label as the persistence
 // signal for the paused state; the draft PR + label is the canonical record.
-const BudgetPausedLabel = "klaus:budget-paused"
+const (
+	BudgetPausedLabel     = "klaus:budget-paused"
+	FlowBudgetPausedLabel = "flow:budget-paused"
+)
+
+// IsBudgetPausedLabel reports whether label is either accepted spelling of the
+// budget-paused label.
+func IsBudgetPausedLabel(label string) bool {
+	return label == BudgetPausedLabel || label == FlowBudgetPausedLabel
+}
 
 // New creates an Event with the current timestamp.
 func New(runID, eventType string, data map[string]interface{}) Event {

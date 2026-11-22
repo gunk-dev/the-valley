@@ -204,13 +204,14 @@ instead; when it cannot be resumed the agent starts fresh rather than replaying 
 | Budget, budget pause, `--replay` | yes                      | refused                          | refused                   |
 | Shared coordinator memory        | `~/.klaus/memory`        | the CLI's own                    | the CLI's own             |
 
-Worker backend precedence: `--backend`, the session's saved worker default, `KLAUS_AGENT_BACKEND`,
-`default_agent_backend`, then `claude`. Model and effort: the flag, else `backends.<kind>`, else for
-Claude only `default_agent_model`/`default_agent_effort`; a `backends.<kind>` entry replaces the
-legacy defaults even with empty fields, and with nothing set the CLI's own default applies. Model
-names pass through unchanged. Claude efforts are `low`, `medium`, `high`, `xhigh`, `max`. Workers
-run with each CLI's permission bypass; agy runs with a 24-hour print timeout. `valley flow status`
-shows the model the worker reported, else the one launched with, else `(default model)`.
+Worker backend precedence: `--backend`, the session's saved worker default,
+`VALLEY_FLOW_AGENT_BACKEND` (or `KLAUS_AGENT_BACKEND`), `default_agent_backend`, then `claude`.
+Model and effort: the flag, else `backends.<kind>`, else for Claude only
+`default_agent_model`/`default_agent_effort`; a `backends.<kind>` entry replaces the legacy defaults
+even with empty fields, and with nothing set the CLI's own default applies. Model names pass through
+unchanged. Claude efforts are `low`, `medium`, `high`, `xhigh`, `max`. Workers run with each CLI's
+permission bypass; agy runs with a 24-hour print timeout. `valley flow status` shows the model the
+worker reported, else the one launched with, else `(default model)`.
 
 ### valley flow status
 
@@ -387,7 +388,7 @@ through the formatter. `--replay` re-formats the saved JSONL log; `--raw` prints
 | `--seen <digest>`     | With `--queue`: the digest on the last `--queue` watch's `next:` line                     |
 | `--json`              | Raw JSONL lines                                                                           |
 | `--list-types`        | Print live and reserved types and the default filter                                      |
-| `--session-id <id>`   | Override `KLAUS_SESSION_ID`                                                               |
+| `--session-id <id>`   | Override `VALLEY_FLOW_SESSION_ID` / `KLAUS_SESSION_ID`                                    |
 
 `--after` is a byte offset into `events.jsonl` at the start of a line. The `next:` line repeats the
 other flags given, for example `next: valley flow watch --once --after 18342`; with `--json` it is
@@ -442,19 +443,19 @@ finished over 7 days ago are removed when a job starts.
 
 `valley flow consult [flags] ("<question>" | --prompt-file PATH)`.
 
-| Flag                  | Meaning                                                                                      |
-| --------------------- | -------------------------------------------------------------------------------------------- |
-| `--backend <kind>`    | Model family (default: first installed in `consult.order` other than `KLAUS_BACKEND`)        |
-| `--model`, `--effort` | Default `backends.<kind>`                                                                    |
-| `--role <r>`          | `partner`, `critic`, `reviewer` or a verbatim system prompt (default `consult.default_role`) |
-| `--thread NAME`       | Continue a named conversation in the current or most recent session                          |
-| `--dir <path>`        | Workspace, read as it stands (default: current directory or the thread's)                    |
-| `--repo NAME`         | A registered project, as a snapshot of origin's default branch                               |
-| `--file <path>`       | Inline a file (repeatable, 200 KB total)                                                     |
-| `--prompt-file`       | Read the question from a file                                                                |
-| `--timeout <d>`       | Deadline per backend call (default `10m`)                                                    |
-| `--panel`             | Ask every installed family other than the caller, concurrently                               |
-| `--list`              | List threads with backend, successful turns and last use                                     |
+| Flag                  | Meaning                                                                                                       |
+| --------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `--backend <kind>`    | Model family (default: first installed in `consult.order` other than `VALLEY_FLOW_BACKEND` / `KLAUS_BACKEND`) |
+| `--model`, `--effort` | Default `backends.<kind>`                                                                                     |
+| `--role <r>`          | `partner`, `critic`, `reviewer` or a verbatim system prompt (default `consult.default_role`)                  |
+| `--thread NAME`       | Continue a named conversation in the current or most recent session                                           |
+| `--dir <path>`        | Workspace, read as it stands (default: current directory or the thread's)                                     |
+| `--repo NAME`         | A registered project, as a snapshot of origin's default branch                                                |
+| `--file <path>`       | Inline a file (repeatable, 200 KB total)                                                                      |
+| `--prompt-file`       | Read the question from a file                                                                                 |
+| `--timeout <d>`       | Deadline per backend call (default `10m`)                                                                     |
+| `--panel`             | Ask every installed family other than the caller, concurrently                                                |
+| `--list`              | List threads with backend, successful turns and last use                                                      |
 
 `--dir`/`--repo`, `--panel`/`--thread` and `--panel`/`--backend` are exclusive. Paths resolve from
 the invoking directory; each attachment sits under a header with its path (for agy, between BEGIN
@@ -503,12 +504,14 @@ The reviewer sees only `gh pr diff`, the title and the description, with consult
 returns findings and a verdict on whether the change matches its stated intent. A posted review has
 event `COMMENT`, never `APPROVE` or `REQUEST_CHANGES`: findings on diff lines become inline
 comments, the rest go in the body, which ends with
-`<!-- klaus-cross-review backend=<kind> model=<model> sha=<head-sha> -->`. Posting is refused when
-the same reviewer already reviewed the head commit, or when `cross_review.max_rounds` marker reviews
-from your gh account exist; both checks, and a check that the head has not moved, run again just
-before posting. `locks/review-<owner>-<repo>-<n>.lock` makes a concurrent `--post` in the session
-fail at once. In a session it emits `review:started`/`review:completed` and leaves a job record;
-SIGINT and SIGTERM end it as `interrupted`.
+`<!-- klaus-cross-review backend=<kind> model=<model> sha=<head-sha> -->`. Reading reviews accepts
+both `<!-- klaus-cross-review ... -->` and `<!-- flow-cross-review ... -->`, counting each review
+once. Posting is refused when the same reviewer already reviewed the head commit, or when
+`cross_review.max_rounds` marker reviews from your gh account exist; both checks, and a check that
+the head has not moved, run again just before posting. `locks/review-<owner>-<repo>-<n>.lock` makes
+a concurrent `--post` in the session fail at once. In a session it emits
+`review:started`/`review:completed` and leaves a job record; SIGINT and SIGTERM end it as
+`interrupted`.
 
 ### valley flow approve, valley flow merge
 
@@ -751,10 +754,10 @@ it.
 
 **`trusted_reviewers`.** Inline review comments and conversation comments both count; a comment
 stops counting once a newer commit is pushed, and an edit counts as new. A conversation comment by
-the work's author counts only if its first non-blank line is `/klaus fix` or it holds
-`<!-- klaus-actionable -->` on a line of its own; quoted lines do not count. Agent replies carry
-`<!-- klaus-agent-reply -->` and are ignored. A review carrying the cross-review marker counts as
-trusted when its author is the authenticated gh user.
+the work's author counts only with `/klaus fix` or `/flow fix` as its first non-blank line, or with
+`<!-- klaus-actionable -->` or `<!-- flow-actionable -->` on its own line. Quoted lines do not
+count. Flow ignores replies marked `<!-- klaus-agent-reply -->` or `<!-- flow-agent-reply -->`.
+Either cross-review marker makes a review trusted when it comes from the authenticated gh user.
 
 ### Prompts and house rules
 
@@ -811,18 +814,23 @@ Files equal to or under an `allow_paths` entry are skipped. The report lists `fi
 
 ## Environment variables
 
-| Variable              | Set by                | Meaning                                                                                           |
-| --------------------- | --------------------- | ------------------------------------------------------------------------------------------------- |
-| `KLAUS_SESSION_ID`    | session, agent panes  | The session; without it, commands use the most recent session                                     |
-| `KLAUS_BACKEND`       | session, launch       | The running agent's backend: consults pick another family; `_pre-review` takes it as the author's |
-| `KLAUS_AGENT_BACKEND` | session               | The session's worker backend default                                                              |
-| `KLAUS_RUN_ID`        | launch                | The run, in the agent's pane (and on a sandbox host)                                              |
-| `KLAUS_RUN_EVENTS`    | launch, sandbox runs  | `output`: `_pre-review` prints its check as a stream line                                         |
-| `KLAUS_SCRATCH`       | launch, local workers | The run's scratch directory                                                                       |
-| `KLAUS_TMUX_SOCKET`   | launch, local workers | The real tmux server's socket, for flow's own commands                                            |
-| `TMUX_TMPDIR`         | launch, local workers | The run's own empty tmux directory; `TMUX`, `TMUX_PANE` unset                                     |
-| `XDG_STATE_HOME`      | user                  | Self-update's lock and state go in `$XDG_STATE_HOME/klaus` (default `~/.local/state/klaus`)       |
-| `CODEX_HOME`          | user                  | Codex authentication, also for consults                                                           |
+| Variable                                           | Set by                | Meaning                                                                                           |
+| -------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------- |
+| `VALLEY_FLOW_SESSION_ID`, `KLAUS_SESSION_ID`       | session, agent panes  | The session; without it, commands use the most recent session                                     |
+| `VALLEY_FLOW_BACKEND`, `KLAUS_BACKEND`             | session, launch       | The running agent's backend: consults pick another family; `_pre-review` takes it as the author's |
+| `VALLEY_FLOW_AGENT_BACKEND`, `KLAUS_AGENT_BACKEND` | session               | The session's worker backend default                                                              |
+| `VALLEY_FLOW_RUN_ID`, `KLAUS_RUN_ID`               | launch                | The run, in the agent's pane (and on a sandbox host)                                              |
+| `VALLEY_FLOW_RUN_EVENTS`, `KLAUS_RUN_EVENTS`       | launch, sandbox runs  | `output`: `_pre-review` prints its check as a stream line                                         |
+| `VALLEY_FLOW_SCRATCH`, `KLAUS_SCRATCH`             | launch, local workers | The run's scratch directory                                                                       |
+| `VALLEY_FLOW_TMUX_SOCKET`, `KLAUS_TMUX_SOCKET`     | launch, local workers | The real tmux server's socket, for flow's own commands                                            |
+| `TMUX_TMPDIR`                                      | launch, local workers | The run's own empty tmux directory; `TMUX`, `TMUX_PANE` unset                                     |
+| `XDG_STATE_HOME`                                   | user                  | Self-update's lock and state go in `$XDG_STATE_HOME/klaus` (default `~/.local/state/klaus`)       |
+| `CODEX_HOME`                                       | user                  | Codex authentication, also for consults                                                           |
+
+Flow exports the `KLAUS_*` names, and removes the `VALLEY_FLOW_*` name of each variable it sets so
+an inherited value cannot override it. When reading a paired variable, it uses `VALLEY_FLOW_*` if
+set, even if empty, and falls back to `KLAUS_*` only if unset. A nonempty `TMUX` overrides both
+socket variables.
 
 ## Files and state
 
@@ -907,8 +915,10 @@ Klaus-Run: <run id>
 ```
 
 `Change-Id` is in jj's change-id form (32 characters from `k` to `z`); `Klaus-Run` leads to the run
-and its prompt, log, cost and trajectory. They label commits for finding and auditing; they grant
-nothing, and no tool may trust a commit or skip a check because of them.
+and its prompt, log, cost and trajectory. Reading a commit's run ID accepts either `Flow-Run:` or
+`Klaus-Run:`; when both are present they must agree, or the commit is treated as carrying none. They
+label commits for finding and auditing; they grant nothing, and no tool may trust a commit or skip a
+check because of them.
 
 Launch installs, for the agent's worktree only (`core.hooksPath` set with `git config --worktree`,
 enabling `extensions.worktreeConfig` once on the clone):
@@ -932,13 +942,14 @@ Finalize's own salvage and budget-pause commits skip hooks and add the trailers 
 anything else `push`; a `--pr` fix is always `pr`. A `push` run never records GitHub work, whatever
 URLs its log holds.
 
-Finalize parses the log for cost, duration, session ID and, for `pr` runs, the URL; checks the
-clone's shared git files against the launch snapshot (a difference beyond `git push -u` tracking
-emits `agent:shared-git-changed` and marks the run needing attention); records processes still
-running in the worktree as `failure_reason` (`background work still running (<commands>)`), read
-from `/proc` or, where `/proc` is absent (as on macOS), from `ps` and `lsof`; stores the run on the
-data ref; and removes the worktree and scratch directory. It deletes the local branch only when its
-work is on the default branch or origin's live tip (`git ls-remote`) matches.
+Finalize parses the log for cost, duration, session ID, exit status (`klaus_exit` or `flow_exit`
+events) and, for `pr` runs, the URL; checks the clone's shared git files against the launch snapshot
+(a difference beyond `git push -u` tracking emits `agent:shared-git-changed` and marks the run
+needing attention); records processes still running in the worktree as `failure_reason`
+(`background work still running (<commands>)`), read from `/proc` or, where `/proc` is absent (as on
+macOS), from `ps` and `lsof`; stores the run on the data ref; and removes the worktree and scratch
+directory. It deletes the local branch only when its work is on the default branch or origin's live
+tip (`git ls-remote`) matches.
 
 **Pushed branches.** A clean run whose branch is on origin records `pushed_branch` and `pushed_sha`
 and emits `agent:completed` and `agent:branch-pushed` (`repo`, `branch`, `sha`); the local branch is
@@ -968,9 +979,9 @@ commits beyond the default branch and no background work finishes as `agent:comp
 
 **Budget pause.** A Claude run stopped at its budget gets `WIP from klaus run <id> (budget paused)`,
 a `--force-with-lease` push, a draft opened or updated with the label `klaus:budget-paused` and a
-one-line comment, and cleanup. The label is the persisted state; a follow-up's finalize removes it
-and emits `agent:resumed`. Claude's structured result is authoritative when the CLI exits non-zero
-at its budget or turn limit.
+one-line comment, and cleanup. Either `klaus:budget-paused` or `flow:budget-paused` records the
+pause. When a follow-up clears the labels at finalize, it emits one `agent:resumed` event. Claude's
+structured result takes precedence over a nonzero exit at the budget or turn limit.
 
 ## Valley delivery
 
@@ -1143,8 +1154,10 @@ finalize; `finalize` up to killing the pane. `check:*` carry `kind` (`pre-review
 `review_ms`, `findings`, `blocking`, `lint_failed`. `_format-stream` times the build, test and lint
 commands it recognises in the stream (`go test`, `go vet`, `cargo build`, `npm test`,
 `make <target>`, `nix build`, `nix flake check`, ...); a command line that also runs
-`klaus _pre-review` is marked `includes_pre_review`. On a sandbox host `_pre-review` prints
-`klaus-check-completed: {...}` and the pane's `_format-stream` records it (`via: stream`).
+`klaus _pre-review`, `valley flow _pre-review`, or `valley-flow _pre-review` gets
+`includes_pre_review`. On a sandbox host, `_pre-review` prints `klaus-check-completed: {...}`. The
+pane's formatter accepts that prefix and `flow-check-completed:` and records the report with
+`via: stream`.
 
 ## Sandbox hosts
 

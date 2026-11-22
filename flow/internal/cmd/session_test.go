@@ -5,21 +5,54 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"the-valley/flow/internal/backend"
+	"the-valley/flow/internal/flowenv"
 	"the-valley/flow/internal/run"
 )
 
-func TestDashboardPaneCommand(t *testing.T) {
-	// Verify the dashboard command format matches what session.go constructs
-	sessionID := "session-abc123"
-	got := fmt.Sprintf("KLAUS_SESSION_ID=%s klaus dashboard", sessionID)
-	want := "KLAUS_SESSION_ID=session-abc123 klaus dashboard"
-	if got != want {
-		t.Errorf("dashboard command = %q, want %q", got, want)
-	}
+// A session's dashboard pane and coordinator get the session's ID, though
+// they inherit another session's under the new spelling, which readers
+// prefer.
+func TestSessionChildrenGetTheirSessionID(t *testing.T) {
+	t.Run("dashboard pane", func(t *testing.T) {
+		dir := t.TempDir()
+		stub := "#!/bin/sh\nprintf '%s %s %s' \"${" + flowenv.SessionID.New + "-unset}\" \"${" + sessionIDEnv + "-unset}\" \"$*\"\n"
+		if err := os.WriteFile(filepath.Join(dir, "klaus"), []byte(stub), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+		t.Setenv(flowenv.SessionID.New, "session-a")
+		out, err := exec.Command("sh", "-c", dashboardPaneCommand("session-b")).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		if want := "unset session-b dashboard"; string(out) != want {
+			t.Errorf("dashboard saw %q, want %q", out, want)
+		}
+	})
+
+	t.Run("coordinator", func(t *testing.T) {
+		environ := []string{"PATH=/bin", flowenv.SessionID.New + "=session-a", sessionIDEnv + "=session-a", flowenv.Backend.New + "=codex", flowenv.AgentBackend.New + "=codex"}
+		env := map[string]string{}
+		for _, kv := range coordinatorEnv(environ, "session-b", backend.Claude, backend.Agy) {
+			k, v, _ := strings.Cut(kv, "=")
+			if _, dup := env[k]; dup {
+				t.Errorf("coordinator environment sets %s twice", k)
+			}
+			env[k] = v
+		}
+		want := map[string]string{"PATH": "/bin", sessionIDEnv: "session-b", flowenv.Backend.Legacy: "claude", flowenv.AgentBackend.Legacy: "agy"}
+		if !reflect.DeepEqual(env, want) {
+			t.Errorf("coordinator environment = %v, want %v", env, want)
+		}
+	})
 }
 
 func TestNewSessionCmdRegistered(t *testing.T) {

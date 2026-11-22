@@ -497,3 +497,81 @@ func TestFinalizeClearsBudgetPausedLabel(t *testing.T) {
 		t.Error("should not run pause flow on a successful completion")
 	}
 }
+
+func TestClearLabelIfResumed_BothSpellings(t *testing.T) {
+	tests := []struct {
+		name        string
+		viewOut     string
+		wantRemoved []string
+		wantAbsent  []string
+		wantResumed int
+	}{
+		{
+			name:        "legacy label only",
+			viewOut:     "klaus:budget-paused\n",
+			wantRemoved: []string{"klaus:budget-paused"},
+			wantAbsent:  []string{"flow:budget-paused"},
+			wantResumed: 1,
+		},
+		{
+			name:        "new label only",
+			viewOut:     "flow:budget-paused\n",
+			wantRemoved: []string{"flow:budget-paused"},
+			wantAbsent:  []string{"klaus:budget-paused"},
+			wantResumed: 1,
+		},
+		{
+			name:        "both labels present clears both and emits agent:resumed once",
+			viewOut:     "klaus:budget-paused\nflow:budget-paused\n",
+			wantRemoved: []string{"klaus:budget-paused", "flow:budget-paused"},
+			wantResumed: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			baseDir := t.TempDir()
+			prNum := "200"
+			prURL := "https://github.com/owner/repo/pull/200"
+			targetRepo := "owner/repo"
+			state := &run.State{
+				ID:         "20260529-1729-runzz",
+				PR:         &prNum,
+				PRURL:      &prURL,
+				TargetRepo: &targetRepo,
+				Worktree:   baseDir,
+			}
+
+			r := &fakeRunner{
+				ghStubs: []ghStub{
+					{match: []string{"pr", "view", "200", "--repo", "owner/repo", "--json", "labels"}, out: tt.viewOut},
+					{match: []string{"pr", "edit", "200", "--repo", "owner/repo", "--remove-label"}, out: ""},
+				},
+			}
+			prev := budgetPauseRunner
+			budgetPauseRunner = r
+			defer func() { budgetPauseRunner = prev }()
+
+			clearLabelIfResumed(context.Background(), baseDir, state)
+
+			for _, lbl := range tt.wantRemoved {
+				if r.findCall("pr", "edit", "200", "--repo", "owner/repo", "--remove-label", lbl) == nil {
+					t.Errorf("expected removal of label %q, calls = %v", lbl, r.ghCalls)
+				}
+			}
+			for _, lbl := range tt.wantAbsent {
+				if r.findCall("pr", "edit", "200", "--repo", "owner/repo", "--remove-label", lbl) != nil {
+					t.Errorf("did not expect removal of absent label %q, calls = %v", lbl, r.ghCalls)
+				}
+			}
+
+			data, err := os.ReadFile(filepath.Join(baseDir, "events.jsonl"))
+			if err != nil {
+				t.Fatalf("reading events.jsonl: %v", err)
+			}
+			if got := strings.Count(string(data), `"`+event.AgentResumed+`"`); got != tt.wantResumed {
+				t.Errorf("agent:resumed event count = %d, want %d\nevents:\n%s", got, tt.wantResumed, data)
+			}
+		})
+	}
+}

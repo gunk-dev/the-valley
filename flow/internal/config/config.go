@@ -215,12 +215,11 @@ func (s *SelfUpdateConfig) BranchName() string {
 
 // PreReviewConfig configures the pre-PR review checks.
 type PreReviewConfig struct {
-	Enabled      *bool        `json:"enabled,omitempty"`        // default: true
-	Linters      []string     `json:"linters,omitempty"`        // default: auto-detect from project
-	ReviewModel  string       `json:"review_model,omitempty"`   // default: "haiku"
-	MaxFixRounds int          `json:"max_fix_rounds,omitempty"` // default: 2
-	BlockOn      string       `json:"block_on,omitempty"`       // default: "high" (block PR on high+ findings)
-	Prose        *ProseConfig `json:"prose,omitempty"`
+	Enabled     *bool        `json:"enabled,omitempty"`      // default: true
+	Linters     []string     `json:"linters,omitempty"`      // default: auto-detect from project
+	ReviewModel string       `json:"review_model,omitempty"` // default: "haiku"
+	BlockOn     string       `json:"block_on,omitempty"`     // default: "high" (block PR on high+ findings)
+	Prose       *ProseConfig `json:"prose,omitempty"`
 }
 
 // ProseConfig configures _pre-review's prose pass.
@@ -389,14 +388,6 @@ func (c *Config) PreReviewModel() string {
 		return "haiku"
 	}
 	return c.PreReview.ReviewModel
-}
-
-// PreReviewMaxFixRounds returns the max fix rounds, or 2 by default.
-func (c *Config) PreReviewMaxFixRounds() int {
-	if c.PreReview == nil || c.PreReview.MaxFixRounds == 0 {
-		return 2
-	}
-	return c.PreReview.MaxFixRounds
 }
 
 // PreReviewBlockOn returns the minimum severity to block on, or "high" by default.
@@ -674,13 +665,14 @@ End your turn with a short report under these headings, so it can become the cha
 `
 
 // deliveryTemplate is the Delivery section of a run's system prompt: the
-// push and continuation instructions that depend on the run, appended after
-// whatever template rendered, so a repository's own .klaus/prompt.md gets
-// them too.
+// push and continuation instructions that depend on the run — plus the
+// default follow-up scope rule when continuing an existing change or PR —
+// appended after whatever template rendered, so a repository's own
+// .klaus/prompt.md or .klaus/pr-fix-prompt.md gets them too.
 const deliveryTemplate = `## Delivery
-{{- if not .Change}}
-{{if .DirectPush}}Deliver by pushing your branch: ` + "`git push -u origin HEAD`" + `. Do not create a PR.{{else}}Deliver by pushing your branch (` + "`git push -u origin HEAD`" + `) and opening a PR from it.{{end}}
-{{- else}}
+{{- if .PR}}
+You are continuing PR #{{.PR}} on branch {{.Branch}}, which already holds the earlier work. Commit on top of it and push to the same branch (` + "`git push`" + `). Do not create a new PR or branch.
+{{- else if .Change}}
 You are continuing an existing change, {{.Change}}. This worktree is on its branch, {{.Branch}}, which already holds the earlier work.
 {{- if and .Valley .Head}}
 The valley lands a change as one commit carrying its head commit's message. Amend the change's head commit with your work (` + "`git commit --amend`" + `), or end with a commit whose message describes the whole change. Either way, keep the head message accurate for the whole change, not just this round.
@@ -692,12 +684,45 @@ After a push of your own, lease on the head you pushed instead. The valley keeps
 {{- else}}
 Commit on top of it and push fast-forward to the same branch {{if .DirectPush}}(` + "`git push origin HEAD`" + `){{else}}and open the PR from it{{end}}. Do not create a new branch. Do not rebase, amend pushed commits or force-push.
 {{- end}}
+{{- else}}
+{{if .DirectPush}}Deliver by pushing your branch: ` + "`git push -u origin HEAD`" + `. Do not create a PR.{{else}}Deliver by pushing your branch (` + "`git push -u origin HEAD`" + `) and opening a PR from it.{{end}}
+{{- end}}
+{{- if or .Change .PR}}
+
+## Follow-up scope
+Unless the brief says otherwise, keep this round bounded:
+- Limit edits to the items in the brief, their tests, and sentences those changes make untrue.
+- Keep the round proportionate: if closing an item needs new mechanism rather than a local change, stop on that item, close the others, and report the choice and its cost before building it.
+- Run one ` + "`klaus _pre-review`" + ` pass on the final head; act on critical and high findings within scope, and list the rest in your final report.
+- In your final report, state for each item in the brief whether it is closed and where, and give the round's size (files and lines against the starting head{{if .Head}}, ` + "`git diff --stat {{shellarg .Head}} HEAD`" + `{{end}}).
 {{- end}}
 `
 
-// RenderDelivery renders the Delivery section for a run's vars.
+// RenderDelivery renders the Delivery section (and follow-up scope when
+// continuing a change or PR) for a run's vars.
 func RenderDelivery(vars PromptVars) (string, error) {
 	return renderTemplate(deliveryTemplate, vars)
+}
+
+// RenderWorkerPrompt assembles a worker's full system prompt: the repository's
+// .klaus/pr-fix-prompt.md (when PR is set) or .klaus/prompt.md (or the
+// built-in default), followed by RenderDelivery and WorkerRules.
+func RenderWorkerPrompt(repoRoot string, vars PromptVars) (string, error) {
+	var prompt string
+	var err error
+	if vars.PR != "" {
+		prompt, err = RenderPRFixPrompt(repoRoot, vars)
+	} else {
+		prompt, err = RenderPrompt(repoRoot, vars)
+	}
+	if err != nil {
+		return "", err
+	}
+	delivery, err := RenderDelivery(vars)
+	if err != nil {
+		return "", err
+	}
+	return WithWorkerRules(strings.TrimRight(prompt, "\n") + "\n\n" + delivery), nil
 }
 
 // WithWorkerRules appends WorkerRules to a worker system prompt.

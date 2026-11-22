@@ -628,7 +628,6 @@ repository's value is ignored) and `self_update`. Finalize reads `ready_at_final
 | `pre_review.enabled`                                | `true`                                   | Run linters and peer review                                   |
 | `pre_review.linters`                                | detected                                 | Linter commands                                               |
 | `pre_review.review_model`                           | `haiku`                                  | Claude reviewer model                                         |
-| `pre_review.max_fix_rounds`                         | `2`                                      | Review fix rounds                                             |
 | `pre_review.block_on`                               | `high`                                   | Lowest finding severity that blocks                           |
 | `pre_review.prose.enabled`                          | `true`                                   | Run the prose pass                                            |
 | `pre_review.prose.order`                            | `agy`, `codex`, `claude`                 | Writer preference                                             |
@@ -686,12 +685,21 @@ coordinator's and `.klaus/pr-fix-prompt.md` the fix agents'. They are Go templat
 | `{{.RepoName}}`   | the repository's name                                                            |
 | `{{.Reviewer}}`   | the login to request review from; empty when none, and for direct push           |
 | `{{.DirectPush}}` | true when origin is not on github.com                                            |
+| `{{.Head}}`       | the commit the worktree starts at when continuing a change or GitHub work        |
 | `{{.PR}}`         | (fix prompt) the number of the work being fixed <!-- prose-allow: vocabulary --> |
 
-flow appends its worker rules to every worker prompt: the run ends with the agent's turn, so long
-builds run in the foreground; the test guidance; scratch output stays out of the worktree; a broken
-environment is reported, not worked around; work whose cost is out of proportion stops and reports
-what it taught; and the final report has the headings Intent, Decisions, Shape, What the
+flow appends a delivery section and its worker rules after `.klaus/prompt.md` and
+`.klaus/pr-fix-prompt.md`, so custom templates receive both. Delivery states how the run delivers
+(push, GitHub work, or valley amend-and-lease). For follow-ups on an existing change or GitHub work
+(`--change`, `--pr`, or `--resume-from` on a pushed branch), it adds a default scope rule that the
+brief can override: limit edits to the brief's items, their tests, and sentences those edits make
+untrue; stop and report the choice and cost before introducing new mechanism; run one `_pre-review`
+pass on the final head, acting on in-scope critical and high findings and listing the rest; and
+report each item's status and the round's diff stat against `{{.Head}}`. Worker rules cover the
+mechanics shared across repositories: the run ends with the agent's turn, so long builds run in the
+foreground; scratch output stays out of the worktree; `_pre-review` prose rewrites are applied
+unless they change meaning; a broken environment is reported, not worked around; processes are
+killed only by PID; and the final report has the headings Intent, Decisions, Shape, What the
 implementation taught us, Checks, Diff summary.
 
 `house_rules` (`{"repo": "<registered project>", "path": "guidance/house-rules.md"}`) is read at

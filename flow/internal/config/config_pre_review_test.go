@@ -2,6 +2,8 @@ package config
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -69,17 +71,33 @@ func TestPreReviewBlockOn_configured(t *testing.T) {
 	}
 }
 
-func TestPreReviewMaxFixRounds_defaults(t *testing.T) {
-	cfg := Defaults()
-	if got := cfg.PreReviewMaxFixRounds(); got != 2 {
-		t.Errorf("PreReviewMaxFixRounds() = %d, want %d", got, 2)
+// TestLoadIgnoresUnknownPreReviewKey loads host and repository configs that
+// carry pre_review.max_fix_rounds, a key flow does not read: both load,
+// and the pre_review settings beside it apply.
+func TestLoadIgnoresUnknownPreReviewKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repo := t.TempDir()
+	for dir, data := range map[string]string{
+		home: `{"pre_review": {"max_fix_rounds": 3, "review_model": "sonnet"}}`,
+		repo: `{"pre_review": {"max_fix_rounds": 0, "review_model": "sonnet", "block_on": "critical"}}`,
+	} {
+		if err := os.MkdirAll(filepath.Join(dir, ".klaus"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ".klaus", "config.json"), []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-}
-
-func TestPreReviewMaxFixRounds_configured(t *testing.T) {
-	cfg := Config{PreReview: &PreReviewConfig{MaxFixRounds: 5}}
-	if got := cfg.PreReviewMaxFixRounds(); got != 5 {
-		t.Errorf("PreReviewMaxFixRounds() = %d, want %d", got, 5)
+	cfg, err := Load(repo)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.PreReviewModel(); got != "sonnet" {
+		t.Errorf("PreReviewModel() = %q, want sonnet", got)
+	}
+	if got := cfg.PreReviewBlockOn(); got != "critical" {
+		t.Errorf("PreReviewBlockOn() = %q, want critical", got)
 	}
 }
 

@@ -16,10 +16,9 @@ import (
 
 // ReviewConfig configures the peer review agent.
 type ReviewConfig struct {
-	Backend      string
-	Model        string // e.g. "haiku" — passed to claude CLI --model flag
-	MaxFixRounds int    // default 2
-	HouseRules   string // the operator's house rules, added to the reviewer's context
+	Backend    string
+	Model      string // e.g. "haiku" — passed to claude CLI --model flag
+	HouseRules string // the operator's house rules, added to the reviewer's context
 }
 
 // Finding represents a single review finding.

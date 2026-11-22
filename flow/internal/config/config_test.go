@@ -299,10 +299,11 @@ func TestRenderPromptFromFileReadError(t *testing.T) {
 }
 
 // TestEveryWorkerGetsTheRules renders each kind of worker prompt as launch
-// does, with WorkerRules appended. The mechanics (build rule, process rule,
-// final report's headings) reach every kind, custom template included, and
-// the taste rules are not among them; only a valley change's run is told to
-// keep the change's head message true to the whole change.
+// does (RenderWorkerPrompt). The mechanics (build rule, process rule, final
+// report's headings) reach every kind, custom templates included, and the
+// taste rules are not among them; only a valley change's run is told to keep
+// the change's head message true to the whole change; and only a follow-up on
+// an existing change or PR gets the default follow-up scope rule.
 func TestEveryWorkerGetsTheRules(t *testing.T) {
 	shared := []string{
 		"Never kill processes by a broad pattern",
@@ -317,6 +318,15 @@ func TestEveryWorkerGetsTheRules(t *testing.T) {
 		"keep the head message accurate for the whole change",
 		"Push to the same branch with a lease on the head this run started from",
 	}
+	followUpScope := []string{
+		"## Follow-up scope",
+		"Unless the brief says otherwise",
+		"Limit edits to the items in the brief, their tests, and sentences those changes make untrue.",
+		"needs new mechanism rather than a local change",
+		"Run one `klaus _pre-review` pass on the final head",
+		"state for each item in the brief whether it is closed and where",
+		"files and lines against the starting head",
+	}
 	custom := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(custom, ".klaus"), 0o755); err != nil {
 		t.Fatal(err)
@@ -324,40 +334,45 @@ func TestEveryWorkerGetsTheRules(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(custom, ".klaus", "prompt.md"), []byte("House rules for {{.RunID}}.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	valley := PromptVars{RunID: "r", Branch: "b", DirectPush: true, Change: "kkkk", Valley: true, Head: strings.Repeat("a", 40)}
+	if err := os.WriteFile(filepath.Join(custom, ".klaus", "pr-fix-prompt.md"), []byte("Custom PR fix for #{{.PR}} ({{.RunID}}).\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	head := strings.Repeat("a", 40)
+	valley := PromptVars{RunID: "r", Branch: "b", DirectPush: true, Change: "kkkk", Valley: true, Head: head}
 	for _, tc := range []struct {
 		name         string
 		dir          string
 		vars         PromptVars
 		want, absent []string
 	}{
-		{"plain", t.TempDir(), PromptVars{RunID: "r", Branch: "b"}, nil, valleyFollowUp},
-		{"--pr", t.TempDir(), PromptVars{RunID: "r", Branch: "b", PR: "7"}, nil, valleyFollowUp},
-		{"--change on a valley", t.TempDir(), valley, append([]string{"5. Push your branch: as the Delivery section below directs"}, valleyFollowUp...),
+		{"plain", t.TempDir(), PromptVars{RunID: "r", Branch: "b"},
+			nil, append(append([]string{}, valleyFollowUp...), followUpScope...)},
+		{"plain direct push", t.TempDir(), PromptVars{RunID: "r", Branch: "b", DirectPush: true},
+			nil, append(append([]string{}, valleyFollowUp...), followUpScope...)},
+		{"plain custom template", custom, PromptVars{RunID: "r", Branch: "b", DirectPush: true},
+			[]string{"House rules for r.", "## Delivery"}, append(append([]string{}, valleyFollowUp...), followUpScope...)},
+		{"--pr", t.TempDir(), PromptVars{RunID: "r", Branch: "b", PR: "7", Head: head},
+			append([]string{"## Delivery", "You are continuing PR #7 on branch b", "`git diff --stat " + head + " HEAD`"}, followUpScope...),
+			valleyFollowUp},
+		{"--pr overridden template", custom, PromptVars{RunID: "r", Branch: "b", PR: "7", Head: head},
+			append([]string{"Custom PR fix for #7 (r).", "## Delivery", "`git diff --stat " + head + " HEAD`"}, followUpScope...),
+			valleyFollowUp},
+		{"--change on a valley", t.TempDir(), valley,
+			append(append([]string{"5. Push your branch: as the Delivery section below directs", "`git diff --stat " + head + " HEAD`"}, valleyFollowUp...), followUpScope...),
 			[]string{"push fast-forward", "git push -u origin HEAD"}},
 		{"--change on GitHub", t.TempDir(), PromptVars{RunID: "r", Branch: "b", Change: "kkkk"},
-			[]string{"push fast-forward to the same branch and open the PR from it"}, append([]string{"git push -u origin HEAD"}, valleyFollowUp...)},
-		{"overridden template", custom, valley, append([]string{"House rules for r.", "## Delivery",
-			"--force-with-lease=refs/heads/b:" + strings.Repeat("a", 40) + " origin HEAD:refs/heads/b"}, valleyFollowUp...),
+			append([]string{"push fast-forward to the same branch and open the PR from it"}, followUpScope...),
+			append([]string{"git push -u origin HEAD", "git diff --stat"}, valleyFollowUp...)},
+		{"--change overridden template", custom, valley,
+			append(append([]string{"House rules for r.", "## Delivery",
+				"--force-with-lease=refs/heads/b:" + head + " origin HEAD:refs/heads/b"}, valleyFollowUp...), followUpScope...),
 			[]string{"git push -u origin HEAD"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			render := RenderPrompt
-			if tc.vars.PR != "" {
-				render = RenderPRFixPrompt
-			}
-			prompt, err := render(tc.dir, tc.vars)
+			prompt, err := RenderWorkerPrompt(tc.dir, tc.vars)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if tc.vars.PR == "" {
-				delivery, err := RenderDelivery(tc.vars)
-				if err != nil {
-					t.Fatal(err)
-				}
-				prompt += "\n\n" + delivery
-			}
-			prompt = WithWorkerRules(prompt)
 			for _, want := range append(shared, tc.want...) {
 				if !strings.Contains(prompt, want) {
 					t.Errorf("prompt missing %q:\n%s", want, prompt)

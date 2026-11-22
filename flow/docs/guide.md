@@ -161,11 +161,15 @@ valley flow launch --change nxvp --prompt-file /tmp/review-notes.md     # more c
 ```
 
 `--pr` and `--change` work on the existing branch and keep its change ID; `--change` is for
-repositories without GitHub. A Claude follow-up replays the previous run's stored conversation when
-it is eligible ([trajectory replay](./reference.md#trajectory-replay)). These launches refuse while
-another run works on the same branch or change, naming it; wait for it, or pass `--force-takeover`.
-They never remove a worktree that has the branch checked out, nor discard local commits that origin
-lacks, except that `--force-takeover` resets the local branch to origin's tip.
+repositories without GitHub. Follow-ups on an existing change or GitHub work get a default scope
+rule that the brief can override: limit edits to the brief's items, their tests, and sentences those
+edits make untrue; stop and report cost before building new mechanism; run one `_pre-review` pass on
+the final head; and report each item's status and the round's size against its starting head. A
+Claude follow-up replays the previous run's stored conversation when it is eligible
+([trajectory replay](./reference.md#trajectory-replay)). These launches refuse while another run
+works on the same branch or change, naming it; wait for it, or pass `--force-takeover`. They never
+remove a worktree that has the branch checked out, nor discard local commits that origin lacks,
+except that `--force-takeover` resets the local branch to origin's tip.
 
 ## Runs on GitHub
 

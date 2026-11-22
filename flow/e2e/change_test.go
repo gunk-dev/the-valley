@@ -91,8 +91,9 @@ func (h *Harness) finishRun(id string) *run.State {
 // and finalize marks it ready and stores its conversation. A --change
 // <run-id> follow-up runs on the first run's branch at v1 with its change
 // ID, returns the change to draft, replays the first run's conversation, is
-// told it continues the change and to keep its head message true to the
-// whole change, and shares the change's dashboard row; it pushes to the same
+// told it continues the change, to keep its head message true to the whole
+// change and to size its round against v1, and shares the change's
+// dashboard row; it pushes to the same
 // branch and finalize readies the new head there. A --change <handle> --no-replay run resolves the handle through the
 // recorded runs, starts at the follow-up's head, and starts fresh. The
 // follow-ups target the repo by the name the valley gives it, widget: the
@@ -152,8 +153,12 @@ func TestChangeContinuesAChange(t *testing.T) {
 		t.Errorf("claude should resume the first run's conversation:\n%s", argv)
 	}
 	want := "You are continuing an existing change, nxvp. This worktree is on its branch, " + first.Branch + ", which already holds the earlier work."
-	if sys := h.WorkerSystemPrompt(); !strings.Contains(sys, want) || !strings.Contains(sys, "keep the head message accurate for the whole change") {
+	sys := h.WorkerSystemPrompt()
+	if !strings.Contains(sys, want) || !strings.Contains(sys, "keep the head message accurate for the whole change") {
 		t.Errorf("worker prompt should say it continues the change on its branch:\n%s", sys)
+	}
+	if !strings.Contains(sys, "## Follow-up scope") || !strings.Contains(sys, "`git diff --stat "+v1+" HEAD`") {
+		t.Errorf("worker prompt should bound the follow-up and size it against v1 %s:\n%s", v1, sys)
 	}
 
 	// The follow-up runs on the change's row, as a fix agent runs on its PR's.

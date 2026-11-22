@@ -145,10 +145,9 @@ var preReviewCmd = &cobra.Command{
 		houseRules := loadHouseRules(cmd.Context(), dir, cfg, reg, cmd.ErrOrStderr()).Text
 		printProse := startProsePass(cmd.Context(), dir, base, cfg, author, houseRules)
 		result, err := review.ReviewDiff(dir, review.ReviewConfig{
-			Backend:      string(kind),
-			Model:        model,
-			MaxFixRounds: cfg.PreReviewMaxFixRounds(),
-			HouseRules:   houseRules,
+			Backend:    string(kind),
+			Model:      model,
+			HouseRules: houseRules,
 		}, base)
 		if err != nil {
 			printProse(os.Stdout)

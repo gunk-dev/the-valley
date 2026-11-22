@@ -677,17 +677,18 @@ are synced back after completion. Use --local to force local execution, or
 		}
 
 		// Build system prompt (from target repo's .klaus/prompt.md if it exists)
-		var sysPrompt string
 		delivery := runDelivery(isPRFix, repoRoot)
 		directPush := delivery == run.DeliveryPush
+		var vars config.PromptVars
 		if isPRFix {
-			sysPrompt, err = config.RenderPRFixPrompt(repoRoot, config.PromptVars{
+			vars = config.PromptVars{
 				RunID:    id,
 				Issue:    issue,
 				PR:       prNumber,
 				Branch:   branch,
 				RepoName: repoName,
-			})
+				Head:     git.RefCommit(ctx, repoRoot, "refs/remotes/origin/"+branch),
+			}
 		} else {
 			// Only a run that opens a GitHub PR requests a review.
 			var reviewer string
@@ -698,7 +699,7 @@ are synced back after completion. Use --local to force local execution, or
 					fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
 				}
 			}
-			vars := config.PromptVars{
+			vars = config.PromptVars{
 				RunID:      id,
 				Issue:      issue,
 				Branch:     branch,
@@ -711,29 +712,31 @@ are synced back after completion. Use --local to force local execution, or
 			}
 			if onChange != nil {
 				vars.Change = onChange.Name
+				vars.Head = onChange.Tip
 				// A valley change may be restacked onto main, its rebase
-				// pushed with a lease on the tip the worktree starts from.
-				// A fetch elsewhere before the worktree exists can only
-				// make that lease stale, so the push fails rather than
-				// overwrite.
+				// pushed with a lease on the commit the worktree starts at.
 				if directPush && valley.Detect(ctx, repoRoot, "", "origin/"+defaultBranch) {
-					vars.Valley, vars.Head = true, onChange.Tip
-				}
-			}
-			sysPrompt, err = config.RenderPrompt(repoRoot, vars)
-			if err == nil {
-				var section string
-				if section, err = config.RenderDelivery(vars); err == nil {
-					sysPrompt = strings.TrimRight(sysPrompt, "\n") + "\n\n" + section
+					vars.Valley = true
 				}
 			}
 		}
-		if err != nil {
-			return fmt.Errorf("rendering prompt: %w", err)
-		}
-		sysPrompt = config.WithWorkerRules(sysPrompt)
+		// A follow-up's prompt names the commit its worktree starts at, for
+		// its lease and the round's size. Until the worktree exists,
+		// origin's tip stands in to size the prompt; a fetch meanwhile can
+		// move that tip, so the prompt is rendered again from the
+		// worktree's HEAD.
 		rules := loadHouseRules(ctx, repoRoot, hostCfg, reg, os.Stdout)
-		sysPrompt = rules.Append(sysPrompt)
+		renderSystemPrompt := func() (string, error) {
+			p, err := config.RenderWorkerPrompt(repoRoot, vars)
+			if err != nil {
+				return "", fmt.Errorf("rendering prompt: %w", err)
+			}
+			return rules.Append(p), nil
+		}
+		sysPrompt, err := renderSystemPrompt()
+		if err != nil {
+			return err
+		}
 
 		logFile := filepath.Join(store.LogDir(), id+".jsonl")
 		promptPath := filepath.Join(run.PromptDir(store), id+".md")
@@ -858,6 +861,15 @@ are synced back after completion. Use --local to force local execution, or
 			if head := gitHead(ctx, worktree); head != expect.Head {
 				return fmt.Errorf("--change: the worktree starts at %s, not the expected head %s", shortSHA(head), shortSHA(expect.Head))
 			}
+		}
+		if isPRFix || onChange != nil {
+			if vars.Head = gitHead(ctx, worktree); vars.Head == "" {
+				return fmt.Errorf("%s: reading the worktree's head", continuing)
+			}
+			if sysPrompt, err = renderSystemPrompt(); err != nil {
+				return err
+			}
+			workerOpts.SystemPrompt = sysPrompt
 		}
 
 		fmt.Printf("  worktree: %s\n", worktree)

@@ -33,11 +33,11 @@ type scenario struct {
 
 func scenarios() []scenario {
 	s := []scenario{
-		// klaus's Go, module files and fixtures: its four checks, and the
-		// dependency boundary for what is Go.
-		{path: "flow/internal/cmd/root.go", exactly: append([]string{"go-dependencies"}, flowChecks...)},
-		{path: "flow/go.mod", exactly: append([]string{"go-dependencies"}, flowChecks...)},
-		{path: "flow/go.sum", exactly: append([]string{"go-dependencies"}, flowChecks...)},
+		// klaus's Go, module files and fixtures: its four checks, and for
+		// what is Go, the dependency boundary and its Darwin build.
+		{path: "flow/internal/cmd/root.go", exactly: append([]string{"go-dependencies", "valley-darwin-build"}, flowChecks...)},
+		{path: "flow/go.mod", exactly: append([]string{"go-dependencies", "valley-darwin-build"}, flowChecks...)},
+		{path: "flow/go.sum", exactly: append([]string{"go-dependencies", "valley-darwin-build"}, flowChecks...)},
 		{path: "flow/internal/scan/testdata/log.txt", exactly: flowChecks},
 		// klaus's prose, which none of them reads: the floor's prose check
 		// alone.

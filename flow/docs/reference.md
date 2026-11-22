@@ -819,10 +819,11 @@ URLs its log holds.
 
 Finalize parses the log for cost, duration, session ID and, for `pr` runs, the URL; checks the
 clone's shared git files against the launch snapshot (a difference beyond `git push -u` tracking
-emits `agent:shared-git-changed` and marks the run needing attention); on Linux records processes
-still running in the worktree as `failure_reason` (`background work still running (<commands>)`);
-stores the run on the data ref; and removes the worktree and scratch directory. It deletes the local
-branch only when its work is on the default branch or origin's live tip (`git ls-remote`) matches.
+emits `agent:shared-git-changed` and marks the run needing attention); records processes still
+running in the worktree as `failure_reason` (`background work still running (<commands>)`), read
+from `/proc` or, where `/proc` is absent (as on macOS), from `ps` and `lsof`; stores the run on the
+data ref; and removes the worktree and scratch directory. It deletes the local branch only when its
+work is on the default branch or origin's live tip (`git ls-remote`) matches.
 
 **Pushed branches.** A clean run whose branch is on origin records `pushed_branch` and `pushed_sha`
 and emits `agent:completed` and `agent:branch-pushed` (`repo`, `branch`, `sha`); the local branch is

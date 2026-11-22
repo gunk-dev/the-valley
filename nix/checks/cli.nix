@@ -6,8 +6,7 @@
 # Go verbs' unit tests and the rebase engine's hold, what its ready and withdraw verbs write to a
 # change's record through the real push hook, what its knot verbs write to
 # the plan graph, what its plan verb shows of that graph, what its
-# self-update verb installs and what the home-manager module runs it with,
-# and that its package evaluates for aarch64-darwin.
+# self-update verb installs and what the home-manager module runs it with.
 {
   pkgs,
   lib,
@@ -518,16 +517,4 @@ in
     units = builtins.toJSON selfUpdateUnits;
     passAsFile = [ "units" ];
   } (builtins.readFile ./valley-self-update.sh);
-
-  # The CLI is offered for aarch64-darwin, which nothing here builds or
-  # tests (flake.nix). This check holds that offer to evaluating: an input
-  # with no Darwin build fails here rather than on a Mac. The package's
-  # drvPath is forced while this check is evaluated, and its string context
-  # is discarded, so the Darwin derivations are written to the store but
-  # are not inputs of this one. Building this check builds and substitutes
-  # nothing for Darwin.
-  valley-darwin-eval = pkgs.runCommand "valley-darwin-eval" {
-    darwinDrv = builtins.unsafeDiscardStringContext self.packages.aarch64-darwin.valley.drvPath;
-    darwinSystem = self.packages.aarch64-darwin.valley.system;
-  } (builtins.readFile ./valley-darwin-eval.sh);
 }

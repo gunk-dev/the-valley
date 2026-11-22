@@ -251,8 +251,9 @@ The report's lines, and their order, are fixed:
 Each name appears at most once. A git-tag report always holds exactly one `tag` line and one
 `commit` line. Both come from the signed tag object, read after its signature verified.
 
-The flake exposes the command as `packages.<system>.sigverify`, for `x86_64-linux` and
-`aarch64-linux`. Its checks are defined for both systems.
+The flake exposes the command as `packages.<system>.sigverify`, for `x86_64-linux`, `aarch64-linux`
+and `aarch64-darwin`. Its checks are defined for both Linux systems. For `aarch64-darwin`, it is
+compiled and evaluated by checks on `x86_64-linux`, never run.
 
 ## The caller's contract
 

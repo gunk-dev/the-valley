@@ -16,8 +16,12 @@ import (
 
 // pivSigner is the valley-piv-signer helper this command signs on a
 // YubiKey with. The package fixes it to the helper's store path at build
-// time, so no PATH can change which program receives the statements.
-var pivSigner = "valley-piv-signer"
+// time where the helper builds, Linux, so no PATH can change which program
+// receives the statements. Elsewhere it is empty, and --piv is refused
+// with errNoPIVSigner.
+var pivSigner = ""
+
+var errNoPIVSigner = errors.New("hardware signing is not available on this platform; --piv selects it")
 
 const usage = `usage:
   approval statement --instance HEX --project NAME --target BRANCH --change ID
@@ -137,6 +141,9 @@ func sign(args []string, stderr io.Writer) error {
 	}
 	if fs.NArg() == 0 {
 		return usageError("sign takes at least one statement file")
+	}
+	if *piv && pivSigner == "" {
+		return errNoPIVSigner
 	}
 	files := fs.Args()
 	statements := make([]approval.Statement, len(files))

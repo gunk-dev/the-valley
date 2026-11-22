@@ -168,7 +168,11 @@ var finalizeCmd = &cobra.Command{
 		// A worker that ended its turn mid-build leaves no PR; say why before
 		// cleanup interrupts the build.
 		if !paused && (state.PRURL == nil || *state.PRURL == "") && state.FailureReason == nil && state.Worktree != "" {
-			if procs := lingeringProcesses(state.Worktree); len(procs) > 0 {
+			procs, err := lingeringProcesses(state.Worktree)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: finalize: background work could not be looked for: %v\n", err)
+			}
+			if len(procs) > 0 {
 				reason := "background work still running (" + strings.Join(procs, ", ") + ")"
 				state.FailureReason = &reason
 			}

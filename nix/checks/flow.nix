@@ -96,13 +96,17 @@ in
   # The unit tests. TestFlakeRefSurvivesNix has nix parse the flake
   # references self-update builds, which needs no store: the dummy store
   # serves an evaluation. It takes the newest nix, because nix 2.31, the
-  # pinned default, refuses git+git:// references.
+  # pinned default, refuses git+git:// references. ps and lsof are how
+  # klaus reads processes where there is no /proc, as on macOS, and the
+  # tests read real ones with them here.
   flow-unit = flowCheck "unit" {
     inputs = [
       checker
       pkgs.git
       pkgs.tmux
       pkgs.nixVersions.latest
+      pkgs.procps
+      pkgs.lsof
     ];
     script = isolated ''
       export NIX_CONFIG="store = dummy://"

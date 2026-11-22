@@ -1142,6 +1142,25 @@ topic ([`status/main.go`](../status/main.go)):
 - `style [--paged]` styles review's page for a terminal; review runs it in its pager.
 - `work` is one pass of the check worker, which `valley-worker` runs.
 
+### Platforms
+
+The flake offers the client programs (`valley`, `klaus` with `valley-flow`, `approval`, `attest`,
+`identity`, and `sigverify`, run on a person's or agent's own machine) and the formatter (`nix fmt`,
+`nix run .#fmt`) for `x86_64-linux` and `aarch64-darwin`. Programs run only by a valley host or its
+web edge are offered for `x86_64-linux` alone; `sigverify` is also offered for `aarch64-linux`
+(`implemented`, `flake.nix`). Checks compile and evaluate the Darwin packages from `x86_64-linux`
+without running them ([Platforms](./architecture.md#platforms)). On Darwin (`implemented`):
+
+- Hardware signing with a YubiKey's PIV slot is unavailable, because the PIV signer is Linux C.
+  Selecting a PIV slot for `valley approve` or `review`, or running `approval sign --piv`, is
+  refused with `hardware signing is not available on this platform`. A software key signs.
+- Child `ssh`, `attest`, `git`, and `cue` processes started by `valley` and `attest` do not end when
+  their parent exits ([`valley telemetry`](#valley-telemetry)).
+- `valley work` finds no memory limit, so a pass evaluates one batch at a time unless
+  `--eval-budget` gives a budget.
+- A check is built for the machine's own system, so `valley checks --build` and
+  `valley approve --build-here` build a project's `aarch64-darwin` checks; the-valley defines none.
+
 ### Helper and host commands
 
 The `valley` package, the NixOS host module, and the web publisher's module build the Go programs
@@ -2514,7 +2533,9 @@ approval verify --signers approval-signers-hardware a.statement.note b.statement
   already written, and lists the statements not signed.
   - `--key FILE` signs with an unencrypted OpenSSH Ed25519 key.
   - `--piv` signs with the key in a YubiKey's PIV slot: `--slot` (default `9c`; also `9a`, `9d`,
-    `9e`, `82` to `95`) on the first reader whose name holds `--reader`.
+    `9e`, `82` to `95`) on the first reader whose name holds `--reader`. Where the package has no
+    PIV signer (any platform but Linux), `--piv` is refused before any statement is read:
+    `hardware signing is not available on this platform`.
 - **`approval verify`** opens each note under the keys in `--signers` and prints who approved which
   change, version and head. It fails when any note does not verify, and when the file lists no key.
 

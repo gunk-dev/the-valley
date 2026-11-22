@@ -21,7 +21,8 @@ not built.
 ## Client setup
 
 The client lets you propose work, review changes, and read the live plan. You need git, SSH access
-to the valley host, and Nix with flakes enabled.
+to the valley host, and Nix with flakes enabled, on `x86_64-linux` or an Apple silicon Mac
+(`aarch64-darwin`). [Platforms](./reference.md#platforms) lists what differs on a Mac.
 
 1. Clone the-valley's source from the URL your administrator provides. From that checkout, run:
 

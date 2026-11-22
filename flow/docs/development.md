@@ -11,8 +11,8 @@ output in a scratch directory outside the tree.
 nix build .#klaus
 ```
 
-The flake's `packages.x86_64-linux.klaus` (Linux x86_64 only) builds `cmd/klaus` with the version
-stamped through `-X the-valley/flow/internal/cmd.version=<v>`: the CLI version of
+The flake's `klaus` package, for `x86_64-linux` and `aarch64-darwin`, builds `cmd/klaus` with the
+version stamped through `-X the-valley/flow/internal/cmd.version=<v>`: the CLI version of
 `nix/packages.nix`, `0.1.0-<short commit>`, with `-dirty` for a tree with uncommitted changes, or
 `0.1.0-unknown` when nix knows no commit. The package's source holds no tests and no prose, and the
 package runs no tests: the checks below do. It depends on none of the programs flow runs.
@@ -31,7 +31,7 @@ nix build --option sandbox true --no-link .#checks.x86_64-linux.flow-e2e
 | Check        | Runs                                                                              |
 | ------------ | --------------------------------------------------------------------------------- |
 | `flow-build` | the shipping package; `klaus --version` must print `klaus version <v>`            |
-| `flow-unit`  | `go test ./...`, with git, tmux and the newest nix                                |
+| `flow-unit`  | `go test ./...`, with git, tmux, the newest nix, `ps` and `lsof`                  |
 | `flow-vet`   | `go vet ./...`                                                                    |
 | `flow-e2e`   | `go test -tags e2e ./e2e/...` (slow), with git, tmux, bash and the valley command |
 
@@ -40,6 +40,9 @@ checks rebuild the package over the whole module, tests included, with the packa
 modules: one fixed-output derivation, `klaus-go-modules`, pinned by `vendorHash` in
 `nix/packages.nix` and resolved from the whole module with its tests. A change to `go.mod` or
 `go.sum` changes that hash.
+
+No check runs flow on a Mac. `valley-darwin-build` compiles, links and vets it for `darwin/arm64`
+from `x86_64-linux`, over the same vendored modules.
 
 The checks set `KLAUS_TEST_TOOLS=required`: a test that would skip for a missing tool (tmux, nix,
 valley, or a valley lacking a verb it needs) fails instead, so a scenario that did not run cannot

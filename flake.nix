@@ -7,8 +7,10 @@
     { self, nixpkgs }:
     let
       lib = nixpkgs.lib;
-      # Checks use import-from-derivation (the module's cue export), so they
-      # are only defined for the system that can actually build them here.
+      # Every package, app and check is offered for x86_64-linux, where the
+      # checks build and run them. Checks use import-from-derivation (the
+      # module's cue export), so they are only defined for the system that
+      # can actually build them here.
       systems = [ "x86_64-linux" ];
       # sigverify is also built and tested for aarch64-linux, because hosts
       # such as Raspberry Pis verify their releases with it. Its checks need no
@@ -16,11 +18,15 @@
       # aarch64 builder (or binfmt emulation) runs them. Nothing else here
       # is offered on aarch64-linux, because nothing else is tested there.
       sigverifySystems = [ "aarch64-linux" ];
-      # The valley CLI is also offered for aarch64-darwin, so it can be
-      # installed on a Mac. It is evaluated here but not built or tested
-      # here, because no Darwin machine runs this flake's checks. The
-      # valley-darwin-eval check evaluates it from x86_64-linux without
-      # building anything for Darwin. Nothing else is offered on Darwin.
+      # The client programs (clientPrograms in nix/packages.nix: valley,
+      # klaus, approval, attest, identity and sigverify) and the formatter
+      # are also offered for aarch64-darwin, so a person or an agent can run
+      # them on a Mac. No Darwin machine runs this flake's checks, so nothing
+      # is built, tested or run for Darwin here. From x86_64-linux,
+      # valley-darwin-build compiles, links and vets each client program's
+      # Go for darwin/arm64, and valley-darwin-eval evaluates every Darwin
+      # package, app and formatter. The programs only a valley host runs
+      # are not offered on Darwin.
       cliSystems = [ "aarch64-darwin" ];
 
       pkgsFor = system: nixpkgs.legacyPackages.${system};
@@ -91,7 +97,7 @@
         };
 
       # `nix fmt` runs the same program as `nix run .#fmt`.
-      formatter = lib.genAttrs systems (system: (packagesFor system).prose-fmt);
+      formatter = lib.genAttrs (systems ++ cliSystems) (system: (packagesFor system).prose-fmt);
 
       apps =
         lib.genAttrs systems (
@@ -131,6 +137,12 @@
             type = "app";
             program = lib.getExe (packagesFor system).sigverify;
           };
+        })
+        // lib.genAttrs cliSystems (system: {
+          fmt = {
+            type = "app";
+            program = lib.getExe (packagesFor system).prose-fmt;
+          };
         });
 
       packages =
@@ -161,9 +173,16 @@
         // lib.genAttrs sigverifySystems (system: {
           inherit (packagesFor system) sigverify;
         })
-        // lib.genAttrs cliSystems (system: {
-          inherit (packagesFor system) valley;
-        });
+        // lib.genAttrs cliSystems (
+          system:
+          let
+            packages = packagesFor system;
+          in
+          lib.genAttrs (lib.attrNames packages.clientPrograms) (name: packages.${name})
+          // {
+            default = packages.valley;
+          }
+        );
 
       checks =
         lib.genAttrs systems (

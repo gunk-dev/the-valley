@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,5 +66,21 @@ func TestStatementSignVerify(t *testing.T) {
 	os.WriteFile(hardware, []byte(note.NewVerifierKey("operator", other.Public()).String()+"\n"), 0o644)
 	if code := run([]string{"verify", "--signers", hardware, statement + ".note"}, &out, &errs); code != 1 {
 		t.Fatalf("verify under authority without the key exited %d", code)
+	}
+}
+
+// A build with no PIV signer, as on any platform but Linux, refuses --piv
+// before it reads a statement: the one named here does not exist.
+func TestSignPIVRefusedWithoutSigner(t *testing.T) {
+	saved := pivSigner
+	pivSigner = ""
+	t.Cleanup(func() { pivSigner = saved })
+	statement := filepath.Join(t.TempDir(), "absent.statement")
+	if err := sign([]string{"--piv", statement}, io.Discard); !errors.Is(err, errNoPIVSigner) {
+		t.Fatalf("sign --piv: %v", err)
+	}
+	var out, errs bytes.Buffer
+	if code := run([]string{"sign", "--piv", statement}, &out, &errs); code != 1 {
+		t.Fatalf("approval sign --piv exited %d", code)
 	}
 }

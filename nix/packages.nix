@@ -44,6 +44,29 @@ rec {
   # Every Go test file in the tree. No package's build reads one.
   goTests = lib.fileset.fileFilter (f: lib.hasSuffix "_test.go" f.name) ../.;
 
+  # The programs a person or an agent runs on their own machine, by package
+  # name, each with the Go build its package is made from. flake.nix offers
+  # these packages, and the formatter, on aarch64-darwin as well as on
+  # x86_64-linux, and valley-darwin-build (nix/checks/darwin.nix) compiles
+  # each build for Darwin. The programs only a valley host or its web edge
+  # runs, such as the integrator, the push hook, the check worker and the
+  # web server, are offered on Linux alone.
+  clientPrograms = {
+    inherit
+      klaus
+      approval
+      sigverify
+      ;
+    valley = valley-unwrapped;
+    attest = attest-unwrapped;
+    identity = identity-unwrapped;
+  };
+
+  # A Darwin build takes no cgo, the way valley-darwin-build compiles it, so
+  # that check compiles what a Mac runs. Elsewhere this is empty, and
+  # buildGoModule's default stands.
+  noCgoOnDarwin = lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin { CGO_ENABLED = 0; };
+
   # A Go module of this repository, built as a package that runs no tests,
   # with its unit tests beside it as the package's unit attribute.
   #
@@ -104,6 +127,7 @@ rec {
         version = "0";
         src = source build;
         modRoot = lib.path.removePrefix ../. dir;
+        env = (args.env or { }) // noCgoOnDarwin;
         # Standard library only, so no module is fetched.
         vendorHash = null;
         doCheck = false;
@@ -280,11 +304,14 @@ rec {
       '';
 
   # `nix run .#fmt` — rewrap every tracked *.md in the repo to 100 columns.
+  # GNU xargs is pinned with git and prettier: a Mac's own takes no
+  # --no-run-if-empty.
   prose-fmt = pkgs.writeShellApplication {
     name = "valley-fmt";
     runtimeInputs = [
       pkgs.git
       pkgs.prettier
+      pkgs.findutils
     ];
     text = ''
       cd "$(git rev-parse --show-toplevel)"
@@ -542,10 +569,12 @@ rec {
   # Approval statements (approval/): the-valley/approval/v1's written form,
   # signing it with a software key or a YubiKey's PIV slot, and verifying
   # an approval note under the approval signers files. Go, standard library
-  # only. The PIV signer it runs is fixed at build time, the way
+  # only. On Linux the PIV signer it runs is fixed at build time, the way
   # sigverify's git is: an absolute store path compiled into the binary.
-  # Its unit tests run that signer with no smart card service to reach, so
-  # no device is touched.
+  # The signer is Linux C, so elsewhere the binary carries none, and
+  # `sign --piv` is refused; a software key signs everywhere. Its unit
+  # tests run that signer with no smart card service to reach, so no device
+  # is touched.
   approval = goModule {
     pname = "valley-approval";
     dir = ../approval;
@@ -556,7 +585,9 @@ rec {
     excluded = [ ../approval/piv ];
     subPackages = [ "cmd/approval" ];
     preBuild = readsGoMod;
-    ldflags = [ "-X main.pivSigner=${lib.getExe piv-signer}" ];
+    ldflags = lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+      "-X main.pivSigner=${lib.getExe piv-signer}"
+    ];
     tests = {
       reads = [ ../approval/testdata ];
       subPackages = [
@@ -1228,6 +1259,7 @@ rec {
     };
     modRoot = "flow";
     subPackages = [ "cmd/klaus" ];
+    env = noCgoOnDarwin;
     vendorHash = "sha256-vh51S12HVVFjHr0DSLZlvBFLWarOlFN7vxXApVb69Dk=";
     # Named without the version, which changes with every commit, and read
     # from the whole module, so test-only imports are vendored too.

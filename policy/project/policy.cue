@@ -70,6 +70,7 @@ project: {
 		"valley-knot",
 		"valley-plan",
 		"valley-darwin-eval",
+		"valley-darwin-build",
 		"selfupdate-unit",
 		"valley-self-update",
 		"policy-deriver",
@@ -483,6 +484,45 @@ project: {
 		requires: "web-push-e2e":   true
 	}
 
+	// What the client programs offered on aarch64-darwin are compiled from
+	// (clientPrograms, nix/packages.nix): the Go source and go.mod of each
+	// program's module and of every module it builds with, the files their
+	// builds embed, klaus's module files, and the packaging and toolchain pin
+	// they are built with. valley-darwin-build compiles, links and vets each
+	// program for darwin/arm64.
+	let darwinModules = [
+		"status",
+		"attest",
+		"approval",
+		"identity",
+		"sigverify",
+		"change",
+		"composed",
+		"delta",
+		"derive",
+		"exactjson",
+		"knot",
+		"note",
+		"rebase",
+		"selfupdate",
+		"telemetry",
+	]
+	classes: darwin: {
+		for m in darwinModules {
+			paths: ("\(m)/**/*.go"): true
+			paths: ("\(m)/go.mod"):  true
+		}
+		paths: "status/help/**":         true
+		paths: "identity/yubico/**":     true
+		paths: "flow/**/*.go":           true
+		paths: "flow/go.mod":            true
+		paths: "flow/go.sum":            true
+		paths: "nix/packages.nix":       true
+		paths: "flake.nix":              true
+		paths: "flake.lock":             true
+		requires: "valley-darwin-build": true
+	}
+
 	// Self-update: its module (selfupdate/), the policy the package ships
 	// for its smoke test, and the home-manager module that runs it on a
 	// timer. valley-go-unit builds the verb with the module, and
@@ -806,6 +846,7 @@ project: {
 		"hooks.nix": ["valleyhook-unit", "change-unit", "pushpolicy-unit", "mirror-e2e", "protect-e2e", "init-e2e", "bus-e2e"]
 		"host-module.nix": ["module-eval"]
 		"flow.nix": ["flow-build", "flow-unit", "flow-vet", "flow-e2e"]
+		"darwin.nix": ["valley-darwin-build", "valley-darwin-eval"]
 		"fail-nth.sh": ["policy-deriver", "valley-request"]
 		"review-notes-editor.sh": ["review-notes"]
 		"cue-vet-rejected.txt": ["cue-vet"]

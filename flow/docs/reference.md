@@ -633,10 +633,18 @@ an absolute path, or `user@host:path` (read as `ssh://user@host/path`; write `us
 a home-relative path). Other transports (`ext::`, `fd::`) and characters outside
 `[A-Za-z0-9._~/:@-]` are refused; git and nix read the same URL, with
 `GIT_ALLOW_PROTOCOL=https:ssh:git:file`. A `git://` repository needs a nix that accepts `git+git://`
-flake references; nix 2.31 refuses them. A run:
+flake references; nix 2.31 refuses them.
 
-1. takes a lock under `$XDG_STATE_HOME/klaus/` (a run finding another exits 0, saying so); a pinned
-   install exits 0 with a note;
+The flake offers flow as two packages of one program, `packages.<system>.valley-flow` and
+`packages.<system>.klaus`, each holding it as both `valley-flow` and `klaus`. Self-update builds
+`klaus`. A package's store path installs as the profile element of its name, so flow is in the
+profile as `klaus` or as `valley-flow`, and self-update replaces whichever it finds. A profile
+holding both is refused before anything else, with nothing built or changed, by every run and by
+`--rollback`, `--pin` and `--unpin`. A run:
+
+1. takes a lock under `$XDG_STATE_HOME/klaus/` (a run finding another exits 0, saying so) and lists
+   the profile, refusing one holding both or one nix cannot list; a pinned install exits 0 with a
+   note;
 2. resolves the branch with `git ls-remote <repo> refs/heads/<branch>`;
 3. exits 0 when the installed flow was built from that commit (`-v` says so);
 4. reads the packages the flake offers at that commit and, unless it offers
@@ -644,17 +652,30 @@ flake references; nix 2.31 refuses them. A run:
    `self_update.repo` to name a repository whose flake offers it, such as the-valley's; the next run
    then builds, smoke-tests and installs from there, whatever the state file remembers of the
    repository before;
-5. exits 0 when that commit already failed (retried when the branch moves, or with `--retry`);
+5. exits 0 when that commit already failed to build, test or install (retried when the branch moves,
+   or with `--retry`);
 6. builds exactly `git+<repo>?ref=refs/heads/<branch>&rev=<sha>#packages.<system>.klaus`, never a
    default package;
 7. smoke-tests it: `klaus --version` must report the commit and `klaus status` must exit 0; a
    failure records the commit as failed, installs nothing and exits non-zero;
-8. replaces the nix profile element `klaus`, leaving other elements and any system install alone;
-9. records current and previous store paths and commits, the time and any failure in
-   `$XDG_STATE_HOME/klaus/self-update.json`.
+8. replaces the nix profile element `klaus` or `valley-flow`, leaving other elements and any system
+   install alone. Replacing removes the element and adds the build; when the add fails, it puts the
+   element's store path back and records the commit as failed. When putting it back fails too, the
+   profile holds no flow: the state records no install and no failure, so the next run installs the
+   tip, and the error gives the `nix profile add` command to put the old build back by hand;
+9. records the current and previous store paths, commits, profile elements and packages, the time
+   and any failure in `$XDG_STATE_HOME/klaus/self-update.json`. An entry without an element or
+   package reads as `klaus`.
 
-`--rollback` reinstalls the previous store path (again to return); `--pin` holds the current install
-until `--unpin`; `--retry`, `--rollback`, `--pin` and `--unpin` are exclusive.
+Removing the element and adding the build are two profile operations. Putting the element back
+covers a failed add, not a killed run: a run killed between the two leaves the profile without flow,
+while `self-update.json` still records the removed build as current. To put that build back, run
+`nix profile add <store path>` with the state file's `current.store_path`; to install the branch tip
+instead, run `nix profile add 'git+<repo>?ref=refs/heads/<branch>#packages.<system>.klaus'`.
+
+`--rollback` adds the previous store path in place of the element holding flow, restoring it under
+the element name it came from (run again to switch back); `--pin` holds the current install until
+`--unpin`; `--retry`, `--rollback`, `--pin` and `--unpin` are exclusive.
 
 ### Internal commands
 

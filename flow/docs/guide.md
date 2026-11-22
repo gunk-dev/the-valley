@@ -416,9 +416,9 @@ A host can follow a branch of this repository without a system rebuild. In the h
 Then run `valley flow self-update` from a timer: nothing notifies the host when the remote branch
 moves. It resolves the branch's tip, refuses (changing nothing) unless the flake at that commit
 offers `packages.<system>.klaus`, builds exactly that package, smoke-tests it, and installs it into
-your nix profile as the element `klaus`. Each step prints one line, so the timer's journal reads as
-a history. A running dashboard restarts onto the new build by itself; running agents finish on the
-build they started with.
+your nix profile as the `klaus` element, in place of `klaus` or `valley-flow`. Each step prints one
+line, so the timer's journal reads as a history. A running dashboard restarts onto the new build by
+itself; running agents finish on the build they started with.
 
 ```bash
 valley flow self-update --rollback   # back to the previous build; again to return

@@ -10,9 +10,9 @@ and reports events a coordinator can wait on. Approval stays with the operator.
 ## Install
 
 `valley flow` runs a separate program, `valley-flow`, installed with its package; without it on
-`PATH`, `valley flow` prints one line and exits 127. The client is the package `klaus` of this
-repository's flake, for `x86_64-linux` and `aarch64-darwin`. Install it from your own repository
-URL, for example:
+`PATH`, `valley flow` prints one line and exits 127. This repository's flake offers the client as
+two packages of one program, `klaus` and `valley-flow`, for `x86_64-linux` and `aarch64-darwin`.
+Install `klaus`, the one self-update builds, from your own repository URL, for example:
 
 ```bash
 nix profile add 'git+ssh://git@valley-host/~/the-valley#klaus'

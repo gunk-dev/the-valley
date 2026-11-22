@@ -45,11 +45,12 @@ func scenarios() []scenario {
 		{path: "flow/README.md", exactly: []string{"prose-format"}},
 		// Their definition, and the packaging and inputs the checks share,
 		// which this check reads too, and which keep the checks of their
-		// other classes.
+		// other classes. The package expressions and the flake's packages
+		// are also what the Darwin checks compile and evaluate.
 		{path: "nix/checks/flow.nix", requires: flowChecks, excludes: []string{"flow-policy"}},
-		{path: "nix/packages.nix", requires: append([]string{"flow-policy", "valley-darwin-eval", "web-reader-browser-e2e", "web-push-e2e"}, flowChecks...)},
+		{path: "nix/packages.nix", requires: append([]string{"flow-policy", "valley-darwin-build", "valley-darwin-eval", "web-reader-browser-e2e", "web-push-e2e"}, flowChecks...)},
 		{path: "nix/checks.nix", requires: append([]string{"flow-policy", "module-eval"}, flowChecks...)},
-		{path: "flake.nix", requires: append([]string{"flow-policy", "module-eval"}, flowChecks...)},
+		{path: "flake.nix", requires: append([]string{"flow-policy", "module-eval", "valley-darwin-build", "valley-darwin-eval"}, flowChecks...)},
 		{path: "flake.lock", requires: append([]string{"flow-policy", "module-eval"}, flowChecks...)},
 		// The checks' helper: the three checks that run it, not go vet.
 		{path: "nix/checks/flow-checker/flow-checker.go", requires: []string{"flow-build", "flow-unit", "flow-e2e"}, excludes: []string{"flow-vet"}},

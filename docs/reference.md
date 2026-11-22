@@ -992,8 +992,8 @@ valley flow [<args>]
 - Replaces itself with `valley-flow` and passes every argument after `flow`, so the terminal,
   signals, and exit status are `valley-flow`'s. It looks for `valley-flow` on `PATH` alone, never
   beside its own binary: the installed `valley` is a wrapper, and `valley-flow` is installed and
-  updated separately. The flake's `klaus` package installs `valley-flow` beside `klaus` as the same
-  binary.
+  updated separately. The flake's `valley-flow` and `klaus` packages each install the same binary as
+  both `valley-flow` and `klaus`.
 - `valley-flow` runs in the environment the `valley` binary started in, less `VALLEY_VERSION`. That
   includes what the installed package's wrapper sets (its tools ahead on `PATH` and
   `VALLEY_VERIFICATION_SCHEMA`) and leaves out the git variables `valley` sets for its own git.
@@ -1144,12 +1144,13 @@ topic ([`status/main.go`](../status/main.go)):
 
 ### Platforms
 
-The flake offers the client programs (`valley`, `klaus` with `valley-flow`, `approval`, `attest`,
-`identity`, and `sigverify`, run on a person's or agent's own machine) and the formatter (`nix fmt`,
-`nix run .#fmt`) for `x86_64-linux` and `aarch64-darwin`. Programs run only by a valley host or its
-web edge are offered for `x86_64-linux` alone; `sigverify` is also offered for `aarch64-linux`
-(`implemented`, `flake.nix`). Checks compile and evaluate the Darwin packages from `x86_64-linux`
-without running them ([Platforms](./architecture.md#platforms)). On Darwin (`implemented`):
+The flake offers the client programs (`valley`, `valley-flow`, `approval`, `attest`, `identity`, and
+`sigverify`, run on a person's or agent's own machine), `klaus` (a second package of `valley-flow`'s
+program), and the formatter (`nix fmt`, `nix run .#fmt`) for `x86_64-linux` and `aarch64-darwin`.
+Programs run only by a valley host or its web edge are offered for `x86_64-linux` alone; `sigverify`
+is also offered for `aarch64-linux` (`implemented`, `flake.nix`). Checks compile and evaluate the
+Darwin packages from `x86_64-linux` without running them ([Platforms](./architecture.md#platforms)).
+On Darwin (`implemented`):
 
 - Hardware signing with a YubiKey's PIV slot is unavailable, because the PIV signer is Linux C.
   Selecting a PIV slot for `valley approve` or `review`, or running `approval sign --piv`, is

@@ -1,14 +1,16 @@
-# klaus (flow/): its shipping package, its unit tests, go vet, and its
+# flow (flow/): its shipping packages, its unit tests, go vet, and its
 # end-to-end suite, which drives the real binary against real git and a
 # private tmux server.
 {
   pkgs,
   lib,
+  self,
+  system,
   packages,
   ...
 }:
 let
-  inherit (packages) klaus version;
+  inherit (packages) valley-flow version;
 
   # What the checks verify beside klaus's tests: the version the package
   # reports, and that no test reached tmux by default. Its own tests run in
@@ -33,12 +35,12 @@ let
       inputs ? [ ],
       script,
     }:
-    klaus.overrideAttrs (old: {
+    valley-flow.overrideAttrs (old: {
       pname = "klaus-${name}";
       version = "0";
       ldflags = [ ];
       src = packages.flowComplete;
-      inherit (klaus) goModules;
+      inherit (valley-flow) goModules;
       nativeBuildInputs = old.nativeBuildInputs ++ inputs;
       buildPhase = ''
         runHook preBuild
@@ -69,29 +71,61 @@ let
     ${script}
     flow-checker sockets "$TMUX_TMPDIR"
   '';
+
+  # The flake's packages of the client, and the systems it offers them for.
+  flowPackages = [
+    "valley-flow"
+    "klaus"
+  ];
+  flowSystems = [
+    system
+    "aarch64-darwin"
+  ];
+
+  # What is wrong with the client's package attr on system s: a store path
+  # not named <attr>-<version>, which nix profile would install as an
+  # element of another name, or a mainProgram other than the executable
+  # named attr. Reading names evaluates the Darwin packages and builds
+  # nothing for Darwin.
+  identityFaults =
+    s: attr:
+    let
+      pkg = self.packages.${s}.${attr};
+      main = pkg.meta.mainProgram or "none";
+    in
+    lib.optional (pkg.name != "${attr}-${version}" || main != attr)
+      "packages.${s}.${attr} is ${pkg.name} with mainProgram ${main}, not ${attr}-${version} with ${attr}";
+  identity = lib.concatMap (s: lib.concatMap (identityFaults s) flowPackages) flowSystems;
 in
 {
-  # The package as it ships, and the version it reports: the CLI's,
-  # stamped through the-valley/flow/internal/cmd.version. bin/klaus prints
-  # it as klaus, which an installed self-update's smoke test reads; the
-  # same binary run as bin/valley-flow names itself valley flow, and so
-  # does the valley package's `valley flow`, which runs valley-flow from
-  # PATH.
+  # The packages as they ship, and the version they report: the CLI's,
+  # stamped through the-valley/flow/internal/cmd.version. Each of
+  # valley-flow and klaus holds the one program as bin/klaus, which prints
+  # it as klaus, which an installed self-update's smoke test reads, and as
+  # bin/valley-flow, which names itself valley flow, as does the valley
+  # package's `valley flow`, which runs valley-flow from PATH. A package
+  # away from its identity fails the check's evaluation.
   flow-build =
-    pkgs.runCommand "klaus-flow-build"
-      {
-        nativeBuildInputs = [
-          klaus
-          packages.valley
-          checker.unit
-        ];
-      }
-      ''
-        flow-checker version "klaus version ${version}" ${klaus}/bin/klaus
-        flow-checker version "valley flow version ${version}" ${klaus}/bin/valley-flow
-        flow-checker version "valley flow version ${version}" valley flow
-        touch $out
-      '';
+    if identity != [ ] then
+      throw "flow-build: ${lib.concatStringsSep "; " identity}"
+    else
+      pkgs.runCommand "klaus-flow-build"
+        {
+          nativeBuildInputs = [
+            self.packages.${system}.valley-flow
+            packages.valley
+            checker.unit
+          ];
+          packages = map (attr: self.packages.${system}.${attr}) flowPackages;
+        }
+        ''
+          for p in $packages; do
+            flow-checker version "klaus version ${version}" "$p/bin/klaus"
+            flow-checker version "valley flow version ${version}" "$p/bin/valley-flow"
+          done
+          flow-checker version "valley flow version ${version}" valley flow
+          touch $out
+        '';
 
   # The unit tests. TestFlakeRefSurvivesNix has nix parse the flake
   # references self-update builds, which needs no store: the dummy store

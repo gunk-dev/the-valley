@@ -18,15 +18,15 @@
       # aarch64 builder (or binfmt emulation) runs them. Nothing else here
       # is offered on aarch64-linux, because nothing else is tested there.
       sigverifySystems = [ "aarch64-linux" ];
-      # The client programs (clientPrograms in nix/packages.nix: valley,
-      # klaus, approval, attest, identity and sigverify) and the formatter
-      # are also offered for aarch64-darwin, so a person or an agent can run
-      # them on a Mac. No Darwin machine runs this flake's checks, so nothing
-      # is built, tested or run for Darwin here. From x86_64-linux,
-      # valley-darwin-build compiles, links and vets each client program's
-      # Go for darwin/arm64, and valley-darwin-eval evaluates every Darwin
-      # package, app and formatter. The programs only a valley host runs
-      # are not offered on Darwin.
+      # The client packages (clientPackages in nix/packages.nix: valley,
+      # valley-flow and klaus, approval, attest, identity and sigverify) and
+      # the formatter are also offered for aarch64-darwin, so a person or an
+      # agent can run them on a Mac. No Darwin machine runs this flake's
+      # checks, so nothing is built, tested or run for Darwin here. From
+      # x86_64-linux, valley-darwin-build compiles, links and vets each
+      # client program's Go for darwin/arm64, and valley-darwin-eval
+      # evaluates every Darwin package, app and formatter. The programs only
+      # a valley host runs are not offered on Darwin.
       cliSystems = [ "aarch64-darwin" ];
 
       pkgsFor = system: nixpkgs.legacyPackages.${system};
@@ -165,6 +165,7 @@
               valley-web-image
               valley-web-publish
               valley-read-coverage
+              valley-flow
               klaus
               ;
             default = packages.valley;
@@ -178,7 +179,7 @@
           let
             packages = packagesFor system;
           in
-          lib.genAttrs (lib.attrNames packages.clientPrograms) (name: packages.${name})
+          lib.genAttrs packages.clientPackages (name: packages.${name})
           // {
             default = packages.valley;
           }

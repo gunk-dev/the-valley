@@ -38,24 +38,32 @@ defaults to main. Each run:
      the-valley's does. Point self_update.repo at a repository whose flake
      offers it and run self-update again: the run builds, smoke-tests and
      installs it as below;
-  5. exits 0 if that commit already failed to build or test (it is retried
-     when the branch moves, or with --retry);
+  5. exits 0 if that commit already failed to build, test or install (it is
+     retried when the branch moves, or with --retry);
   6. builds exactly that commit's package, never the flake's default package:
      nix build 'git+<repo>?ref=refs/heads/<branch>&rev=<sha>#packages.<system>.klaus';
   7. smoke-tests the build: its klaus --version must report the commit, and
      its klaus status must exit 0. A failure records the commit as failed,
      installs nothing, and exits non-zero;
-  8. installs it into the user's default nix profile in place of the profile
-     element named klaus, leaving other elements alone. Any system install
-     stays underneath as the fallback;
-  9. records the current and previous store paths and commits, the time and
-     any failure in $XDG_STATE_HOME/klaus/self-update.json.
+  8. installs it into the user's default nix profile in place of the element
+     holding flow, klaus or valley-flow, leaving other elements alone. If the
+     build does not go in, the element gets its store path back and the
+     commit is recorded as failed; if that fails too, the profile holds no
+     flow, and the state records no install and no failure, so the next run
+     installs the tip. Any system install stays underneath as the fallback;
+  9. records the current and previous store paths, commits and profile
+     elements, the time and any failure in
+     $XDG_STATE_HOME/klaus/self-update.json.
 
 Only the configured branch installs, pinned to the commit ls-remote returned,
-and only after it builds and passes the smoke test.
+and only after it builds and passes the smoke test. A profile holding flow
+as both klaus and valley-flow is refused, changing nothing, by every run
+and by --rollback, --pin and --unpin, before anything else.
 
---rollback reinstalls the previous store path; a second --rollback returns
-to the newer one. --pin leaves the current install alone until --unpin:
+--rollback puts the previous store path back in place of the element
+holding flow, so it returns as the element it was taken from; a second
+--rollback returns to the newer one. --pin leaves the current install alone
+until --unpin:
 runs while pinned exit 0 with a note, so a bad tip isn't reinstalled while
 it gets fixed.
 
@@ -86,7 +94,7 @@ A running flow dashboard notices the new build on PATH and restarts onto it.`,
 		case rollback:
 			return u.Rollback(cmd.Context())
 		case pin || unpin:
-			return u.Pin(pin)
+			return u.Pin(cmd.Context(), pin)
 		}
 		if u.Repo == "" {
 			return errors.New(`self-update is off: add a self_update block to ~/.klaus/config.json, e.g.

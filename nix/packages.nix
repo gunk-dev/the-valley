@@ -46,14 +46,14 @@ rec {
 
   # The programs a person or an agent runs on their own machine, by package
   # name, each with the Go build its package is made from. flake.nix offers
-  # these packages, and the formatter, on aarch64-darwin as well as on
-  # x86_64-linux, and valley-darwin-build (nix/checks/darwin.nix) compiles
-  # each build for Darwin. The programs only a valley host or its web edge
-  # runs, such as the integrator, the push hook, the check worker and the
-  # web server, are offered on Linux alone.
+  # these packages (clientPackages), and the formatter, on aarch64-darwin as
+  # well as on x86_64-linux, and valley-darwin-build (nix/checks/darwin.nix)
+  # compiles each build for Darwin. The programs only a valley host or its
+  # web edge runs, such as the integrator, the push hook, the check worker
+  # and the web server, are offered on Linux alone.
   clientPrograms = {
     inherit
-      klaus
+      valley-flow
       approval
       sigverify
       ;
@@ -61,6 +61,11 @@ rec {
     attest = attest-unwrapped;
     identity = identity-unwrapped;
   };
+
+  # The client packages by name: the client programs', and klaus, which is
+  # valley-flow's program under the package name an installed self-update
+  # builds.
+  clientPackages = lib.attrNames clientPrograms ++ [ "klaus" ];
 
   # A Darwin build takes no cgo, the way valley-darwin-build compiles it, so
   # that check compiles what a Mac runs. Elsewhere this is empty, and
@@ -1225,27 +1230,25 @@ rec {
           --set-default VALLEY_EVENT_SCHEMA ${../schema/events.cue}
       '';
 
-  # klaus (flow/), the client that launches and follows agent runs: the one
-  # module of this repository that imports third-party modules (AGENTS.md,
-  # "Go dependencies"), so it is built here rather than by goModule, which
-  # gives every package version "0" and no vendored modules. Its version is
-  # the CLI's, stamped into the binary, and its vendored modules are one
-  # fixed-output derivation, klaus-go-modules, resolved from the whole module
-  # with its tests, so the checks in nix/checks/flow.nix build over the
-  # same modules as the package. The package's source holds no test and no
-  # prose, and it runs no tests: the checks do. It runs git, tmux, nix and
-  # the agent CLIs it launches from the user's PATH; none of them is a
-  # dependency of the package. bin/valley-flow is a symlink to bin/klaus:
-  # the one binary names itself by the name it runs under, and `valley flow`
-  # runs valley-flow from PATH. The attribute, the name and bin/klaus are
-  # what an installed klaus's self-update builds, installs and smoke-tests
-  # (flow/internal/selfupdate).
+  # valley-flow (flow/), the client that launches and follows agent runs:
+  # the one module of this repository that imports third-party modules
+  # (AGENTS.md, "Go dependencies"), so it is built here rather than by
+  # goModule, which gives every package version "0" and no vendored
+  # modules. Its version is the CLI's, stamped into the binary, and its
+  # vendored modules are one fixed-output derivation, klaus-go-modules,
+  # resolved from the whole module with its tests, so the checks in
+  # nix/checks/flow.nix build over the same modules as the package. The
+  # package's source holds no test and no prose, and it runs no tests: the
+  # checks do. It runs git, tmux, nix and the agent CLIs it launches from
+  # the user's PATH; none of them is a dependency of the package.
+  # bin/valley-flow is a symlink to bin/klaus: the one binary names itself
+  # by the name it runs under, and `valley flow` runs valley-flow from PATH.
   flowComplete = lib.fileset.toSource {
     root = ../.;
     fileset = lib.fileset.difference ../flow unread;
   };
-  klaus = pkgs.buildGoModule {
-    pname = "klaus";
+  valley-flow = pkgs.buildGoModule {
+    pname = "valley-flow";
     inherit version;
     src = lib.fileset.toSource {
       root = ../.;
@@ -1272,6 +1275,23 @@ rec {
     postInstall = ''
       ln -s klaus $out/bin/valley-flow
     '';
-    meta.mainProgram = "klaus";
+    meta.mainProgram = "valley-flow";
   };
+
+  # klaus is valley-flow's program in the package an installed self-update
+  # builds, installs and smoke-tests by default (flow/internal/selfupdate):
+  # the attribute packages.<system>.klaus, a store path named
+  # klaus-<version>, which nix profile installs as the element klaus, and
+  # bin/klaus, its mainProgram. It holds symlinks to valley-flow's two
+  # executables, so the program is compiled once, and an executable keeps
+  # the name it is run by, which the program names itself after.
+  klaus =
+    pkgs.runCommandLocal "klaus-${version}"
+      {
+        meta.mainProgram = "klaus";
+      }
+      ''
+        mkdir -p $out/bin
+        ln -s ${valley-flow}/bin/klaus ${valley-flow}/bin/valley-flow $out/bin/
+      '';
 }

@@ -8,14 +8,17 @@ output in a scratch directory outside the tree.
 ## Building
 
 ```bash
-nix build .#klaus
+nix build .#valley-flow
 ```
 
-The flake's `klaus` package, for `x86_64-linux` and `aarch64-darwin`, builds `cmd/klaus` with the
-version stamped through `-X the-valley/flow/internal/cmd.version=<v>`: the CLI version of
-`nix/packages.nix`, `0.1.0-<short commit>`, with `-dirty` for a tree with uncommitted changes, or
-`0.1.0-unknown` when nix knows no commit. The package's source holds no tests and no prose, and the
-package runs no tests: the checks below do. It depends on none of the programs flow runs.
+The flake's `valley-flow` package, for `x86_64-linux` and `aarch64-darwin`, builds `cmd/klaus`,
+installed as `bin/klaus` and `bin/valley-flow`, with the version stamped through
+`-X the-valley/flow/internal/cmd.version=<v>`: the CLI version of `nix/packages.nix`,
+`0.1.0-<short commit>`, with `-dirty` for a tree with uncommitted changes, or `0.1.0-unknown` when
+nix knows no commit. The package's source holds no tests and no prose, and the package runs no
+tests: the checks below do. It depends on none of the programs flow runs. The `klaus` package puts
+symlinks to `valley-flow`'s two executables in a store path named `klaus-<v>`. Self-update builds
+`klaus`.
 
 ## Testing
 
@@ -30,7 +33,7 @@ nix build --option sandbox true --no-link .#checks.x86_64-linux.flow-e2e
 
 | Check        | Runs                                                                              |
 | ------------ | --------------------------------------------------------------------------------- |
-| `flow-build` | the shipping package; `klaus --version` must print `klaus version <v>`            |
+| `flow-build` | both packages; each one's `klaus --version` must print `klaus version <v>`        |
 | `flow-unit`  | `go test ./...`, with git, tmux, the newest nix, `ps` and `lsof`                  |
 | `flow-vet`   | `go vet ./...`                                                                    |
 | `flow-e2e`   | `go test -tags e2e ./e2e/...` (slow), with git, tmux, bash and the valley command |

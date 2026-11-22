@@ -3595,11 +3595,11 @@ check's build has no nix daemon and no writable store.
 
 ### Platforms
 
-The client programs (`valley`, `klaus`, `approval`, `attest`, `identity`, and `sigverify`, run on a
-person's or agent's own machine) and the formatter are offered for `aarch64-darwin` as well as
-`x86_64-linux` (`implemented`, `clientPrograms` in `nix/packages.nix`, `flake.nix`). No Darwin
-machine runs this flake's checks, so two checks on `x86_64-linux` verify what they can
-(`implemented`, `nix/checks/darwin.nix`):
+The client programs (`valley`, `valley-flow`, `approval`, `attest`, `identity`, and `sigverify`, run
+on a person's or agent's own machine), `klaus` (a second package of `valley-flow`'s program), and
+the formatter are offered for `aarch64-darwin` as well as `x86_64-linux` (`implemented`,
+`clientPackages` in `nix/packages.nix`, `flake.nix`). No Darwin machine runs this flake's checks, so
+two checks on `x86_64-linux` verify what they can (`implemented`, `nix/checks/darwin.nix`):
 
 - `valley-darwin-build` compiles each client program's Go for `darwin/arm64` without cgo (matching
   the Darwin packages), links its binaries, and runs `go vet` over every package of this repository

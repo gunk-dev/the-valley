@@ -53,7 +53,7 @@ func TestEventsSayWhereAgentTimeGoes(t *testing.T) {
 
 	sha := regexp.MustCompile(`^[0-9a-f]{40}$`)
 	wantSequence := "agent:started phase:completed/setup phase:started/agent check:started check:completed " +
-		"phase:completed/agent phase:started/finalize agent:completed agent:pr-created phase:completed/finalize"
+		"phase:completed/agent phase:started/finalize agent:completed agent:pr-created agent:data-ref-push phase:completed/finalize"
 	for _, tc := range []struct {
 		id, reason string
 		keys       []string // the key each event carries, in order: the change until the run knows its PR

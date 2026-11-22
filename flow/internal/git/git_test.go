@@ -158,8 +158,12 @@ func TestSyncToDataRef(t *testing.T) {
 		"runs/test-123.json": tmpFile,
 	}
 
-	if err := SyncToDataRef(ctx, repo, ref, "Run test-123", files); err != nil {
+	commit, err := SyncToDataRef(ctx, repo, ref, "Run test-123", files)
+	if err != nil {
 		t.Fatalf("SyncToDataRef: %v", err)
+	}
+	if tip, _ := runGit(ctx, repo, "rev-parse", ref); commit != tip {
+		t.Errorf("SyncToDataRef returned %q, want the ref's tip %q", commit, tip)
 	}
 
 	// Verify the file is in the data ref tree
@@ -197,7 +201,7 @@ func TestSyncToDataRefMultipleFiles(t *testing.T) {
 		"logs/a.jsonl": f2,
 	}
 
-	if err := SyncToDataRef(ctx, repo, ref, "Run a", files); err != nil {
+	if _, err := SyncToDataRef(ctx, repo, ref, "Run a", files); err != nil {
 		t.Fatalf("SyncToDataRef: %v", err)
 	}
 

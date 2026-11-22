@@ -70,6 +70,25 @@ type State struct {
 	// SharedGit is launch's snapshot of the files the run's clone shares
 	// across its worktrees, and what finalize found changed.
 	SharedGit *SharedGit `json:"shared_git,omitempty"`
+	// DataRefPush is what happened at finalize when it published the run's
+	// data ref to origin. Nothing changes it afterwards.
+	DataRefPush *DataRefPush `json:"data_ref_push,omitempty"`
+}
+
+// DataRefPush statuses.
+const (
+	DataRefPublished    = "published"
+	DataRefNotAttempted = "not_attempted" // push_data_ref is off
+	DataRefFailed       = "failed"
+)
+
+// DataRefPush records finalize's publication of the run's data ref.
+type DataRefPush struct {
+	Ref     string `json:"ref"`
+	Commit  string `json:"commit"` // the data-ref commit finalize wrote for the run
+	Status  string `json:"status"`
+	Class   string `json:"class,omitempty"`   // a failure's git.Push* class
+	Message string `json:"message,omitempty"` // a failure's git.PushError Message, or finalize's when the pushed history lacks Commit
 }
 
 // HouseRules is the house rules file a run's prompt carried.

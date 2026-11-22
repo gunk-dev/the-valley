@@ -57,7 +57,7 @@ func storeTrajectoryOnDataRef(t *testing.T, repo, dataRef, runID, content string
 		t.Fatal(err)
 	}
 	files := map[string]string{"sessions/" + runID + ".jsonl": tmp}
-	if err := git.SyncToDataRef(context.Background(), repo, dataRef, "Run "+runID, files); err != nil {
+	if _, err := git.SyncToDataRef(context.Background(), repo, dataRef, "Run "+runID, files); err != nil {
 		t.Fatalf("SyncToDataRef: %v", err)
 	}
 }

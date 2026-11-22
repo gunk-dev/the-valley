@@ -1189,7 +1189,8 @@ func ExtractClaudeSessionID(logPath string) string {
 // syncRunToDataRef commits the run's state, log and resumable conversation to
 // the data ref in root. It pushes the ref to origin only when push is set
 // (config push_data_ref): the ref is world-readable on a public repo, so by
-// default it stays in the local clone, where trajectory replay reads it.
+// default it stays in the local clone, where trajectory replay reads it. The
+// run records what became of the push.
 func syncRunToDataRef(ctx context.Context, root string, store run.StateStore, gitClient git.Client, dataRef string, push bool, state *run.State) {
 	stateFile := store.StateDir() + "/" + state.ID + ".json"
 	files := map[string]string{
@@ -1236,15 +1237,12 @@ func syncRunToDataRef(ctx context.Context, root string, store run.StateStore, gi
 		}
 	}
 
-	if err := gitClient.SyncToDataRef(ctx, root, dataRef, "Run "+state.ID, files); err != nil {
+	commit, err := gitClient.SyncToDataRef(ctx, root, dataRef, "Run "+state.ID, files)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: sync to data ref: %v\n", err)
 		return
 	}
-
-	if push {
-		// Best-effort: a missing remote or a rejected push must not fail finalize.
-		_ = gitClient.PushDataRef(ctx, root, dataRef)
-	}
+	recordDataRefPush(ctx, store, gitClient, root, dataRef, commit, push, state)
 }
 
 // remoteHosts returns the hosts of dir's git remotes (git remote -v), or nil

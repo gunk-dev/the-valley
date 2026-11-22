@@ -341,7 +341,7 @@ func TestFinalizeMarksValleyChangeReady(t *testing.T) {
 			if ready != nil {
 				want = append(want, event.AgentChangeReady)
 			}
-			want = append(want, event.PhaseCompleted)
+			want = append(want, event.AgentDataRefPush, event.PhaseCompleted)
 			if len(types) < len(want) || strings.Join(types[len(types)-len(want):], ",") != strings.Join(want, ",") {
 				t.Errorf("events = %v, want them to end with %v", types, want)
 			}

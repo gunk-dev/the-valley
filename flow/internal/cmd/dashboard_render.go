@@ -43,6 +43,7 @@ const (
 	chromeError                     // a recent pipeline error
 	chromeNotice                    // a new klaus to restart onto, or why that failed
 	chromeValley                    // the latest valley check failed; rows show git's view
+	chromeDataRef                   // finalize failed to push runs' data ref
 	chromeJobs                      // the jobs section's header line
 	chromeJob                       // a consult or review in the jobs section
 	chromeFooter                    // agent count and key help
@@ -69,7 +70,7 @@ func dropRank(k chromeKind) int {
 		return 5
 	case chromeError:
 		return 4
-	case chromeFooter, chromeNotice, chromeValley:
+	case chromeFooter, chromeNotice, chromeValley, chromeDataRef:
 		return 3
 	case chromeHeader:
 		return 2
@@ -106,6 +107,9 @@ func (m dashboardModel) fitLayout(nRows, nJobs int, jobsHeader bool) ([]chromeIt
 	}
 	if m.valleyErr != "" {
 		items = append(items, chromeItem{kind: chromeValley})
+	}
+	if m.dataRefWarning() != "" {
+		items = append(items, chromeItem{kind: chromeDataRef})
 	}
 	items = append(items, chromeItem{kind: chromeFooter})
 
@@ -820,6 +824,21 @@ func humanizeDuration(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
+}
+
+// dataRefWarning names the newest run whose data ref push failed at finalize,
+// and how many did, or is "" when none did. It reads the runs' records, which
+// say what happened at finalize, not whether the ref has reached origin since.
+func (m dashboardModel) dataRefWarning() string {
+	failed := failedDataRefPushes(m.states)
+	if len(failed) == 0 {
+		return ""
+	}
+	latest := failed[0]
+	if len(failed) == 1 {
+		return "at finalize: " + latest.ID + " " + dataRefFailure(latest.DataRefPush)
+	}
+	return fmt.Sprintf("at finalize: %d runs failed to publish; newest %s %s", len(failed), latest.ID, dataRefFailure(latest.DataRefPush))
 }
 
 // formatDuration renders a duration as "Xh Ym" or "Xm Ys".

@@ -50,6 +50,14 @@ const (
 	// hook) changed since launch. It carries dir, the clone's common git
 	// dir, and files, the changed paths relative to it.
 	AgentSharedGitChanged = "agent:shared-git-changed"
+	// AgentDataRefPush records that finalize published the run's data ref to
+	// origin, or did not try (push_data_ref off). It carries ref, commit and
+	// status (published or not_attempted).
+	AgentDataRefPush = "agent:data-ref-push"
+	// AgentDataRefPushFailed warns that finalize's push of the run's data ref
+	// to origin failed. The run's outcome and the local data ref are
+	// unaffected. It carries ref, commit, status (failed), class and message.
+	AgentDataRefPushFailed = "agent:data-ref-push-failed"
 	// AgentChangeReady signals that finalize marked a pushed branch's head
 	// ready on the valley its repo delivers to, as a version of the run's
 	// change. It follows agent:branch-pushed and carries repo, change_id,

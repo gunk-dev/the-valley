@@ -78,7 +78,7 @@ func (c *ExecClient) EnsureDataRef(ctx context.Context, repoDir, dataRef string)
 	return EnsureDataRef(ctx, repoDir, dataRef)
 }
 
-func (c *ExecClient) SyncToDataRef(ctx context.Context, repoDir, dataRef, commitMsg string, files map[string]string) error {
+func (c *ExecClient) SyncToDataRef(ctx context.Context, repoDir, dataRef, commitMsg string, files map[string]string) (string, error) {
 	return SyncToDataRef(ctx, repoDir, dataRef, commitMsg, files)
 }
 
@@ -86,7 +86,7 @@ func (c *ExecClient) EnsureClone(ctx context.Context, cloneURL, destDir string) 
 	return EnsureClone(ctx, cloneURL, destDir)
 }
 
-func (c *ExecClient) PushDataRef(ctx context.Context, repoDir, dataRef string) error {
+func (c *ExecClient) PushDataRef(ctx context.Context, repoDir, dataRef string) (string, error) {
 	return PushDataRef(ctx, repoDir, dataRef)
 }
 

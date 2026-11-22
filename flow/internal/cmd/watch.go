@@ -36,6 +36,7 @@ var defaultWatchFilter = []string{
 	event.AgentChangeReady,        // live
 	event.AgentChangeDraft,        // live
 	event.AgentNeedsAttention,     // live
+	event.AgentDataRefPushFailed,  // live
 	"agent:error",                 // reserved
 	event.PRApproved,              // live
 	event.PRMerged,                // live
@@ -90,6 +91,8 @@ var knownEventTypes = []eventTypeInfo{
 	{event.ChangeChecksFailed, "live", "The valley host's check worker failed a required check of a ready change's active version (a valley change's agent:ci-failed)"},
 	{event.ChangeChecksPassed, "live", "Every required check of a ready valley change's active version passed (a valley change's agent:ci-passed)"},
 	{event.AgentSharedGitChanged, "live", "A run's clone's shared git files (config, info/attributes, hooks) changed while it ran; the run needs attention"},
+	{event.AgentDataRefPush, "live", "Finalize published the run's data ref to origin, or kept it local (push_data_ref off); not in the default filter"},
+	{event.AgentDataRefPushFailed, "live", "Warning: finalize's push of the run's data ref to origin failed; the run's outcome and the local ref are unaffected"},
 	{event.PhaseStarted, "live", "A run entered a phase (agent, finalize); not in the default filter"},
 	{event.PhaseCompleted, "live", "A run finished a phase (setup, agent, finalize), with its duration; not in the default filter"},
 	{event.CheckStarted, "live", "An agent started a check flow can see (_pre-review, or a build, test or lint command); not in the default filter"},
@@ -118,7 +121,8 @@ followed via fsnotify, and emitted to stdout one line at a time. The default
 filter selects events the coordinator typically wants to react to:
 
   agent:pr-created, agent:branch-pushed, agent:change-ready,
-  agent:change-draft, agent:needs-attention, agent:error,
+  agent:change-draft, agent:needs-attention, agent:data-ref-push-failed,
+  agent:error,
   pr:approved, pr:merged, pipeline:stalled,
   change:approved, change:integrated, change:stale, change:rejected,
   change:failed, change:withdrawn, change:new-version,
@@ -671,6 +675,14 @@ func eventSummary(evt event.Event) string {
 			msg += fmt.Sprintf(" (branch %s)", branch)
 		}
 		return msg
+	case event.AgentDataRefPushFailed:
+		rec := &run.DataRefPush{Ref: get("ref"), Class: get("class"), Message: get("message")}
+		return truncateLine("warning: at finalize: "+dataRefFailure(rec), 160)
+	case event.AgentDataRefPush:
+		if get("status") == run.DataRefNotAttempted {
+			return "kept " + oneLine(get("ref")) + " local at finalize (push_data_ref off)"
+		}
+		return "published " + oneLine(get("ref")) + " at finalize"
 	case event.PRAwaitingApproval:
 		if prNum != "" {
 			return fmt.Sprintf("PR #%s awaiting approval", prNum)

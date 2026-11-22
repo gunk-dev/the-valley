@@ -507,63 +507,96 @@ func EnsureDataRef(ctx context.Context, repoDir, dataRef string) error {
 		return fmt.Errorf("creating initial commit: %w", err)
 	}
 
-	// Update ref
-	_, err = runGit(ctx, repoDir, "update-ref", dataRef, initCommit)
-	return err
-}
-
-// SyncToDataRef commits files to the data ref using a temporary index.
-// files is a map of path-in-tree -> local-file-path.
-func SyncToDataRef(ctx context.Context, repoDir, dataRef, commitMsg string, files map[string]string) error {
-	if err := EnsureDataRef(ctx, repoDir, dataRef); err != nil {
+	// Create the ref only if it is still missing: a writer that created it
+	// meanwhile may already have added a run's commit to it.
+	if _, err := runGit(ctx, repoDir, "update-ref", dataRef, initCommit, ""); err != nil {
+		if _, verr := runGit(ctx, repoDir, "rev-parse", "--verify", dataRef); verr == nil {
+			return nil
+		}
 		return err
 	}
+	return nil
+}
 
-	parentCommit, err := runGit(ctx, repoDir, "rev-parse", dataRef)
-	if err != nil {
-		return fmt.Errorf("resolving data ref: %w", err)
+// dataRefAttempts bounds how often SyncToDataRef rebuilds its commit on a
+// data ref that another writer moved meanwhile.
+const dataRefAttempts = 5
+
+// beforeDataRefUpdate runs in SyncToDataRef after it builds its commit and
+// before it moves the ref, so a test can interleave another writer there.
+var beforeDataRefUpdate = func() {}
+
+// SetBeforeDataRefUpdate sets the function SyncToDataRef runs between
+// building its commit and moving the data ref (for testing), and returns a
+// function that restores the previous one.
+func SetBeforeDataRefUpdate(fn func()) (restore func()) {
+	prev := beforeDataRefUpdate
+	beforeDataRefUpdate = fn
+	return func() { beforeDataRefUpdate = prev }
+}
+
+// SyncToDataRef commits files to the data ref using a temporary index and
+// returns the commit it wrote. files is a map of path-in-tree ->
+// local-file-path. It moves the ref only from the tip it built on, so two
+// writers in one clone both land: when the ref moved meanwhile, it rebuilds
+// its commit on the new tip, up to dataRefAttempts times.
+func SyncToDataRef(ctx context.Context, repoDir, dataRef, commitMsg string, files map[string]string) (string, error) {
+	if err := EnsureDataRef(ctx, repoDir, dataRef); err != nil {
+		return "", err
+	}
+
+	blobs := make(map[string]string, len(files))
+	for treePath, localPath := range files {
+		blob, err := runGit(ctx, repoDir, "hash-object", "-w", localPath)
+		if err != nil {
+			return "", fmt.Errorf("hashing %s: %w", localPath, err)
+		}
+		blobs[treePath] = blob
 	}
 
 	tmpIndex, err := os.CreateTemp("", "klaus-index-*")
 	if err != nil {
-		return fmt.Errorf("creating temp index: %w", err)
+		return "", fmt.Errorf("creating temp index: %w", err)
 	}
 	tmpIndexPath := tmpIndex.Name()
 	tmpIndex.Close()
 	defer os.Remove(tmpIndexPath)
+	index := map[string]string{"GIT_INDEX_FILE": tmpIndexPath}
 
-	// Read current tree into temp index
-	if err := runGitEnv(ctx, repoDir, map[string]string{"GIT_INDEX_FILE": tmpIndexPath}, "read-tree", dataRef); err != nil {
-		return fmt.Errorf("reading tree: %w", err)
-	}
-
-	// Add each file
-	for treePath, localPath := range files {
-		blob, err := runGit(ctx, repoDir, "hash-object", "-w", localPath)
+	for range dataRefAttempts {
+		parentCommit, err := runGit(ctx, repoDir, "rev-parse", "--verify", dataRef)
 		if err != nil {
-			return fmt.Errorf("hashing %s: %w", localPath, err)
+			return "", fmt.Errorf("resolving data ref: %w", err)
 		}
-		cacheInfo := fmt.Sprintf("100644,%s,%s", blob, treePath)
-		if err := runGitEnv(ctx, repoDir, map[string]string{"GIT_INDEX_FILE": tmpIndexPath}, "update-index", "--add", "--cacheinfo", cacheInfo); err != nil {
-			return fmt.Errorf("updating index for %s: %w", treePath, err)
+		// read-tree replaces the whole index, so an earlier attempt leaves nothing behind.
+		if err := runGitEnv(ctx, repoDir, index, "read-tree", parentCommit); err != nil {
+			return "", fmt.Errorf("reading tree: %w", err)
+		}
+		for treePath, blob := range blobs {
+			cacheInfo := fmt.Sprintf("100644,%s,%s", blob, treePath)
+			if err := runGitEnv(ctx, repoDir, index, "update-index", "--add", "--cacheinfo", cacheInfo); err != nil {
+				return "", fmt.Errorf("updating index for %s: %w", treePath, err)
+			}
+		}
+		newTree, err := runGitOutput(ctx, repoDir, index, "write-tree")
+		if err != nil {
+			return "", fmt.Errorf("writing tree: %w", err)
+		}
+		newCommit, err := runGitStdin(ctx, repoDir, commitMsg, "commit-tree", newTree, "-p", parentCommit)
+		if err != nil {
+			return "", fmt.Errorf("creating commit: %w", err)
+		}
+
+		beforeDataRefUpdate()
+		_, err = runGit(ctx, repoDir, "update-ref", dataRef, newCommit, parentCommit)
+		if err == nil {
+			return newCommit, nil
+		}
+		if tip, terr := runGit(ctx, repoDir, "rev-parse", "--verify", dataRef); terr != nil || tip == parentCommit {
+			return "", err // the ref did not move, so building again cannot help
 		}
 	}
-
-	// Write tree
-	newTree, err := runGitOutput(ctx, repoDir, map[string]string{"GIT_INDEX_FILE": tmpIndexPath}, "write-tree")
-	if err != nil {
-		return fmt.Errorf("writing tree: %w", err)
-	}
-
-	// Create commit
-	newCommit, err := runGitStdin(ctx, repoDir, commitMsg, "commit-tree", newTree, "-p", parentCommit)
-	if err != nil {
-		return fmt.Errorf("creating commit: %w", err)
-	}
-
-	// Update ref
-	_, err = runGit(ctx, repoDir, "update-ref", dataRef, newCommit)
-	return err
+	return "", fmt.Errorf("%s moved during each of %d attempts to add a commit to it", dataRef, dataRefAttempts)
 }
 
 // ghProtocol caches the result of detecting the user's preferred git protocol.
@@ -691,11 +724,30 @@ func EnsureClone(ctx context.Context, cloneURL, destDir string) error {
 	return err
 }
 
-// PushDataRef pushes the data ref to origin.
-func PushDataRef(ctx context.Context, repoDir, dataRef string) error {
-	refspec := fmt.Sprintf("%s:%s", dataRef, dataRef)
-	_, err := runGitNetwork(ctx, repoDir, "push", "origin", refspec, "--quiet")
-	return err
+// PushDataRef pushes the data ref's tip to origin and returns the commit it
+// pushed. It names the tip by its hash, so the caller knows which history
+// origin took even when the ref moves during the push. A failed push returns
+// a *PushError.
+func PushDataRef(ctx context.Context, repoDir, dataRef string) (string, error) {
+	tip := RefCommit(ctx, repoDir, dataRef)
+	if tip == "" {
+		return "", fmt.Errorf("%s resolves to no commit", dataRef)
+	}
+	ctx, cancel := ensureTimeout(ctx, networkTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "push", "--porcelain", "--quiet", "origin", tip+":"+dataRef)
+	cmd.Dir = repoDir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", &PushError{Class: PushNetwork}
+		}
+		return "", ParsePushError(dataRef, stdout.String(), stderr.String())
+	}
+	return tip, nil
 }
 
 // Provenance names the run that makes a worktree's commits and the change

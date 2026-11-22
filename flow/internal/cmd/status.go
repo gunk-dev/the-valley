@@ -6,6 +6,7 @@ import (
 	"the-valley/flow/internal/review"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -127,7 +128,9 @@ or the change sits on other changes). valley flow restack-conflicts, which the
 dashboard runs, does the dispatching; status only reads.
 
 A line after them sums the session's cost, counting the runs valley flow cleanup
-removed.
+removed. When finalize failed to push a run's data ref to origin (push_data_ref
+on), a list names those runs and the failure's class and message, with a hint
+saying what is known of each class; the run's STATUS does not change.
 
 After the runs, a jobs table lists the session's consults, reviews, and running
 prose passes (see valley flow jobs): every one running, and consults and reviews that
@@ -410,6 +413,22 @@ func runStatuses(ctx context.Context, store run.StateStore, states []*run.State,
 		fmt.Fprintln(out, "Restack conflicts on changes flow owns:")
 		for _, v := range restackList {
 			fmt.Fprintf(out, "  %s\n", v)
+		}
+	}
+
+	// What finalize recorded; nothing updates it if the ref reaches origin later.
+	if failed := failedDataRefPushes(states); len(failed) > 0 {
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Data ref pushes that failed at finalize:")
+		var hints []string
+		for _, s := range failed {
+			fmt.Fprintf(out, "  %s %s\n", s.ID, dataRefFailure(s.DataRefPush))
+			if hint := dataRefHint(s.DataRefPush); !slices.Contains(hints, hint) {
+				hints = append(hints, hint)
+			}
+		}
+		for _, hint := range hints {
+			fmt.Fprintf(out, "  %s\n", hint)
 		}
 	}
 

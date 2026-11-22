@@ -67,16 +67,19 @@ type Client interface {
 	// initial commit if it doesn't.
 	EnsureDataRef(ctx context.Context, repoDir, dataRef string) error
 
-	// SyncToDataRef commits files to the data ref using a temporary index.
-	// files is a map of path-in-tree -> local-file-path.
-	SyncToDataRef(ctx context.Context, repoDir, dataRef, commitMsg string, files map[string]string) error
+	// SyncToDataRef commits files to the data ref using a temporary index and
+	// returns the commit it wrote. files is a map of path-in-tree ->
+	// local-file-path. It moves the ref only from the tip it built on, so
+	// concurrent writers in one clone each land on the ref's history.
+	SyncToDataRef(ctx context.Context, repoDir, dataRef, commitMsg string, files map[string]string) (string, error)
 
 	// EnsureClone clones a repo to destDir if it doesn't already exist.
 	// If it already exists, fetches the latest from origin.
 	EnsureClone(ctx context.Context, cloneURL, destDir string) error
 
-	// PushDataRef pushes the data ref to origin.
-	PushDataRef(ctx context.Context, repoDir, dataRef string) error
+	// PushDataRef pushes the data ref's tip to origin and returns the commit
+	// it pushed. A failed push returns a *PushError.
+	PushDataRef(ctx context.Context, repoDir, dataRef string) (string, error)
 
 	// FetchDataRef updates the local data ref from origin. Best-effort: the
 	// returned error can be ignored when there is no remote or no such ref.

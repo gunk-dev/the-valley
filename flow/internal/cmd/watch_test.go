@@ -83,6 +83,16 @@ func TestWatchFilterMatches(t *testing.T) {
 			want:      true,
 		},
 		{
+			name:      "agent:data-ref-push-failed is in default filter",
+			eventType: event.AgentDataRefPushFailed,
+			want:      true,
+		},
+		{
+			name:      "agent:data-ref-push is not in default filter",
+			eventType: event.AgentDataRefPush,
+			want:      false,
+		},
+		{
 			name:      "reserved type ci:failed is in default filter",
 			eventType: "ci:failed",
 			want:      true,

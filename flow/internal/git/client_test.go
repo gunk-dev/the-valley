@@ -53,7 +53,7 @@ func TestExecClientImplementsClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := map[string]string{"test/data.json": tmpFile}
-	if err := c.SyncToDataRef(ctx, repo, ref, "test sync", files); err != nil {
+	if _, err := c.SyncToDataRef(ctx, repo, ref, "test sync", files); err != nil {
 		t.Fatalf("SyncToDataRef via Client: %v", err)
 	}
 

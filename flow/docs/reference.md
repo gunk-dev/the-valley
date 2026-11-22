@@ -186,12 +186,12 @@ from origin (best effort), restore the newest run's conversation into the new wo
 `claude --resume <uuid>`. Only the most recent run is replayed; otherwise the agent starts fresh,
 and the `replay:` line names the run and the reason, when: that run used another backend; nothing
 was stored (sensitive content, or work older than replay); it ran on another machine and
-`push_data_ref` was off there; the trajectory exceeds the threshold (default 300 KB; `--replay`
-bypasses it); no Claude session ID is known; it ran on a sandbox host; or `--no-replay` is given. A
-Codex follow-up of a Codex run forks its thread (`codex exec fork`) on the same machine; agy always
-starts fresh. A replayed conversation mentions the old worktree path and holds tool results from the
-time it stopped. With `--resume-from`, that run's conversation is used instead; when it cannot be
-resumed the agent starts fresh rather than replaying another run's.
+`push_data_ref` was off there or its push failed; the trajectory exceeds the threshold (default 300
+KB; `--replay` bypasses it); no Claude session ID is known; it ran on a sandbox host; or
+`--no-replay` is given. A Codex follow-up of a Codex run forks its thread (`codex exec fork`) on the
+same machine; agy always starts fresh. A replayed conversation mentions the old worktree path and
+holds tool results from the time it stopped. With `--resume-from`, that run's conversation is used
+instead; when it cannot be resumed the agent starts fresh rather than replaying another run's.
 
 #### Backends
 
@@ -214,10 +214,11 @@ shows the model the worker reported, else the one launched with, else `(default 
 ### valley flow status
 
 Prints the runs table; a line for each run that changed its clone's shared git files; the failed
-valley checks and the restack conflicts on changes flow owns; a `Session cost` line that includes
-removed runs; then the session's running jobs and consults and reviews that finished in the last 3
-hours. When prose passes finished in the same period, a summary line below the jobs table gives
-their total and any failures (use `valley flow jobs --kind prose` to see individual passes).
+valley checks, the restack conflicts on changes flow owns, and the [data ref](#the-data-ref) pushes
+that failed at finalize; a `Session cost` line that includes removed runs; then the session's
+running jobs and consults and reviews that finished in the last 3 hours. When prose passes finished
+in the same period, a summary line below the jobs table gives their total and any failures (use
+`valley flow jobs --kind prose` to see individual passes).
 
 | Column            | Values                                                                       |
 | ----------------- | ---------------------------------------------------------------------------- |
@@ -777,7 +778,7 @@ Run state records, among others: `id`, `prompt`, `issue`, `pr`, `pr_url`, `branc
 `resolved_model`, `effort`, `target_repo`, `clone_dir`, `host`, `approved`, `merged_at`,
 `failure_reason`, `needs_attention`, `pushed_branch`, `pushed_sha`, `pushed_subject`, `change_id`,
 `delivery` (`pr` or `push`), `valley`, `unready`, `change_repo`, `knot`, `dispatch_reason`,
-`repo_key`, `head_sha`, `took_over`, `house_rules` and `shared_git`.
+`repo_key`, `head_sha`, `took_over`, `house_rules`, `shared_git` and `data_ref_push`.
 
 ## The data ref
 
@@ -789,6 +790,29 @@ a scan looks for private IP addresses, SSH keys, credential patterns and `.age` 
 held back, only the state is stored, and `valley flow push-log` stores it after review. A trajectory
 with sensitive content is not stored. The ref is pushed to origin only when `push_data_ref` is true;
 a push sends its whole history, and anyone who can read the repository can read it.
+
+Finalize records the data-ref push in the run's `data_ref_push`: `ref`, `commit` (the commit it
+wrote for the run) and `status` (`published`, `not_attempted` when `push_data_ref` is off, or
+`failed`). It pushes the ref's tip and records `published` only when the pushed history holds the
+run's commit; otherwise `status` is `failed`, `class` is `other` and `message` says so. A failure
+adds a `class` (`refused`, `authentication`, `network`, `not_fast_forward`, `unconfirmed` or
+`other`) and a `message` holding the remote's `remote:` lines and the status `git push --porcelain`
+reports for the pushed ref; a status line for any other ref is ignored. The message stays as the
+remote sent it, except that control characters are dropped and a remote line, status or reason
+containing `://` or `@` is replaced whole by `[withheld: it contains an address]`. Past 4 KiB it is
+cut and ends in `[truncated]`. The record keeps none of git's other output, which can echo origin's
+URL with its credentials. Nothing changes the record after finalize; a build without the field drops
+it when it rewrites the run. A failed push leaves the run's outcome and the local ref as they are,
+and `valley flow status`, the dashboard, `valley flow notifications` and the default
+`valley flow watch` stream show it.
+
+The ref is one history per clone. Each finalize moves it only from the tip it built on, rebuilding
+its commit when another finalize moved it first, so the next finalize in that clone that publishes
+carries every earlier run's commit. To publish sooner, run `git push origin refs/klaus/data` in the
+clone. `not_fast_forward` means origin's ref has moved: it may already hold the run's commit,
+carried by a later run's push from the same clone, or hold commits the clone lacks (such as another
+clone's runs) that no push from the clone publishes over. `unconfirmed` means the remote did not
+report the push's outcome, so origin may hold the run's commit.
 
 ## Commit hooks and trailers
 
@@ -971,6 +995,8 @@ Each line of `events.jsonl` is
 | `agent:change-ready`, `agent:change-draft`            | A pushed head became a ready, or draft, version                    |
 | `agent:needs-attention`                               | Salvaged or failed; needs the operator                             |
 | `agent:shared-git-changed`                            | The clone's shared git files changed during the run                |
+| `agent:data-ref-push`                                 | Finalize published the data ref, or kept it local                  |
+| `agent:data-ref-push-failed`                          | Finalize's push of the data ref failed (`class`, `message`)        |
 | `agent:paused`, `agent:resumed`                       | Budget pause; its follow-up finalized                              |
 | `agent:ci-passed`, `agent:ci-failed`                  | CI on an agent's GitHub work                                       |
 | `pr:awaiting-approval`, `pr:approved`, `pr:merged`    | GitHub work ready for approval; approved; merged (once each)       |
@@ -989,9 +1015,9 @@ Each line of `events.jsonl` is
 
 The default `valley flow watch` filter is every type above except `agent:started`,
 `agent:completed`, `agent:paused`, `agent:resumed`, `agent:ci-*`, `agent:change-recorded`,
-`agent:shared-git-changed`, `pr:awaiting-approval`, `pr:approval-changed`, `phase:*` and `check:*`,
-plus the reserved types `agent:error`, `ci:failed`, `ci:passed` and `pr:comment`, which nothing
-emits.
+`agent:shared-git-changed`, `agent:data-ref-push`, `pr:awaiting-approval`, `pr:approval-changed`,
+`phase:*` and `check:*`, plus the reserved types `agent:error`, `ci:failed`, `ci:passed` and
+`pr:comment`, which nothing emits.
 
 `pr:approved` and `pr:merged` fire once per piece of GitHub work across restarts; work already
 merged when first seen emits neither. Change transitions fire once per mark, under the change's

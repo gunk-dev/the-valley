@@ -101,7 +101,7 @@ func TestReadyAtFinalizeOffLeavesDraftForKlausReady(t *testing.T) {
 					draft = e.Data
 				}
 			}
-			wantTypes := []string{event.AgentCompleted, event.AgentBranchPushed, event.AgentChangeDraft, event.PhaseCompleted}
+			wantTypes := []string{event.AgentCompleted, event.AgentBranchPushed, event.AgentChangeDraft, event.AgentDataRefPush, event.PhaseCompleted}
 			if len(types) < len(wantTypes) || strings.Join(types[len(types)-len(wantTypes):], ",") != strings.Join(wantTypes, ",") {
 				t.Errorf("events = %v, want them to end with %v", types, wantTypes)
 			}

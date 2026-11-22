@@ -436,3 +436,38 @@ func TestIsStale_GracePeriod(t *testing.T) {
 		}
 	})
 }
+
+// TestDataRefPushRecord: a record from a build without data_ref_push loads
+// without one, and each finalize outcome survives a save and a load.
+func TestDataRefPushRecord(t *testing.T) {
+	store := NewGitDirStore(t.TempDir())
+	if err := store.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	older := `{"id": "20261004-1500-old", "branch": "b", "created_at": "2026-10-04T15:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(store.StateDir(), "20261004-1500-old.json"), []byte(older), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Load("20261004-1500-old")
+	if err != nil || got.Branch != "b" || got.DataRefPush != nil {
+		t.Fatalf("Load(older record) = %+v, %v; want branch b and no data_ref_push", got, err)
+	}
+
+	for _, want := range []DataRefPush{
+		{Ref: "refs/klaus/data", Commit: "c1", Status: DataRefPublished},
+		{Ref: "refs/klaus/data", Commit: "c1", Status: DataRefNotAttempted},
+		{Ref: "refs/klaus/data", Commit: "c1", Status: DataRefFailed, Class: "refused", Message: "remote: denied\n! [remote rejected] refs/klaus/data -> refs/klaus/data (pre-receive hook declined)"},
+	} {
+		push := want
+		if err := store.Save(&State{ID: "20261004-1500-new", Branch: "b", CreatedAt: "2026-10-04T15:00:00Z", DataRefPush: &push}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := store.Load("20261004-1500-new")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.DataRefPush == nil || *got.DataRefPush != want {
+			t.Errorf("round trip of %+v = %+v", want, got.DataRefPush)
+		}
+	}
+}

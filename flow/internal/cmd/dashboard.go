@@ -146,6 +146,10 @@ list says how many are hidden. A row the dashboard watched finish stays for
 the full hour. Set "dashboard": {"hide_finished_after_minutes": N} in config
 to change the threshold, or a negative N to never hide them.
 
+When finalize failed to push a run's data ref to origin (push_data_ref on), a
+line above the footer names the newest such run, the failure's class and the
+remote's message, as finalize recorded them. The run's own row is unchanged.
+
 Set "dashboard": {"approve_command": "cd ~/hack/{repo} && valley approve {handle} --head {head}"}
 to show, in the footer, the command that approves the selected READY row
 (or submits a SUBMIT row). {repo} is the repo as the row names it, {branch}
@@ -984,6 +988,8 @@ func (m dashboardModel) View() string {
 			return style.Render(truncateLine("  "+m.binNotice, max(width-1, 1)))
 		case chromeValley:
 			return yellowStyle.Render(truncateLine("  "+integration.ValleyNote(m.valleyErr), max(width-1, 1)))
+		case chromeDataRef:
+			return yellowStyle.Render(truncateLine("  "+m.dataRefWarning(), max(width-1, 1)))
 		case chromeJobs:
 			return renderJobsHeader(v)
 		case chromeJob:

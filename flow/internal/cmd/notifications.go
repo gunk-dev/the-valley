@@ -83,6 +83,7 @@ func printSummary(events []event.Event, superseded map[string]bool) {
 	var (
 		prsReady       []string
 		needsAttention []string
+		dataRefFailed  []string
 		completed      []completedInfo
 		prCreated      []string
 		branchPushed   []runNote
@@ -157,6 +158,12 @@ func printSummary(events []event.Event, superseded map[string]bool) {
 				reason = "unknown"
 			}
 			needsAttention = append(needsAttention, fmt.Sprintf("%s — %s", id, reason))
+		case event.AgentDataRefPushFailed:
+			ref, _ := evt.Data["ref"].(string)
+			class, _ := evt.Data["class"].(string)
+			message, _ := evt.Data["message"].(string)
+			rec := &run.DataRefPush{Ref: ref, Class: class, Message: message}
+			dataRefFailed = append(dataRefFailed, fmt.Sprintf("%s — %s", id, dataRefFailure(rec)))
 		case event.PRAwaitingApproval:
 			prURL, ok := evt.Data["pr_url"].(string)
 			if !ok {
@@ -198,6 +205,12 @@ func printSummary(events []event.Event, superseded map[string]bool) {
 	if len(needsAttention) > 0 {
 		fmt.Printf("%d agent(s) need attention:\n", len(needsAttention))
 		for _, s := range needsAttention {
+			fmt.Printf("  %s\n", s)
+		}
+	}
+	if len(dataRefFailed) > 0 {
+		fmt.Printf("%d data ref push(es) failed at finalize:\n", len(dataRefFailed))
+		for _, s := range dataRefFailed {
 			fmt.Printf("  %s\n", s)
 		}
 	}

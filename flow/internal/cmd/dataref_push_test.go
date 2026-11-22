@@ -190,7 +190,7 @@ func TestDataRefPushFailureKeepsAddressesOut(t *testing.T) {
 			}
 			states, _ := store.List()
 			var status bytes.Buffer
-			if _, err := runStatuses(context.Background(), store, states, &status, nil); err != nil {
+			if err := runStatuses(context.Background(), store, states, &status); err != nil {
 				t.Fatal(err)
 			}
 			evts, _ := event.NewLog(store.BaseDir()).Read()

@@ -71,18 +71,20 @@ change records taking its pushed work on (see valley flow launch) and is running
 or finished: that run carries the attention, and the row reads ATTN if it
 in turn ended needing attention or failing. Rows are grouped by whose move
 it is, most recent first within each group:
-  yours     needs you: needs attention (ATTN), a valley change to approve
-            (READY) or to look at (STALE, REJECTED, FAILED, UNCERTAIN,
-            DRAFT), a pushed branch to submit (SUBMIT), or a PR that is ready
-            to merge and not yet approved
+  yours     needs you or your coordinator: needs attention (ATTN), a
+            valley change to approve (READY), to review (REVIEW: a draft
+            awaiting the coordinator's review) or to look at (STALE,
+            REJECTED, FAILED, UNCERTAIN, DRAFT), a pushed branch to submit
+            (SUBMIT), or a PR that is ready to merge and not yet approved
   agents    an agent is running on it: a fix agent on a PR, a follow-up
             (--resume-from, --pr or a pipeline fix) on a change
   pipeline  an open PR the pipeline is handling: CI running or failing,
             conflicts, behind, approved and waiting to merge; or a valley
             change that is approved and waiting on the integrator (APPROVED)
-            or a draft awaiting its review (REVIEW)
   done      merged, closed, integrated, gone, withdrawn, no access, or
             exited
+Each row ends with how long ago its last activity was; a REVIEW row, with
+how long its draft has waited for review, as valley flow queue shows it.
 The line above the list counts each group (e.g. "2 yours") and shows the
 scroll position (e.g. "12–30 of 34").
 
@@ -426,6 +428,9 @@ type dashboardModel struct {
 	jobsClearedAt time.Time
 	// cleared sums the runs cleanup removed, for the header's totals.
 	cleared run.Cleared
+	// clock dates REVIEW rows by the session's events, as valley flow
+	// queue dates them; nil before the first load.
+	clock *stateClock
 }
 
 func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Client) dashboardModel {
@@ -649,6 +654,7 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statesLoadedMsg:
 		m.states = msg.states
 		m.cleared = msg.cleared
+		m.clock = msg.clock
 		// Detect and finalize stale (orphaned) runs so they stop appearing as active.
 		for _, s := range m.states {
 			if s.IsStaleWith(m.tmuxDeps) {

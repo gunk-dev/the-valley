@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"the-valley/flow/internal/event"
 	"the-valley/flow/internal/integration"
 	"the-valley/flow/internal/restack"
 	"the-valley/flow/internal/valley"
@@ -140,16 +141,66 @@ type Deps struct {
 	// change or its branch.
 	Running func(k restack.Key, branch string) bool
 	Now     func() time.Time
+	// Emit reports an event under runID; nil reports none.
+	Emit func(runID, typ string, data map[string]interface{})
+}
+
+// The states of a View.
+const (
+	StateBusy       = "busy"       // a run is working on the change
+	StateDue        = "due"        // a fix run would be dispatched (a pass that doesn't act)
+	StateDispatched = "dispatched" // a fix run was dispatched for the head
+	StateActed      = "acted"      // the head was acted on before a later one
+	StateStopped    = "stopped"    // the attempts are spent
+	StateRefused    = "refused"    // the launch failed: Detail says why
+)
+
+// View is where a ready change's failed checks stand after a pass.
+type View struct {
+	Repo, ChangeID, Handle string
+	Version                int
+	Head                   string
+	Failed                 []string // the failed checks' names
+	State                  string
+	RunID                  string // the latest fix run, for StateDispatched
+	Attempts               int
+	Detail                 string
+}
+
+// Stalled reports whether klaus has stopped short of fixing the checks: its
+// attempts are spent, or it couldn't launch the fix run.
+func (v View) Stalled() bool {
+	return v.State == StateStopped || v.State == StateRefused
+}
+
+// String is the view as klaus failed-checks prints it.
+func (v View) String() string {
+	label := fmt.Sprintf("%s %s v%d checks failed (%s)", v.Repo, v.Handle, v.Version, strings.Join(v.Failed, ", "))
+	switch v.State {
+	case StateBusy:
+		return label + ": a run is working on the change"
+	case StateDue:
+		return label + ": a fix run is due"
+	case StateDispatched:
+		return label + fmt.Sprintf(": fix run %s dispatched (attempt %d of %d)", v.RunID, v.Attempts+1, MaxAttempts)
+	case StateActed:
+		return label + ": acted on before"
+	case StateStopped:
+		return label + fmt.Sprintf(": stopped after %d fix runs", v.Attempts)
+	}
+	return label + ": not dispatched: " + v.Detail
 }
 
 // Pass reads the checks of the ready changes klaus owns in repos, on
 // listed, or with nil, listing each repo, and with act dispatches a fix
 // run for each failed head it hasn't acted on, saving what it did in l.
-// It returns a line per change whose checks failed. A change is klaus's
-// when its record's owner is the repo's principal (valley.principal). A
-// change with no checks listed, or pending ones, is left alone.
-func Pass(ctx context.Context, d Deps, l *Ledger, repos []restack.Repo, listed *valley.Changes, act bool) []string {
-	var out []string
+// It returns a view of each change whose checks failed. A change is
+// klaus's when its record's owner is the repo's principal
+// (valley.principal). A change with no checks listed, or pending ones, is
+// left alone. A ledger it can't save ends the pass with an error: what
+// it didn't record, it neither dispatches nor reports.
+func Pass(ctx context.Context, d Deps, l *Ledger, repos []restack.Repo, listed *valley.Changes, act bool) ([]View, error) {
+	var out []View
 	for _, r := range repos {
 		vr, ok := repoOf(ctx, d, r, listed)
 		if !ok {
@@ -160,12 +211,16 @@ func Pass(ctx context.Context, d Deps, l *Ledger, repos []restack.Repo, listed *
 			continue
 		}
 		for _, ch := range vr.Changes {
-			if line := handle(ctx, d, l, r, ch, principal, act); line != "" {
-				out = append(out, line)
+			v, ok, err := handle(ctx, d, l, r, ch, principal, act)
+			if err != nil {
+				return out, err
+			}
+			if ok {
+				out = append(out, v)
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 // repoOf is repo r as listed, or as the valley lists it now.
@@ -184,14 +239,15 @@ func repoOf(ctx context.Context, d Deps, r restack.Repo, listed *valley.Changes)
 	return valley.Repo{}, false
 }
 
-// handle acts on one change's checks and says what came of them.
-func handle(ctx context.Context, d Deps, l *Ledger, r restack.Repo, ch valley.Change, principal string, act bool) string {
+// handle acts on one change's checks and says what came of them; ok is
+// false when they didn't fail, or the change isn't klaus's to fix.
+func handle(ctx context.Context, d Deps, l *Ledger, r restack.Repo, ch valley.Change, principal string, act bool) (View, bool, error) {
 	if ch.State != valley.StateReady || ch.Owner != principal {
-		return ""
+		return View{}, false, nil
 	}
 	v, ok := integration.ActiveVersion(ch)
 	if !ok || v.Checks == nil || v.Landing == valley.Landed || v.Landing == valley.LandedRecorded {
-		return ""
+		return View{}, false, nil
 	}
 	key := r.Name + "/" + ch.ChangeID
 	e := l.entries[key]
@@ -206,17 +262,18 @@ func handle(ctx context.Context, d Deps, l *Ledger, r restack.Repo, ch valley.Ch
 			e.Attempts, e.Stopped, e.RunID = 0, false, ""
 			l.save() //nolint:errcheck // a later pass resets it again
 		}
-		return ""
+		return View{}, false, nil
 	case valley.ChecksFailed:
 	default:
-		return ""
+		return View{}, false, nil
 	}
-	label := fmt.Sprintf("%s %s v%d checks failed (%s)", r.Name, name, v.N, strings.Join(v.Checks.FailedNames(), ", "))
+	view := View{Repo: r.Name, ChangeID: ch.ChangeID, Handle: name, Version: v.N, Head: v.Head, Failed: v.Checks.FailedNames()}
 	if e != nil && slices.Contains(e.Heads, v.Head) {
-		return label + ": " + e.said(v.Head)
+		return e.view(view), true, nil
 	}
 	if d.Running(restack.Key{Repo: r.Name, ChangeID: ch.ChangeID}, v.Branch) {
-		return label + ": a run is working on the change"
+		view.State = StateBusy
+		return view, true, nil
 	}
 	attempts := 0
 	if e != nil {
@@ -226,10 +283,12 @@ func handle(ctx context.Context, d Deps, l *Ledger, r restack.Repo, ch valley.Ch
 		}
 	}
 	if !act {
+		view.Attempts = attempts
+		view.State = StateDue
 		if attempts >= MaxAttempts {
-			return label + fmt.Sprintf(": stopped after %d fix runs", attempts)
+			view.State = StateStopped
 		}
-		return label + ": a fix run is due"
+		return view, true, nil
 	}
 	if e == nil {
 		e = &Entry{Repo: r.Name, ChangeID: ch.ChangeID}
@@ -245,20 +304,18 @@ func handle(ctx context.Context, d Deps, l *Ledger, r restack.Repo, ch valley.Ch
 	e.At = d.Now().UTC().Format(time.RFC3339)
 	if attempts >= MaxAttempts {
 		e.Stopped = true
-		l.save() //nolint:errcheck // the head is acted on in memory either way
-		return label + ": " + e.said(v.Head)
+		return d.stall(l, e, view)
 	}
 	runID, err := d.NewRunID()
 	if err != nil {
 		e.Error = err.Error()
-		l.save() //nolint:errcheck
-		return label + ": " + e.said(v.Head)
+		return d.stall(l, e, view)
 	}
 	e.RunID = runID
 	// Record the dispatch before launching it: a pass that can't record
 	// what it does dispatches nothing.
 	if err := l.save(); err != nil {
-		return label + ": not dispatched: saving the ledger: " + err.Error()
+		return View{}, false, fmt.Errorf("saving the checks ledger: %w", err)
 	}
 	err = d.Launch(ctx, Launch{
 		Dir: r.Dir, Project: r.Project, ChangeID: ch.ChangeID, RunID: runID,
@@ -267,22 +324,48 @@ func handle(ctx context.Context, d Deps, l *Ledger, r restack.Repo, ch valley.Ch
 	if err != nil {
 		// A failed launch is no fix attempt.
 		e.Error, e.RunID = err.Error(), ""
-		l.save() //nolint:errcheck
+		return d.stall(l, e, view)
 	}
-	return label + ": " + e.said(v.Head)
+	return e.view(view), true, nil
 }
 
-// said is what the entry says klaus did about failed head.
-func (e *Entry) said(head string) string {
+// view fills in what the entry says klaus did about v's failed head.
+func (e *Entry) view(v View) View {
+	v.RunID, v.Attempts = e.RunID, e.Attempts
 	switch {
-	case e.Head != head:
-		return "acted on before"
+	case e.Head != v.Head:
+		v.State = StateActed
 	case e.Stopped:
-		return fmt.Sprintf("stopped after %d fix runs", e.Attempts)
+		v.State = StateStopped
 	case e.Error != "":
-		return "not dispatched: " + e.Error
+		v.State, v.Detail = StateRefused, e.Error
+	default:
+		v.State = StateDispatched
 	}
-	return fmt.Sprintf("fix run %s dispatched (attempt %d of %d)", e.RunID, e.Attempts+1, MaxAttempts)
+	return v
+}
+
+// stall saves that klaus stopped short of fixing v's failed head, as e
+// records it, and then reports it as change:checks-stalled under the
+// change ID. The head is in e.Heads, so a later pass, which finds it
+// there, reports it no more.
+func (d Deps) stall(l *Ledger, e *Entry, v View) (View, bool, error) {
+	if err := l.save(); err != nil {
+		return View{}, false, fmt.Errorf("saving the checks ledger: %w", err)
+	}
+	v = e.view(v)
+	if d.Emit == nil {
+		return v, true, nil
+	}
+	reason := fmt.Sprintf("stopped after %d fix runs", v.Attempts)
+	if v.State == StateRefused {
+		reason = "not dispatched: " + v.Detail
+	}
+	d.Emit(v.ChangeID, event.ChangeChecksStalled, map[string]interface{}{
+		"repo": v.Repo, "change_id": v.ChangeID, "handle": v.Handle, "version": v.Version,
+		"head": v.Head, "failed": v.Failed, "attempts": v.Attempts, "reason": reason,
+	})
+	return v, true, nil
 }
 
 // plainName is a check name klaus passes on to a run's prompt.

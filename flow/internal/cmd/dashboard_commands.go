@@ -24,6 +24,7 @@ import (
 type statesLoadedMsg struct {
 	states  []*run.State
 	cleared run.Cleared // the runs cleanup removed
+	clock   *stateClock // the session's events, dating REVIEW rows
 }
 
 type ghStatusMsg struct {
@@ -119,7 +120,7 @@ func loadStatesCmd(store run.StateStore) tea.Cmd {
 			return errMsg{err: err}
 		}
 		cleared, _ := clearedOf(store, states)
-		return statesLoadedMsg{states: states, cleared: cleared}
+		return statesLoadedMsg{states: states, cleared: cleared, clock: loadClock(store)}
 	}
 }
 
@@ -229,7 +230,7 @@ func checkIntegrationCmd(checker integration.Checker, states []*run.State, store
 			msg.restacks = restackViews(views)
 		}
 		if ok && restacks && rep.Listing != nil {
-			if _, err := checksPass(ctx, hds, rep.Listing); err != nil {
+			if _, err := checksPass(ctx, hds, rep.Listing, true); err != nil {
 				slog.Warn("checks pass failed", "err", err)
 			}
 		}

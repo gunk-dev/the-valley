@@ -90,7 +90,7 @@ func statusOf(t *testing.T, out, runID string) string {
 // output: its PR's number, its valley handle, or its change ID's prefix.
 func changeColumn(t *testing.T, out, runID string) string {
 	t.Helper()
-	return statusCells(t, out, runID)[7]
+	return statusCells(t, out, runID)[8]
 }
 
 // TestStatusShowsIntegration runs the real `klaus status` over pushed runs

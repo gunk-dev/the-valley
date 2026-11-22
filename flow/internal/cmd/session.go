@@ -145,17 +145,10 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	if err := store.EnsureDirs(); err != nil {
 		return err
 	}
-	// The coordinator arms klaus watch at start, before anything has emitted
-	// an event: the file has to be there for it to follow. A coordinator
-	// without Monitor starts its first one-shot watch from the file's size
-	// now, so it misses nothing that lands before it arms the watch.
-	events := event.NewLog(store.BaseDir())
-	if err := events.Create(); err != nil {
+	// A coordinator may follow klaus watch from the start, before anything
+	// has emitted an event: the file has to be there for it to follow.
+	if err := event.NewLog(store.BaseDir()).Create(); err != nil {
 		return err
-	}
-	var watchAfter int64
-	if info, err := os.Stat(events.Path()); err == nil {
-		watchAfter = info.Size()
 	}
 
 	// Keep registered project clones up-to-date with their upstreams in the
@@ -359,7 +352,6 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 		RepoName:    repoName,
 		Projects:    projectList,
 		Coordinator: string(kind),
-		WatchAfter:  watchAfter,
 	})
 	if err != nil {
 		return fmt.Errorf("rendering session prompt: %w", err)

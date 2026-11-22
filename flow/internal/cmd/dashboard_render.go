@@ -247,7 +247,10 @@ func (m dashboardModel) renderRow(r dashRow, selected bool, lay rowLayout, now t
 	} else {
 		parts = bareAgentParts(r)
 	}
-	if !r.lastSeen.IsZero() {
+	switch {
+	case r.review:
+		parts = append(parts, dimStyle.Render(formatAge(r.reviewSince, now)))
+	case !r.lastSeen.IsZero():
 		parts = append(parts, dimStyle.Render(humanizeDuration(now.Sub(r.lastSeen))))
 	}
 	return prefix + "  " + strings.Join(parts, "  ")

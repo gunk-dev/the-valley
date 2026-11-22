@@ -17,6 +17,7 @@ agent opened or that flow tracks, and `<pr>` names one by number, URL or `owner/
 | `valley flow`, `valley flow session`, `valley flow new` | Resume or start an interactive coordinator session            |
 | `valley flow launch`                                    | Launch an autonomous agent run                                |
 | `valley flow status`                                    | Every run of the session, then running and recent jobs        |
+| `valley flow queue`                                     | What waits on the coordinator, then on the operator           |
 | `valley flow dashboard`                                 | Live TUI of runs, changes and jobs; runs the pipeline         |
 | `valley flow logs <run-id>`                             | A run's output                                                |
 | `valley flow watch`                                     | Stream the session's events, or wait for the next ones        |
@@ -220,18 +221,19 @@ running jobs and consults and reviews that finished in the last 3 hours. When pr
 in the same period, a summary line below the jobs table gives their total and any failures (use
 `valley flow jobs --kind prose` to see individual passes).
 
-| Column            | Values                                                                       |
-| ----------------- | ---------------------------------------------------------------------------- |
-| RUN ID            | the run's ID                                                                 |
-| STATUS            | where the run stands (below)                                                 |
-| MODEL, COST       | backend and model; the run's cost                                            |
-| ISSUE, REPO, HOST | the `--issue`; the target repository; where the agent ran                    |
-| CHANGE            | `#N`, else the change's handle, else the first 8 characters of its change ID |
-| CI                | `passing`, `failing`, `pending`, `unknown`; valley checks for a ready change |
-| CONFLICTS         | `none`, `yes`, `unknown`, `restack`                                          |
-| BEHIND            | commits the base has that the head lacks                                     |
-| MERGE             | `ready`, `behind N`, `blocked`, `pending`                                    |
-| PROMPT            | the prompt, or the change's title, cut at 40 characters                      |
+| Column            | Values                                                                         |
+| ----------------- | ------------------------------------------------------------------------------ |
+| RUN ID            | the run's ID                                                                   |
+| STATUS            | where the run stands (below)                                                   |
+| AGE               | how long the run or its change has been in its state; `-` when unknown or done |
+| MODEL, COST       | backend and model; the run's cost                                              |
+| ISSUE, REPO, HOST | the `--issue`; the target repository; where the agent ran                      |
+| CHANGE            | `#N`, else the change's handle, else the first 8 characters of its change ID   |
+| CI                | `passing`, `failing`, `pending`, `unknown`; valley checks for a ready change   |
+| CONFLICTS         | `none`, `yes`, `unknown`, `restack`                                            |
+| BEHIND            | commits the base has that the head lacks                                       |
+| MERGE             | `ready`, `behind N`, `blocked`, `pending`                                      |
+| PROMPT            | the prompt, or the change's title, cut at 40 characters                        |
 
 STATUS is `running`, `needs-attention`, `superseded`, `pr-created`, `merged`, `closed`, `no-access`,
 `awaiting-integration`, `integrated`, `branch-gone`, a [valley state](#valley-change-states),
@@ -240,6 +242,66 @@ idle at a shell after finalize, is not). `working`: another run of its change is
 `superseded`: a run needing attention whose pushed work a later run of its change took on, and that
 run is running or finished. `no-access`: GitHub will not show the work with the current credentials.
 `tracking`: added by `valley flow track` and not yet settled.
+
+AGE is the age [the queue](#valley-flow-queue) gives the run's state: `running` counts from the
+run's launch, `working` from the launch of the run working on the change, and every other state from
+the latest event that enters it.
+
+### valley flow queue
+
+`valley flow queue [--json]` lists what waits on the coordinator, oldest first, then what waits on
+the operator. It checks run state as `valley flow status` does without printing a table, and prints
+nothing when nothing waits. Each item is one line with `◇` (or `✗` for `checks-failed`, `rejected`
+and `failed`), the project and change handle (else GitHub number, else run ID), the state,
+`for <age>`, the head, and any note (failed checks, where restack dispatch stands, or an operator
+item's `checks pending` or `checks passing`). Coordinator items add `  run: <command>`
+(`  see: valley flow status` for shared git files). `--json` prints
+`{"coordinator":[...],"operator":[...]}`, with empty lists when nothing waits; each item has `run`,
+`change`, `change_id`, `project`, `head`, `state`, `checks`, `since` (RFC 3339), `age_seconds`,
+`next` and `note`.
+
+| State                         | Waits on    | When                                                                 | Next command                                                                                     |
+| ----------------------------- | ----------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `needs-attention`             | coordinator | finalize salvaged the work, or the clone's shared git files changed  | `valley flow launch --resume-from <run> "<brief>"`, or `valley flow status` for shared git files |
+| `awaiting-review`             | coordinator | a draft finalize left for review                                     | `valley flow ready <run> --head <head>`                                                          |
+| `checks-failed`               | coordinator | the active version's required checks failed, and flow won't fix them | `valley flow launch --change <run> "<brief>"`                                                    |
+| `conflicting`                 | coordinator | a restack conflict flow stopped short of, or has no dispatch for     | `valley flow launch --change <run> "<brief>"`                                                    |
+| `stale`, `rejected`, `failed` | coordinator | the integrator's decision on the approved version                    | `valley flow launch --change <run> "<brief>"`                                                    |
+| `draft`                       | coordinator | returned to draft, and no run works on it                            | `valley flow launch --change <run> "<brief>"`                                                    |
+| `awaiting-approval`           | operator    | ready, its checks not failed and no restack conflict standing        | none                                                                                             |
+| `awaiting-integration`        | operator    | a pushed branch the operator lands by hand                           | none                                                                                             |
+| `uncertain`                   | operator    | no landing evidence for a consumed or failed request                 | none                                                                                             |
+| `ready-to-merge`              | operator    | GitHub work (tracked too), ready to merge and not yet approved       | none                                                                                             |
+
+Launch commands carry `--repo <target>` when the run names one. Failed checks stay with flow while
+its [failed-check dispatch](#failed-check-dispatch) is due or busy, or its fix run is alive or
+pushed a new head, and move to the coordinator once the dispatch stopped, its launch failed, its fix
+run finished without a new head, or flow does not own the change. Restack conflicts likewise follow
+[restack-conflict dispatch](#restack-conflict-dispatch), moving to the coordinator once stopped,
+refused or held, or once its resolution run finished without a new head. A dispatched run removed by
+cleanup has finished; otherwise, one with no record counts as launching. If its launch fails before
+recording a run and the pass cannot save the failure, the pass reports the error and the change
+stays with flow until its next head. A draft that flow's restack dispatch made reads `conflicting`.
+A restack conflict on a ready change flow does not own reaches the coordinator once the integrator
+finds the approved version stale (`change:stale`).
+
+Everything else (running, working, approved, open GitHub work the pipeline moves, or a dispatch
+under way) is in progress or done and is left out. GitHub work reaches the queue as a run's
+`needs-attention` or as `ready-to-merge`; a pipeline that gave up on GitHub work or a run paused on
+its budget shows on the dashboard and as `pipeline:stalled` or `agent:paused` in
+[`valley flow watch`](#valley-flow-watch). A change appears as one item under its newest run, while
+a run's `needs-attention` is its own item. A valley change with a run that reads `older-version`
+stands where the valley lists its active version unless another of its runs stands for that version
+or is at work on the change (runs that exited without pushing or need attention do not). The
+operator's group carries no command: approving is the operator's, and the coordinator relays those
+items.
+
+An item's age runs from the latest event that enters its state and is not about another head:
+`agent:change-draft` for `awaiting-review`, `agent:change-ready` or `change:new-version` for
+`awaiting-approval`, and so on. Events are matched to the run itself for `needs-attention`, its
+GitHub work for `ready-to-merge`, and the change or any of its runs otherwise. With no such event
+the age is unknown: `-` in text, `null` in JSON. A time ahead of the clock, after the clock stepped
+back, reads 0.
 
 ### valley flow dashboard
 
@@ -321,6 +383,8 @@ through the formatter. `--replay` re-formats the saved JSONL log; `--raw` prints
 | `--since-start`       | Emit the file's existing events first                                                     |
 | `--once`              | Wait for at least one matching event, print all that arrived, then a `next:` line, exit 0 |
 | `--after <offset>`    | With `--once`: the byte offset to read from                                               |
+| `--queue`             | Wait until [the queue](#valley-flow-queue) differs from `--seen`; print it, exit 0        |
+| `--seen <digest>`     | With `--queue`: the digest on the last `--queue` watch's `next:` line                     |
 | `--json`              | Raw JSONL lines                                                                           |
 | `--list-types`        | Print live and reserved types and the default filter                                      |
 | `--session-id <id>`   | Override `KLAUS_SESSION_ID`                                                               |
@@ -332,6 +396,25 @@ other flags given, for example `next: valley flow watch --once --after 18342`; w
 event, it prints only its `next:` line. An offset past the end or inside a line is an error, as is
 an events file replaced or removed while a watch waits. A watch on a session without an events file
 waits for it while the session directory exists; an unknown session fails at once.
+
+`--queue` reads the queue as `valley flow queue` does and returns once its digest differs from
+`--seen`. The digest hashes each item's group, identity, state and head, and an operator item's
+checks; ages, notes and order are left out. Without `--seen` it compares with an empty queue, so it
+returns at once when anything waits. It prints the queue as `valley flow queue` prints it, then
+`next: valley flow watch --queue --seen <digest>` (omitting `--seen` when the queue is empty).
+Interrupted, it prints only its `next:` line, which waits from the `--seen` it was given. An item
+that stays as it was doesn't end the next watch; it stays in every listing, its age growing.
+
+The watch re-reads the queue after each burst of writes to `events.jsonl` or `runs/` and keeps
+nothing between reads. If a run record fails to parse, as when caught mid-rewrite, the watch holds
+off until a completing write wakes it; a record that stays malformed blocks every wait until
+rewritten or removed. Updates that write to neither file (another client returning a change to
+draft, or, when no dashboard runs to turn them into events, the valley's decisions and GitHub's CI
+results) surface at the next write or `valley flow queue`. So does a draft saved by a finalize that
+died before clearing its pane: the watch checked that write while the run still read `running`, and
+no later write follows. For GitHub work the digest holds the head the run recorded, not the one
+GitHub shows, so a new head on an item otherwise unchanged ends no wait. `--queue` takes no flag but
+`--seen` and `--session-id`.
 
 ### valley flow notifications
 
@@ -924,7 +1007,7 @@ repository and change, whose head is its pushed SHA.
 
 | Dashboard                     | `valley flow status`          | Group    | Meaning                                                                                   |
 | ----------------------------- | ----------------------------- | -------- | ----------------------------------------------------------------------------------------- |
-| `REVIEW`                      | `awaiting-review`             | pipeline | a draft left by finalize for review; approve refuses it                                   |
+| `REVIEW`                      | `awaiting-review`             | yours    | a draft left by finalize for the coordinator's review; approve refuses it                 |
 | `READY`                       | `awaiting-approval`           | yours    | the active version, ready, awaiting approval                                              |
 | `APPROVED`                    | `approved`                    | pipeline | an integration request is filed and undecided, or stale only because checks are `pending` |
 | `INTEGRATED`                  | `integrated`                  | done     | the change landed (every version shows it)                                                |
@@ -964,6 +1047,9 @@ For each failed head of a ready change flow owns, the dispatch is
 `valley flow launch --change <change-id> --run-id <id> --expect-owner <principal> --expect-branch <branch> --expect-head <head> --reason checks-failed <brief>`.
 Once per failed head, never while a run works on the change, and at most 3 failed attempts (a fix
 whose next version still fails counts) until the checks pass; recorded in `checks-dispatches.json`.
+When flow stops short of a head (its attempts spent, or the launch failed), it records that and then
+emits `change:checks-stalled`, once for that head. A pass that cannot save the record neither
+dispatches nor emits for the head, and fails with the error.
 
 ### Knots
 
@@ -1008,6 +1094,7 @@ Each line of `events.jsonl` is
 | `change:new-version`                                  | A version this session did not record (`uploader`)                 |
 | `change:checks-failed`, `change:checks-passed`        | The host's verdict on a ready version's checks (`failed`)          |
 | `change:restack-dispatched`, `change:restack-stalled` | A restack run launched; flow stops short                           |
+| `change:checks-stalled`                               | Flow stops short of fixing a failed head's checks (`reason`)       |
 | `consult:started`, `consult:completed`                | A consult backend call                                             |
 | `review:started`, `review:completed`                  | A `valley flow review`                                             |
 | `phase:started`, `phase:completed`                    | A run phase (`setup`, `agent`, `finalize`)                         |

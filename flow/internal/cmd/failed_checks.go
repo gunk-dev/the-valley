@@ -64,15 +64,15 @@ column. Prints one line per change flow owns whose checks failed.`,
 		if !ok {
 			return fmt.Errorf("failed-checks needs a session directory")
 		}
-		lines, err := checksPass(cmd.Context(), hds, nil)
+		views, err := checksPass(cmd.Context(), hds, nil, true)
 		if err != nil {
 			return err
 		}
-		if len(lines) == 0 {
+		if len(views) == 0 {
 			fmt.Println("No failed checks on ready changes flow owns.")
 		}
-		for _, l := range lines {
-			fmt.Println(l)
+		for _, v := range views {
+			fmt.Println(v)
 		}
 		return nil
 	},
@@ -84,8 +84,9 @@ func init() {
 
 // checksPass runs a checks pass over the valley repos of the session's
 // runs, reading their checks in listed, or with nil, listing each repo,
-// and dispatching a fix run for each failed head of a change klaus owns.
-func checksPass(ctx context.Context, store *run.HomeDirStore, listed *valley.Changes) ([]string, error) {
+// and with act dispatching a fix run for each failed head of a change klaus
+// owns. A pass that doesn't act only reads.
+func checksPass(ctx context.Context, store *run.HomeDirStore, listed *valley.Changes, act bool) ([]checksfix.View, error) {
 	states, err := store.List()
 	if err != nil {
 		return nil, err
@@ -95,17 +96,20 @@ func checksPass(ctx context.Context, store *run.HomeDirStore, listed *valley.Cha
 	if len(repos) == 0 {
 		return nil, nil
 	}
-	unlock, err := checksfix.Lock(store.BaseDir())
-	if err != nil {
-		return nil, err
+	if act {
+		unlock, err := checksfix.Lock(store.BaseDir())
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
 	}
-	defer unlock()
 	// The ledger holds the attempts: a pass that can't read it dispatches
 	// nothing, rather than start them over.
 	ledger, err := checksfix.LoadLedger(store.BaseDir())
 	if err != nil {
 		return nil, fmt.Errorf("reading the checks ledger: %w", err)
 	}
+	events := event.NewLog(store.BaseDir())
 	all, err := run.ListAllSessions()
 	if err != nil {
 		all = states
@@ -117,8 +121,13 @@ func checksPass(ctx context.Context, store *run.HomeDirStore, listed *valley.Cha
 		Launch:    launchChecksFix,
 		Running:   restack.RunningOn(all, run.DefaultTmuxDeps()),
 		Now:       time.Now,
+		Emit: func(runID, typ string, data map[string]interface{}) {
+			if err := events.Emit(event.New(runID, typ, data)); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: emitting %s: %v\n", typ, err)
+			}
+		},
 	}
-	return checksfix.Pass(ctx, d, ledger, repos, listed, true), nil
+	return checksfix.Pass(ctx, d, ledger, repos, listed, act)
 }
 
 // launchChecksFix launches a fix run with this klaus binary, under the run

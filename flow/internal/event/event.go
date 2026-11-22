@@ -127,6 +127,13 @@ const (
 	// the names of the failed checks.
 	ChangeChecksFailed = "change:checks-failed"
 	ChangeChecksPassed = "change:checks-passed"
+	// ChangeChecksStalled signals that klaus stopped short of fixing the
+	// failed checks of a ready change it owns (klaus failed-checks, which
+	// the dashboard runs): its fix runs are spent, or it couldn't launch
+	// one. It goes out under the change ID, once per failed head, and
+	// carries repo, change_id, handle, version, head, failed, attempts and
+	// reason.
+	ChangeChecksStalled = "change:checks-stalled"
 	// PhaseStarted and PhaseCompleted bracket a phase of a run (Phase*
 	// below). phase:completed carries the phase's started_at, ended_at and
 	// duration_ms, so a reader needn't pair it with its start.

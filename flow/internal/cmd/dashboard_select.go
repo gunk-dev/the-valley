@@ -24,9 +24,9 @@ import (
 type rowCategory int
 
 const (
-	catYours    rowCategory = iota // the operator's move: needs attention, a change to approve or look at, a draft, a branch to submit, a PR ready to approve
+	catYours    rowCategory = iota // the operator's or the coordinator's move: needs attention, a change to approve, review or look at, a draft, a branch to submit, a PR ready to approve
 	catAgents                      // an agent is running on it
-	catPipeline                    // an open PR the pipeline is moving (CI, conflicts, behind, approved and waiting), or a change the integrator has to decide or that awaits review
+	catPipeline                    // an open PR the pipeline is moving (CI, conflicts, behind, approved and waiting), or a change the integrator has to decide
 	catDone                        // merged, closed, integrated, gone, withdrawn, no access, or an agent that exited
 )
 
@@ -102,6 +102,9 @@ type dashRow struct {
 	// review marks a valley change whose version finalize left a draft
 	// awaiting review (awaitsReview): it reads REVIEW, not DRAFT.
 	review bool
+	// reviewSince is when a REVIEW row's draft was left for review, as
+	// valley flow queue dates it; zero when no event says.
+	reviewSince time.Time
 }
 
 // state returns the run that speaks for the row: a PR's first agent, which
@@ -302,9 +305,9 @@ func (m dashboardModel) changeStandsAlone(runs []*run.State) bool {
 // makes it yours; then merged, closed, no access, integrated, gone,
 // withdrawn or superseded make it done; then needs attention (a run's, a
 // stalled PR's, or a restack conflict klaus stopped short of resolving), a pushed
-// branch (to approve or submit, a draft, or whose change the integrator
-// turned down or the valley is unsure of) or a PR ready to approve make it
-// yours, except a change already approved or awaiting review, which is the
+// branch (to approve, review or submit, a draft, or whose change the
+// integrator turned down or the valley is unsure of) or a PR ready to
+// approve make it yours, except a change already approved, which is the
 // pipeline's like any other open PR; an exited agent is done.
 func (m dashboardModel) classify(r *dashRow, superseded map[string]bool) {
 	merged, attention, owed := false, false, false
@@ -347,6 +350,9 @@ func (m dashboardModel) classify(r *dashRow, superseded map[string]bool) {
 		r.verdict, r.change, r.outdated = m.runView(r.runs[0])
 	}
 	r.review = r.pushed && r.change != nil && awaitsReview(r.pushedRun(), r.verdict)
+	if r.review {
+		r.reviewSince = m.clock.since(r.pushedRun(), "awaiting-review", r.change.Head)
+	}
 
 	switch {
 	case len(r.running) > 0:
@@ -373,16 +379,18 @@ func (m dashboardModel) classify(r *dashRow, superseded map[string]bool) {
 	case attention:
 		r.category = catYours
 		r.attention = true
-	case r.pushed && (r.verdict == integration.Approved || r.review):
-		// Approved, and approved with its checks pending, wait on the integrator; a draft awaiting review on its
-		// reviewer, who marks it ready with klaus ready.
+	case r.pushed && r.verdict == integration.Approved && !r.review:
+		// Approved, and approved with its checks pending, wait on the
+		// integrator.
 		r.category = catPipeline
 	case r.pushed:
 		// A pushed branch waits for the operator to approve or submit it, or
 		// to look at what became of it, as far as anyone knows: Unknown (or
-		// no check yet) is provisional.
+		// no check yet) is provisional. A draft awaiting review waits on
+		// the coordinator, who reviews it and marks it ready with valley
+		// flow ready, as valley flow queue lists it.
 		r.category = catYours
-		r.provisional = r.verdict == integration.Unknown
+		r.provisional = r.verdict == integration.Unknown && !r.review
 	case r.prNum == "":
 		r.category = catDone
 		// A bare agent or change is hideable once its worktrees have been

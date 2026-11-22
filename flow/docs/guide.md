@@ -104,12 +104,12 @@ that [delivers to a valley](#repositories-that-deliver-to-a-valley) marks it rea
 pull request <!-- prose-allow: vocabulary --> share its row, and the runs on one change share the
 change's row. Rows are grouped by whose move it is:
 
-| Group        | What is in it                                                                                                              |
-| ------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| **yours**    | runs needing attention (`ATTN`), changes to approve (`READY`) or look at, branches to submit, GitHub rows ready to approve |
-| **agents**   | rows with an agent running on them                                                                                         |
-| **pipeline** | everything waiting on CI, review, a merge or the integrator                                                                |
-| **done**     | merged, closed, integrated, withdrawn, gone, and exited agents                                                             |
+| Group        | What is in it                                                                                                                               |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| **yours**    | yours or your coordinator's: `ATTN`, changes to approve (`READY`), review (`REVIEW`) or look at, branches to submit, GitHub rows to approve |
+| **agents**   | rows with an agent running on them                                                                                                          |
+| **pipeline** | everything waiting on CI, a merge or the integrator                                                                                         |
+| **done**     | merged, closed, integrated, withdrawn, gone, and exited agents                                                                              |
 
 `j`/`k` move, `a` approves the selected GitHub row, `o` opens it in a browser, `d` drafts a message
 about it into the coordinator's pane, `h` shows hidden done rows, `x` clears finished runs, `tab`
@@ -124,22 +124,36 @@ onto a new binary on `PATH`.
 ### Status, logs and jobs
 
 ```bash
-valley flow status            # every run: status, change, CI, conflicts, merge readiness; then jobs
+valley flow status            # every run: status, age, change, CI, conflicts, merge; then jobs
+valley flow queue             # what waits on the coordinator, oldest first, then on the operator
 valley flow logs <run-id>     # the live pane, or the formatted saved log (--raw, --replay)
 valley flow jobs              # running and recent consults, reviews and prose passes
 valley flow jobs show 1a2b --answer
 valley flow notifications     # events since you last asked, summarised
 ```
 
-### Events for the coordinator
+### What waits on the coordinator
 
-Pipeline, valley, consult and review events go to the session's `events.jsonl`. `valley flow watch`
-streams them: a Claude coordinator arms it in its Monitor tool at startup, so a merge, a landing or
-a failed check reaches it between turns. Codex and agy coordinators run `valley flow watch --once`
-as a background task, which prints the events that arrived and a `next:` line with the command that
-waits for the following ones; starting each watch from the last one's `next:` line delivers every
-event exactly once. Wait on `change:integrated` rather than polling for a landing
-([events](./reference.md#events)).
+`valley flow queue` lists what waits on the coordinator, oldest first, with how long it has waited
+and the one command that moves it on. That includes drafts to review, runs needing attention, and
+changes that are stale or rejected, or have failed checks flow won't fix. What waits on the
+operator, such as a change to approve, follows in its own group:
+
+```text
+Waiting on the coordinator
+◇ widget nxvp · awaiting-review · for 2h · head 1a2b3c4
+  run: valley flow ready <run-id> --head 1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b
+
+Waiting on the operator
+◇ widget k3fd · awaiting-approval · for 40m · head 9f8e7d6 · checks passing
+```
+
+The coordinator checks the queue at the start of each turn and waits in the background with
+`valley flow watch --queue`. It returns once the queue differs from the last one it printed,
+printing the queue and a `next:` command for the following wait. To follow a landing that a plan
+depends on, `valley flow watch --once --since-start --filter change:integrated --run <handle>` waits
+for that event alone and returns at once if it is already in the session's events
+([watch](./reference.md#valley-flow-watch), [events](./reference.md#events)).
 
 ### Clearing finished runs
 

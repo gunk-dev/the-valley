@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 	"the-valley/flow/internal/config"
+	"the-valley/flow/internal/event"
 	gh "the-valley/flow/internal/github"
 	"the-valley/flow/internal/integration"
 	"the-valley/flow/internal/pipeline"
@@ -885,19 +886,21 @@ func TestChangeRowShowsValleysActiveVersion(t *testing.T) {
 	version := func(n int, head, branch string) string {
 		return fmt.Sprintf(`{"n":%d,"head":%q,"branch":%q,"title":"Add a health check v%d","landing":"not-landed"}`, n, head, branch, n)
 	}
+	state := "ready"
 	writeListing := func(active int, versions ...string) {
 		data := fmt.Sprintf(`{"schema":"valley-changes/v1","host":"valley-host","repos":[{"repo":"widget","error":null,
-			"changes":[{"change_id":%q,"handle":"nxvp","state":"ready","active":%d,"versions":[%s]}]}]}`,
-			changeID, active, strings.Join(versions, ","))
+			"changes":[{"change_id":%q,"handle":"nxvp","state":%q,"active":%d,"versions":[%s]}]}]}`,
+			changeID, state, active, strings.Join(versions, ","))
 		if err := os.WriteFile(listing, []byte(data), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// show checks the states as the dashboard would and returns its one row
-	// and its screen.
+	// show checks the states as the dashboard would, its events dated by
+	// clock, and returns its one row and its screen.
+	var clock *stateClock
 	show := func(states ...*run.State) (dashRow, string, dashboardModel) {
 		t.Helper()
-		m := dashboardModel{states: states, tmuxDeps: testDashboardTmuxDeps(), ghStatus: map[string]*prStatus{},
+		m := dashboardModel{states: states, clock: clock, tmuxDeps: testDashboardTmuxDeps(), ghStatus: map[string]*prStatus{},
 			hideAfter: defaultHideFinishedAfter, checker: integration.NewValleyChecker(nil),
 			approveTemplate: "valley approve {handle} --head {head} # {branch}"}
 		m = send(m, tea.WindowSizeMsg{Width: 200, Height: 20})
@@ -926,6 +929,27 @@ func TestChangeRowShowsValleysActiveVersion(t *testing.T) {
 		if !strings.Contains(screen, "approve: valley approve nxvp --head "+sha('1')) ||
 			!strings.Contains(screen, "a newer push 2222222 isn't ready") {
 			t.Errorf("the footer should offer v1's approval and note the newer push:\n%s", screen)
+		}
+	})
+
+	t.Run("draft awaiting review", func(t *testing.T) {
+		// Finalize left the draft 7 minutes ago, 30 after the run began:
+		// the row's age is the queue's, the draft's wait.
+		state = "draft"
+		defer func() { state, clock = "ready", nil }()
+		draft := readied(1)
+		draft.Draft = true
+		v1 := pushedRun("20261013-0900-0001", 30, sha('1'), draft)
+		writeListing(1, version(1, sha('1'), *v1.PushedBranch))
+		_, screen, _ := show(v1)
+		if line := lineWith(screen, "nxvp"); !strings.Contains(line, "REVIEW  v1@1111111") || !strings.HasSuffix(strings.TrimSpace(line), "  -") {
+			t.Errorf("with no event dating the draft, the row's age should read -: %q", line)
+		}
+		clock = newStateClock()
+		clock.observe(clockEvent(time.Now().Add(-7*time.Minute), v1.ID, event.AgentChangeDraft, map[string]interface{}{"change_id": changeID}))
+		_, screen, _ = show(v1)
+		if line := lineWith(screen, "nxvp"); !strings.HasSuffix(strings.TrimSpace(line), "  7m") {
+			t.Errorf("the row's age should be the draft's 7m wait: %q", line)
 		}
 	})
 

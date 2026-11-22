@@ -37,32 +37,45 @@ func loadState(dir string, id string) (*State, error) {
 }
 
 func listStates(dir string) ([]*State, error) {
+	states, _, err := scanStates(dir)
+	return states, err
+}
+
+// scanStates lists the run states in dir, newest first, and names the
+// records it skipped because they don't parse. saveState rewrites a record
+// in place, so a reader can catch one half written.
+func scanStates(dir string) ([]*State, []string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, fmt.Errorf("reading state dir: %w", err)
+		return nil, nil, fmt.Errorf("reading state dir: %w", err)
 	}
 
 	var states []*State
+	var unparsed []string
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
-		id := strings.TrimSuffix(e.Name(), ".json")
-		st, err := loadState(dir, id)
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
-			continue // skip corrupt files
+			continue // removed since the listing, or unreadable
 		}
-		states = append(states, st)
+		var st State
+		if err := json.Unmarshal(data, &st); err != nil {
+			unparsed = append(unparsed, e.Name())
+			continue
+		}
+		states = append(states, &st)
 	}
 
 	sort.Slice(states, func(i, j int) bool {
 		return states[i].CreatedAt > states[j].CreatedAt
 	})
 
-	return states, nil
+	return states, unparsed, nil
 }
 
 func deleteState(dir string, id string) error {

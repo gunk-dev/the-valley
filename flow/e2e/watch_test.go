@@ -142,32 +142,18 @@ func parseWatchBatch(t *testing.T, cmdline, out string) (prs []string, next stri
 	return prs, strings.TrimPrefix(last, "next: ")
 }
 
-// TestAgyCoordinatorWatchesWithOneShotWatches follows the event channel
-// pattern the agy coordinator's prompt gives it, with the real binary: start
-// the prompt's one-shot watch, and when it exits, start the command on its
-// next: line. An event that lands before the first watch starts, two that land
-// between two watches, and one that lands while a watch waits are each
-// printed once.
-func TestAgyCoordinatorWatchesWithOneShotWatches(t *testing.T) {
+// TestOneShotWatchesDeliverEachEventOnce follows one-shot watches with the
+// real binary, each started from the last one's next: line: an event that
+// lands before the first watch starts, two that land between two watches,
+// and one that lands while a watch waits are each printed once.
+func TestOneShotWatchesDeliverEachEventOnce(t *testing.T) {
 	t.Parallel()
 	h := NewHarness(t)
-	prompt := h.newCoordinatorSession("agy")
-	if strings.Contains(prompt, "Monitor") {
-		t.Fatalf("the agy coordinator's prompt mentions Monitor:\n%s", prompt)
-	}
-	for _, want := range []string{"run_command", "only when they exit", "as a background task", "next:"} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("the agy coordinator's prompt doesn't say %q", want)
-		}
-	}
-	m := regexp.MustCompile("start `(valley flow watch --once --after 0)` as a background task").FindStringSubmatch(prompt)
-	if m == nil {
-		t.Fatalf("the agy coordinator's prompt has no first watch from the start of the new session's events:\n%s", prompt)
-	}
+	h.newCoordinatorSession("agy")
 
-	// The coordinator hasn't armed its watch yet when PR 1 merges.
+	// No watch is running yet when PR 1 merges.
 	h.emitMerged(1)
-	prs, next := h.watchOnce(m[1])
+	prs, next := h.watchOnce("valley flow watch --once --after 0")
 	if strings.Join(prs, " ") != "1" {
 		t.Fatalf("the first watch printed PRs %v, want [1]", prs)
 	}
@@ -205,27 +191,6 @@ func TestAgyCoordinatorWatchesWithOneShotWatches(t *testing.T) {
 	res = p.stop()
 	if res.ExitCode != 0 || res.Stdout != "next: "+next+"\n" {
 		t.Fatalf("interrupted, %s exited %d with %q, want just %q", next, res.ExitCode, res.Stdout, "next: "+next+"\n")
-	}
-}
-
-// TestCoordinatorPromptsFollowTheirBackends: Claude's prompt arms valley flow watch
-// in Monitor; Codex's, like agy's, never mentions Monitor and gives the
-// one-shot watch.
-func TestCoordinatorPromptsFollowTheirBackends(t *testing.T) {
-	for _, kind := range []string{"claude", "codex"} {
-		t.Run(kind, func(t *testing.T) {
-			t.Parallel()
-			h := NewHarness(t)
-			prompt := h.newCoordinatorSession(kind)
-			monitor := strings.Contains(prompt, "Command to arm in Monitor")
-			oneShot := strings.Contains(prompt, "valley flow watch --once --after 0")
-			if kind == "claude" && (!monitor || oneShot) {
-				t.Errorf("Claude's prompt: Monitor instructions %t, one-shot watch %t; want only Monitor", monitor, oneShot)
-			}
-			if kind == "codex" && (strings.Contains(prompt, "Monitor") || !oneShot) {
-				t.Errorf("Codex's prompt: mentions Monitor %t, one-shot watch %t; want only the one-shot watch", strings.Contains(prompt, "Monitor"), oneShot)
-			}
-		})
 	}
 }
 

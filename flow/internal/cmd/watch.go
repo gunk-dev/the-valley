@@ -43,6 +43,7 @@ var defaultWatchFilter = []string{
 	event.PipelineStalled,         // live
 	event.ChangeRestackDispatched, // live
 	event.ChangeRestackStalled,    // live
+	event.ChangeChecksStalled,     // live
 	event.ChangeApproved,          // live
 	event.ChangeIntegrated,        // live
 	event.ChangeStale,             // live
@@ -90,6 +91,7 @@ var knownEventTypes = []eventTypeInfo{
 	{event.ChangeNewVersion, "live", "A valley change got a version this session didn't record (the valley's restacker, or a human)"},
 	{event.ChangeChecksFailed, "live", "The valley host's check worker failed a required check of a ready change's active version (a valley change's agent:ci-failed)"},
 	{event.ChangeChecksPassed, "live", "Every required check of a ready valley change's active version passed (a valley change's agent:ci-passed)"},
+	{event.ChangeChecksStalled, "live", "Flow stopped short of fixing a ready change's failed checks (fix runs spent, or the launch failed); once per failed head"},
 	{event.AgentSharedGitChanged, "live", "A run's clone's shared git files (config, info/attributes, hooks) changed while it ran; the run needs attention"},
 	{event.AgentDataRefPush, "live", "Finalize published the run's data ref to origin, or kept it local (push_data_ref off); not in the default filter"},
 	{event.AgentDataRefPushFailed, "live", "Warning: finalize's push of the run's data ref to origin failed; the run's outcome and the local ref are unaffected"},
@@ -127,7 +129,7 @@ filter selects events the coordinator typically wants to react to:
   change:approved, change:integrated, change:stale, change:rejected,
   change:failed, change:withdrawn, change:new-version,
   change:checks-failed, change:checks-passed,
-  change:restack-dispatched, change:restack-stalled,
+  change:restack-dispatched, change:restack-stalled, change:checks-stalled,
   consult:started, consult:completed, review:started, review:completed,
   ci:failed, ci:passed, pr:comment
 
@@ -170,7 +172,24 @@ watches are past it, and running the same command again prints the same
 events. Without --after, --once starts at the end of the file (at its start
 with --since-start). Interrupted before any event, it prints just the next:
 line. An --after past the end of the file or inside a line is an error, and
-so is an events file replaced or removed while --once waits on it.`,
+so is an events file replaced or removed while --once waits on it.
+
+--queue is how a coordinator waits for its next piece of work. It returns
+once the queue (valley flow queue) differs from the one --seen names, by
+its items' states and heads, or, without --seen, once anything waits. It
+prints the queue, then the command that waits for the next difference:
+
+  next: valley flow watch --queue --seen 3f9a1c0e7b2d4a65
+
+It reads the queue again after each write to events.jsonl or the session's
+run records; a change that writes neither, such as another client
+returning a change to draft, or a valley decision or CI result while no
+dashboard runs, shows at the next write. So does a draft saved by a
+finalize that died before clearing its pane: the wait read that save while
+the run still read running. For GitHub work the digest holds the head
+the run recorded, not GitHub's, so a new head alone ends no wait.
+Interrupted, it prints just the next: line. It takes no flag but --seen
+and --session-id.`,
 	Example: `  # Default filter, follow new events from now:
   valley flow watch
 
@@ -191,7 +210,11 @@ so is an events file replaced or removed while --once waits on it.`,
   valley flow watch --once --after 18342
 
   # Wait for one run's next event:
-  valley flow watch --once --run 20261026-1701-445ec227`,
+  valley flow watch --once --run 20261026-1701-445ec227
+
+  # Wait until the queue changes; then run the next: line:
+  valley flow watch --queue
+  valley flow watch --queue --seen 3f9a1c0e7b2d4a65`,
 	RunE: runWatch,
 }
 
@@ -202,6 +225,8 @@ func init() {
 	watchCmd.Flags().Bool("since-start", false, "Emit events already in the file before tailing new ones.")
 	watchCmd.Flags().Bool("once", false, "Wait for at least one matching event, print every one that has arrived and the command that waits for the next, then exit.")
 	watchCmd.Flags().Int64("after", 0, "With --once: the byte offset in events.jsonl to read from, as printed on the last watch's next: line.")
+	watchCmd.Flags().Bool("queue", false, "Wait until the queue (valley flow queue) differs from --seen; print it and the command that waits for the next difference, then exit.")
+	watchCmd.Flags().String("seen", "", "With --queue: the queue's digest from the last --queue watch's next: line (default: an empty queue's).")
 	watchCmd.Flags().Bool("json", false, "Emit raw JSONL lines instead of human-formatted summaries.")
 	watchCmd.Flags().Bool("list-types", false, "Print known event types (live and reserved) and exit.")
 	watchCmd.Flags().String("session-id", "", "Override $KLAUS_SESSION_ID (mainly for testing).")
@@ -220,11 +245,19 @@ func runWatch(cmd *cobra.Command, args []string) error {
 	runs, _ := cmd.Flags().GetStringSlice("run")
 	sinceStart, _ := cmd.Flags().GetBool("since-start")
 	once, _ := cmd.Flags().GetBool("once")
+	waitQueue, _ := cmd.Flags().GetBool("queue")
+	seen, _ := cmd.Flags().GetString("seen")
 	after, _ := cmd.Flags().GetInt64("after")
 	hasAfter := cmd.Flags().Changed("after")
 	asJSON, _ := cmd.Flags().GetBool("json")
 	sessionOverride, _ := cmd.Flags().GetString("session-id")
 
+	if cmd.Flags().Changed("seen") && !waitQueue {
+		return fmt.Errorf("--seen needs --queue")
+	}
+	if waitQueue && (once || hasAfter || asJSON || len(filterIn) > 0 || len(filterOut) > 0 || len(runs) > 0 || sinceStart) {
+		return fmt.Errorf("--queue compares queues, not events: it takes no flag but --seen and --session-id")
+	}
 	if hasAfter && !once {
 		return fmt.Errorf("--after needs --once")
 	}
@@ -262,6 +295,16 @@ func runWatch(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	if waitQueue {
+		store := run.NewHomeDirStoreFromPath(sessionDir)
+		src := queueSource{
+			compute: func(ctx context.Context) (queue, bool, error) { return computeQueue(ctx, store) },
+			events:  eventsPath,
+			runs:    store.StateDir(),
+		}
+		next := func(digest string) string { return nextQueueWatchCommand(sessionOverride, digest) }
+		return watchQueue(ctx, src, seen, next, cmd.OutOrStdout())
+	}
 	if once {
 		start := int64(-1) // the end of the file
 		if sinceStart {
@@ -745,6 +788,16 @@ func eventSummary(evt event.Event) string {
 			status = "failed"
 		}
 		return truncateLine(fmt.Sprintf("%s (%sms) %s: %s", get("kind"), get("duration_ms"), status, get("command")), 160)
+	case event.ChangeChecksStalled:
+		msg := strings.TrimSpace(get("repo") + " " + get("handle"))
+		if v := get("version"); v != "" {
+			msg += " v" + v
+		}
+		msg += " checks failed"
+		if names := checkNames(evt.Data["failed"]); names != "" {
+			msg += ": " + names
+		}
+		return truncateLine(msg+"; flow won't fix them — "+get("reason"), 160)
 	case event.ChangeRestackDispatched, event.ChangeRestackStalled:
 		msg := strings.TrimSpace(get("repo") + " " + get("handle"))
 		if v := get("version"); v != "" {
@@ -1015,6 +1068,115 @@ func nextWatchCommand(sessionID string, filterIn, filterOut, runs []string, asJS
 		args = append(args, "--json")
 	}
 	return strings.Join(args, " ")
+}
+
+// nextQueueWatchCommand is the valley flow watch --queue command line that
+// waits for the queue to differ from the one digest names; an empty
+// queue's needs no --seen.
+func nextQueueWatchCommand(sessionID, digest string) string {
+	args := []string{"valley", "flow", "watch", "--queue"}
+	if digest != "" && digest != (queue{}).digest() {
+		args = append(args, "--seen", shellWord(digest))
+	}
+	if sessionID != "" {
+		args = append(args, "--session-id", shellWord(sessionID))
+	}
+	return strings.Join(args, " ")
+}
+
+// queueSource is what valley flow watch --queue reads: the queue,
+// provisional when a run record didn't parse, and the files whose writes
+// may change it.
+type queueSource struct {
+	compute func(context.Context) (q queue, provisional bool, err error)
+	events  string // the session's event log
+	runs    string // the directory of the session's run records
+}
+
+// queueCoalesce is how long the watch lets a burst of writes run on
+// before it reads the queue: finalize emits a run's events and then saves
+// its record, and one read after both does for the two. A write after it
+// wakes the watch again, so the window saves reads and loses nothing.
+const queueCoalesce = 200 * time.Millisecond
+
+// watchQueue is valley flow watch --queue. It reads the queue, and returns
+// it once its digest differs from seen (an empty queue's when seen is "")
+// and no run record read half written; otherwise it waits for a write to
+// the event log or the run records and reads it again. It keeps nothing
+// between reads: the queue is all there is to compare. Cancelling ctx ends
+// the wait with just the next: line, which waits from seen again.
+func watchQueue(ctx context.Context, src queueSource, seen string, next func(string) string, out io.Writer) error {
+	want := seen
+	if want == "" {
+		want = queue{}.digest()
+	}
+	if err := os.MkdirAll(src.runs, 0o755); err != nil {
+		return fmt.Errorf("creating %s: %w", src.runs, err)
+	}
+	// Watch before the first read, so a write during it wakes the watch.
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return fmt.Errorf("creating file watcher: %w", err)
+	}
+	defer watcher.Close()
+	for _, dir := range []string{filepath.Dir(src.events), src.runs} {
+		if err := watcher.Add(dir); err != nil {
+			return fmt.Errorf("watching %s: %w", dir, err)
+		}
+	}
+	for ctx.Err() == nil {
+		q, provisional, err := src.compute(ctx)
+		if ctx.Err() != nil {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if d := q.digest(); d != want && !provisional {
+			q.write(out, time.Now())
+			_, err := fmt.Fprintln(out, "next: "+next(d))
+			return err
+		}
+		if err := awaitQueueWrite(ctx, watcher, src); err != nil {
+			return err
+		}
+	}
+	_, err = fmt.Fprintln(out, "next: "+next(seen))
+	return err
+}
+
+// awaitQueueWrite waits for a write to src's event log or run records,
+// then for the burst it starts to pass (queueCoalesce). A watcher that lost
+// events counts as a write.
+func awaitQueueWrite(ctx context.Context, w *fsnotify.Watcher, src queueSource) error {
+	var settled <-chan time.Time
+	wrote := func() {
+		if settled == nil {
+			settled = time.After(queueCoalesce)
+		}
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-settled:
+			return nil
+		case ev, ok := <-w.Events:
+			if !ok {
+				return fmt.Errorf("the file watcher stopped")
+			}
+			name := filepath.Clean(ev.Name)
+			if ev.Op != fsnotify.Chmod && (name == filepath.Clean(src.events) || filepath.Dir(name) == filepath.Clean(src.runs)) {
+				wrote()
+			}
+		case werr, ok := <-w.Errors:
+			if !ok {
+				return fmt.Errorf("the file watcher stopped")
+			}
+			fmt.Fprintf(os.Stderr, "valley flow watch: watcher error: %v\n", werr)
+			wrote()
+		}
+	}
 }
 
 // statInode returns the inode for path, or 0 if unavailable.

@@ -28,6 +28,8 @@ type Cleared struct {
 	// FirstCreated is when the earliest of them was created; zero when none
 	// recorded it.
 	FirstCreated time.Time
+	// IDs names them; nil when there are none.
+	IDs map[string]bool
 }
 
 // RecordCleared appends s's cost and duration to the ledger in the session
@@ -73,6 +75,10 @@ func ReadCleared(dir string, live []*State) (Cleared, error) {
 			continue
 		}
 		seen[e.ID] = true
+		if c.IDs == nil {
+			c.IDs = make(map[string]bool)
+		}
+		c.IDs[e.ID] = true
 		c.Runs++
 		if e.CostUSD != nil {
 			c.CostUSD += *e.CostUSD

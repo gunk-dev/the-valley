@@ -478,12 +478,9 @@ type PromptVars struct {
 	// Issue is empty then.
 	Knot string
 	// Coordinator is the session coordinator's backend (claude, codex or
-	// agy), which picks how the session prompt has it follow klaus watch.
-	// RenderSessionPrompt reads an empty one as claude.
+	// agy); the session prompt names Claude Code's Monitor tool only to
+	// claude. RenderSessionPrompt reads an empty one as claude.
 	Coordinator string
-	// WatchAfter is the size of the session's events file when the session
-	// started: the offset its first klaus watch --once reads from.
-	WatchAfter int64
 }
 
 // RenderPrompt renders the system prompt template from .klaus/prompt.md.
@@ -923,7 +920,8 @@ Reviews are read-only second opinions, never approvals; ` + "`_pre-review`" + ` 
 
 ## Managing agents
 
-- ` + "`valley flow status`" + ` — check on running agents
+- ` + "`valley flow status`" + ` — check on running agents; AGE is how long each run or change has been in its state
+- ` + "`valley flow queue`" + ` — what waits on you, oldest first, with the command that moves each on
 - ` + "`valley flow logs <run-id>`" + ` — view agent output
 - ` + "`valley flow cleanup <run-id> | --all [--force]`" + ` — clean up finished runs (` + "`--force`" + ` also kills running ones, discarding their conversation — prefer ` + "`--resume-from`" + ` to redirect a running agent)
 - ` + "`valley flow target [owner/repo | project-name] [--clear]`" + ` — get/set default target repo
@@ -953,39 +951,16 @@ You do NOT need to manually monitor CI or dispatch fix agents — the pipeline h
 - Reviewing agent output when the pipeline stalls
 - Notifying the operator when PRs are ready for human review and approval
 
-## Real-time pipeline event channel
-{{if eq .Coordinator "claude"}}
-flow writes structured pipeline events (PR created/approved/merged, valley changes approved, integrated, stale, rejected, failed, withdrawn or given a new version, CI passed/failed, agent errors, review comments) to a JSONL stream you can subscribe to via Claude Code's Monitor tool. Recommended: at session start, arm a persistent Monitor on this stream so you react to events asynchronously rather than polling valley flow status:
+## What waits on you
 
-Command to arm in Monitor (set persistent: true):
+` + "`valley flow queue`" + ` lists what waits on you, oldest first, each with how long it has waited and the one command that moves it on: drafts awaiting your review, runs that need attention, changes whose checks failed and that flow won't fix, restack conflicts flow stopped short of, changes that went stale, were rejected or failed to land, and drafts no run is working on. A second group lists what waits on the operator (approvals, branches to land): tell the operator about it, and never approve anything yourself. It prints nothing when nothing waits.
 
-  valley flow watch
+- At the start of every turn, run ` + "`valley flow queue`" + ` and deal with what it lists first.
+- To wait, run the command on the ` + "`next:`" + ` line of the last ` + "`valley flow watch --queue`" + `, or ` + "`valley flow watch --queue`" + ` if you have none. It returns when the queue differs from the one that line saw (with no line, as soon as anything waits), and prints the queue and a new ` + "`next:`" + ` line. An item that stays as it was doesn't end the wait again; it stays in every ` + "`valley flow queue`" + `, its age growing.
+- Run it as a background command{{if eq .Coordinator "claude"}} (Claude Code's Monitor tool is one way: each line it prints reaches you as a notification){{end}}, one at a time, and when it exits, act on the queue it printed, then start the command on its ` + "`next:`" + ` line. If you can't run a command in the background, don't wait in the foreground; run ` + "`valley flow queue`" + ` between steps instead.
 
-Each matching event becomes a notification injected into your context between turns. React when relevant — e.g. dispatch a follow-up agent the moment a dependency PR merges or a dependency valley change lands (change:integrated, so you never poll valley status for a landing), or surface a CI failure, or a stale or rejected change, to the user without being asked. Use the default filter unless the user asks for something narrower; override with ` + "`valley flow watch --filter <type>`" + ` (repeatable). Do not arm more than one watch — the second one duplicates notifications.
+Reacting to a landing your plan depends on is different: nothing waits on you there. If ` + "`valley flow status`" + ` doesn't show it integrated (or merged) yet, wait for it with ` + "`valley flow watch --once --since-start --filter change:integrated --run <handle>`" + ` (or ` + "`--filter pr:merged --run <PR number>`" + `), which reads the session's events from the start, so it returns at once if the landing came before the command started.
 
-Events arrive only while the REPL is idle between turns. If a flurry lands during a long tool call, they batch up until you return. Plan accordingly: a Monitor isn't a guarantee of instant reaction, just a guarantee that you'll see the event before the user has to mention it.
-{{else}}
-flow writes structured pipeline events (PR created/approved/merged, valley changes approved, integrated, stale, rejected, failed, withdrawn or given a new version, CI passed/failed, agent errors, review comments) to a JSONL stream. ` + "`valley flow watch --once`" + ` waits for the next of them: it prints every event that has arrived and exits, and its last line is the command that waits for the events after those, with the stream's position in ` + "`--after`" + `:
-
-  next: valley flow watch --once --after 18342
-{{if eq .Coordinator "agy"}}
-Your background tasks (run_command in the background) hand you their output only when they exit, so a plain ` + "`valley flow watch`" + `, which never exits, never reaches you. A one-shot watch reaches you as soon as an event arrives. The pattern:
-{{else}}
-Run it as a background command. If your tools tell you when a background command exits, react then; if you read its output yourself, check the watch whenever you finish a step or are waiting on workers. If you can't run a command in the background, don't run the watch, which in the foreground blocks you until the next event; use valley flow status between tasks instead. The pattern:
-{{end}}
-1. At session start, start ` + "`valley flow watch --once --after {{.WatchAfter}}`" + ` as a background task. Its ` + "`--after`" + ` is where the stream stood when this session started, so it also prints any event since then.
-2. When it exits, first start the command on its ` + "`next:`" + ` line as a new background task, then react to the events it printed: dispatch a follow-up agent the moment a dependency PR merges or a dependency valley change lands (change:integrated, so you never poll valley status for a landing), or surface a CI failure, or a stale or rejected change, to the user without being asked.
-3. Do the same each time a watch exits.
-
-Events that land while you react, or between one watch exiting and the next starting, are past the cursor in ` + "`--after`" + `, so the next watch prints them at once: none is lost, and none is printed twice, as long as you keep to these rules:
-
-- Once you have a ` + "`next:`" + ` line, start every watch from the latest one. A watch without ` + "`--after`" + ` starts at the end of the stream and skips what arrived in between.
-- Run one watch at a time. Two watches from the same ` + "`next:`" + ` line print the same events.
-- If a watch exits without a ` + "`next:`" + ` line (it was killed, or failed), start the command you last started again. It prints the same events, so none is lost.
-- When the session resumes, the last session's watch is gone: start the command on the latest ` + "`next:`" + ` line you have again, or the command in step 1 if you have none.
-
-Use the default filter unless the user asks for something narrower; ` + "`--filter <type>`" + ` (repeatable) replaces it and ` + "`--filter-out <type>`" + ` subtracts from it. ` + "`--run <run-id>`" + ` narrows a watch to one run's events (a PR's number for pr:approved, pr:merged and pipeline:stalled; a valley change's handle for change:approved, change:integrated, change:stale, change:rejected, change:failed, change:withdrawn, change:new-version, change:checks-failed and change:checks-passed). The ` + "`next:`" + ` line keeps the flags you gave.
-{{end}}
 ## State and tracking
 
 - Each agent run creates a state file at ` + "`~/.klaus/sessions/{session-id}/runs/{run-id}.json`" + `

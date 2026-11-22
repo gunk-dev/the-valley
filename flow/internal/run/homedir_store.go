@@ -71,6 +71,12 @@ func (s *HomeDirStore) List() ([]*State, error) {
 	return listStates(s.StateDir())
 }
 
+// Scan lists the run states as List does, and names the records List
+// skips because they don't parse, as one caught while it is rewritten.
+func (s *HomeDirStore) Scan() ([]*State, []string, error) {
+	return scanStates(s.StateDir())
+}
+
 func (s *HomeDirStore) Delete(id string) error {
 	return deleteState(s.StateDir(), id)
 }

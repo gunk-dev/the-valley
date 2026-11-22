@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"the-valley/flow/internal/checksfix"
 	gh "the-valley/flow/internal/github"
 	"the-valley/flow/internal/integration"
 	"the-valley/flow/internal/jobs"
@@ -82,6 +83,13 @@ A run that isn't running and isn't done shows working while another run of
 its change (the same change ID in the same repo) is running: a follow-up
 (--pr, --resume-from or a pipeline fix) is still pushing to it, so there is
 nothing to approve yet.
+
+AGE is how long the run or its change has been in its state, as valley
+flow queue dates it: since the event that put it there (agent:change-draft
+for awaiting-review, agent:change-ready for awaiting-approval, and so
+on); a running run since its launch, and a working one since the launch
+of the run working on its change. It reads - when no event marks the
+state, or nothing is left to do.
 
 A valley change added with valley flow track shows where the valley's listing
 says its active version stands, by the statuses above (awaiting-approval,
@@ -190,7 +198,7 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 		return nil
 	}
 	if len(states) > 0 {
-		if _, err := runStatuses(ctx, store, states, os.Stdout, nil); err != nil {
+		if err := runStatuses(ctx, store, states, os.Stdout); err != nil {
 			return err
 		}
 	}
@@ -226,28 +234,66 @@ func clearedOf(store run.StateStore, live []*run.State) (run.Cleared, error) {
 // runStanding returns where each run of states stands, by index, as klaus
 // status shows it, and the integration check it read.
 func runStanding(ctx context.Context, store run.StateStore, states []*run.State) ([]string, integration.Report, error) {
-	var report integration.Report
-	statuses, err := runStatuses(ctx, store, states, io.Discard, &report)
+	rows, report, err := runRows(ctx, store, states, loadClock(store), io.Discard)
+	statuses := make([]string, len(rows))
+	for i, r := range rows {
+		statuses[i] = r.status
+	}
 	return statuses, report, err
 }
 
-// runStatuses writes the runs table for states to out and returns where
-// each run stands, by index into states, as the table shows it. A non-nil
-// checked receives the integration check it read.
-func runStatuses(ctx context.Context, store run.StateStore, states []*run.State, out io.Writer, checked *integration.Report) ([]string, error) {
+// runStatuses writes the runs table for states to out.
+func runStatuses(ctx context.Context, store run.StateStore, states []*run.State, out io.Writer) error {
+	_, _, err := runRows(ctx, store, states, loadClock(store), out)
+	return err
+}
+
+// runRow is where one run stands, as klaus status shows it.
+type runRow struct {
+	run    *run.State
+	status string
+	// since is when the run, or its change, entered its state as
+	// queueState names it; zero when no event marks it, or nothing is
+	// left to do.
+	since time.Time
+	ci    string // the CI column: pending, failing, passing or -
+	merge string // the MERGE column of a PR's run
+	label string // the CHANGE column
+	// approved is set when a run of the run's PR was approved with klaus
+	// approve; draftPR when GitHub says a PR whose MERGE reads ready is a
+	// draft.
+	approved, draftPR bool
+	// checksDone and restackDone are set when the run flow's checks or
+	// restack dispatch launched for the change has finished without a new
+	// head (dispatchFinished).
+	checksDone, restackDone bool
+	// change is the valley's record of the run's version, or the version
+	// finalize recorded; nil for a run no valley knows.
+	change *integration.Change
+	// restack and checks are where flow's dispatchers stand on a restack
+	// conflict or failed checks of the run's change; nil for none.
+	restack *restack.View
+	checks  *checksfix.View
+}
+
+// runRows writes the runs table for states to out and returns where each
+// run stands, by index into states, as the table shows it, dated by clock,
+// and the integration check it read.
+func runRows(ctx context.Context, store run.StateStore, states []*run.State, clock *stateClock, out io.Writer) ([]runRow, integration.Report, error) {
 	tmuxClient := tmux.NewExecClient()
 	ghClient := gh.NewGHCLIClient("")
+	hds, _ := store.(*run.HomeDirStore)
 
-	fmt.Fprintf(out, "%-22s  %-10s  %-26s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
-		"RUN ID", "STATUS", "MODEL", "COST", "ISSUE", "REPO", "HOST", "CHANGE", "CI", "CONFLICTS", "BEHIND", "MERGE", "PROMPT")
-	fmt.Fprintf(out, "%-22s  %-10s  %-26s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
-		"------", "------", "-----", "----", "-----", "----", "----", "------", "--", "---------", "------", "-----", "------")
+	fmt.Fprintf(out, "%-22s  %-10s  %-5s  %-26s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
+		"RUN ID", "STATUS", "AGE", "MODEL", "COST", "ISSUE", "REPO", "HOST", "CHANGE", "CI", "CONFLICTS", "BEHIND", "MERGE", "PROMPT")
+	fmt.Fprintf(out, "%-22s  %-10s  %-5s  %-26s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
+		"------", "------", "---", "-----", "----", "-----", "----", "----", "------", "--", "---------", "------", "-----", "------")
 
 	statuses := make([]string, len(states))
 	running := make(map[string]bool)
 	for i, s := range states {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, integration.Report{}, err
 		}
 		statuses[i] = determineStatus(ctx, s, tmuxClient)
 		running[s.ID] = statuses[i] == "running"
@@ -267,38 +313,65 @@ func runStatuses(ctx context.Context, store run.StateStore, states []*run.State,
 	// valley knows and the tracked valley changes, one check per repo
 	// against each run's own clone for the rest.
 	report := integration.NewValleyChecker(nil).Check(ctx, pushed)
-	if checked != nil {
-		*checked = report
-	}
 	if note := integration.ValleyNote(report.ValleyErr); note != "" {
 		fmt.Fprintln(os.Stderr, note)
 	}
 	handles := changeHandles(states, report.Changes)
 	prs := changePRs(states)
-	// The restack conflicts on changes klaus owns, and what klaus did
-	// about them; reading them changes nothing.
+	// The restack conflicts and failed checks on changes klaus owns, and
+	// what klaus did about them; reading them changes nothing.
 	var restackList []restack.View
-	var err error
-	if hds, ok := store.(*run.HomeDirStore); ok && (report.Listing != nil || !report.Asked) {
+	checksViews := make(map[integration.ChangeKey]checksfix.View)
+	if hds != nil && (report.Listing != nil || !report.Asked) {
+		var err error
 		if restackList, err = restackPass(ctx, hds, report.Listing, false); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: reading restack conflicts: %v\n", err)
 		}
 	}
+	if hds != nil && report.Listing != nil {
+		views, err := checksPass(ctx, hds, report.Listing, false)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: reading failed-checks dispatches: %v\n", err)
+		}
+		for _, v := range views {
+			checksViews[integration.ChangeKey{Repo: v.Repo, ChangeID: v.ChangeID}] = v
+		}
+	}
 	restacks := restackViews(restackList)
+	// The runs cleanup removed: a dispatched run among them has finished.
+	cleared, err := clearedOf(store, states)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: reading cleared runs to settle dispatches: %v\n", err)
+	}
 
-	// The changes some run is still running on: any other run of one
-	// that isn't done is working.
+	// The changes some run is still running on, and since when: any other
+	// run of one that isn't done is working.
 	changeOf := changeKeys(states)
 	busy := make(map[integration.ChangeKey]bool)
+	busySince := make(map[integration.ChangeKey]time.Time)
 	for i, s := range states {
-		if k, ok := changeOf(s); ok && statuses[i] == "running" {
-			busy[k] = true
+		k, ok := changeOf(s)
+		if !ok || statuses[i] != "running" {
+			continue
+		}
+		if t := runCreated(s); !busy[k] || t.Before(busySince[k]) {
+			busySince[k] = t
+		}
+		busy[k] = true
+	}
+
+	// The PRs some run was approved on: approval covers every run of one.
+	approvedPRs := make(map[string]bool)
+	for _, s := range states {
+		if ref := extractPRRef(s); ref != "" && s.Approved != nil && *s.Approved {
+			approvedPRs[ref] = true
 		}
 	}
 
+	rows := make([]runRow, len(states))
 	for i, s := range states {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, report, err
 		}
 		status := statuses[i]
 		prompt := truncate(s.Prompt, 40)
@@ -323,6 +396,7 @@ func runStatuses(ctx context.Context, store run.StateStore, states []*run.State,
 		if integration.TracksChange(s) && !s.SharedGitChanged() {
 			if view := report.Changes[valleyKey(s)]; view.Change != nil {
 				status = pushedStatus(view.Verdict, true)
+				change = view.Change
 				if view.Change.Title != "" {
 					prompt = truncate(view.Change.Title, 40)
 				}
@@ -342,6 +416,7 @@ func runStatuses(ctx context.Context, store run.StateStore, states []*run.State,
 			host = *s.Host
 		}
 		ci, conflicts, behind, merge := "-", "-", "-", "-"
+		draftPR := false
 		if prRef := extractPRRef(s); prRef != "" {
 			prState := ghClient.GetState(ctx, prRef)
 			switch prState {
@@ -361,6 +436,7 @@ func runStatuses(ctx context.Context, store run.StateStore, states []*run.State,
 					behind = fmt.Sprintf("%d", behindBy)
 				}
 				merge = computeMergeStatus(ci, conflicts, ghClient.GetReviewDecision(ctx, prRef), behindBy)
+				draftPR = merge == "ready" && ghClient.IsDraft(ctx, prRef)
 			}
 		}
 
@@ -372,17 +448,36 @@ func runStatuses(ctx context.Context, store run.StateStore, states []*run.State,
 			}
 		}
 
-		if _, ok := restacks[valleyKey(s)]; ok && s.ChangeID != "" && conflicts == "-" {
-			conflicts = "restack"
+		row := runRow{run: s, label: changeLabel(s, changeOf, prs, handles), change: change, approved: approvedPRs[extractPRRef(s)]}
+		if v, ok := restacks[valleyKey(s)]; ok && s.ChangeID != "" {
+			row.restack = &v
+			row.restackDone = dispatchFinished(v.RunID, v.Head, states, statuses, cleared.IDs)
+			if conflicts == "-" {
+				conflicts = "restack"
+			}
+		}
+		if v, ok := checksViews[valleyKey(s)]; ok && s.ChangeID != "" {
+			row.checks = &v
+			row.checksDone = dispatchFinished(v.RunID, v.Head, states, statuses, cleared.IDs)
 		}
 
-		if k, ok := changeOf(s); ok && busy[k] && live(status) && !s.SharedGitChanged() {
+		k, inChange := changeOf(s)
+		if inChange && busy[k] && live(status) && !s.SharedGitChanged() {
 			status = "working"
 		}
 
-		statuses[i] = status
-		fmt.Fprintf(out, "%-22s  %-10s  %-26s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
-			s.ID, status, runBackendName(s), cost, issue, repo, host, changeLabel(s, changeOf, prs, handles), ci, conflicts, behind, merge, prompt)
+		row.status, row.ci, row.merge, row.draftPR = status, ci, merge, draftPR
+		switch state, _ := queueState(row); state {
+		case "working":
+			row.since = busySince[k]
+		case "running":
+			row.since = runCreated(s)
+		default:
+			row.since = clock.since(s, state, rowHead(row))
+		}
+		rows[i] = row
+		fmt.Fprintf(out, "%-22s  %-10s  %-5s  %-26s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
+			s.ID, status, formatAge(row.since, time.Now()), runBackendName(s), cost, issue, repo, host, row.label, ci, conflicts, behind, merge, prompt)
 	}
 
 	// A run that changed the files its clone shares across worktrees
@@ -432,7 +527,17 @@ func runStatuses(ctx context.Context, store run.StateStore, states []*run.State,
 		}
 	}
 
-	return statuses, nil
+	return rows, report, nil
+}
+
+// formatAge is the AGE column: how long ago since was, "-" when it is
+// zero, unknown. humanizeDuration reads a time ahead of now, after the
+// clock stepped back, as 0s.
+func formatAge(since, now time.Time) string {
+	if since.IsZero() {
+		return "-"
+	}
+	return humanizeDuration(now.Sub(since))
 }
 
 // prSettled is the status of run s, status so far, once GitHub says its PR

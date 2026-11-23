@@ -297,3 +297,149 @@ func stringLiteral(e ast.Expr) (string, bool) {
 	}
 	return s, true
 }
+
+// useGeneration points HOME at a host config that sets naming_generation g.
+func useGeneration(t *testing.T, g string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".klaus"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".klaus", "config.json"), []byte(`{"naming_generation": "`+g+`"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// childSees runs report in sh with env and returns what it printed.
+func childSees(t *testing.T, env []string, script string) string {
+	t.Helper()
+	cmd := exec.Command("sh", "-c", script)
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	return string(out)
+}
+
+// Under bridge a child gets each variable flow sets under both names with
+// one value, an explicitly empty one included, whatever it inherited; one
+// flow removes, under neither.
+func TestBridgeSetsBothNames(t *testing.T) {
+	useGeneration(t, "bridge")
+	for _, v := range All {
+		t.Run(v.New, func(t *testing.T) {
+			path := "PATH=" + os.Getenv("PATH")
+			inherited := []string{path, v.New + "=new-stale", v.Legacy + "=legacy-stale"}
+			report := `printf '%s|%s' "${` + v.New + `-unset}" "${` + v.Legacy + `-unset}"`
+			for _, value := range []string{"it's set", ""} {
+				got := v.Set(inherited, value)
+				if want := []string{path, v.New + "=" + value, v.Legacy + "=" + value}; !reflect.DeepEqual(got, want) {
+					t.Errorf("Set(%q) = %q, want %q", value, got, want)
+				}
+				both := value + "|" + value
+				if got := childSees(t, inherited, v.Export(value)+report); got != both {
+					t.Errorf("Export(%q): child saw %q, want %q", value, got, both)
+				}
+				if got := childSees(t, inherited, v.EnvPrefix(value)+"sh -c "+shellQuote(report)); got != both {
+					t.Errorf("EnvPrefix(%q): child saw %q, want %q", value, got, both)
+				}
+			}
+			if got := childSees(t, inherited, v.UnsetPrefix()+"sh -c "+shellQuote(report)); got != "unset|unset" {
+				t.Errorf("UnsetPrefix: child saw %q", got)
+			}
+			if v.Name() != v.New {
+				t.Errorf("Name() = %q, want %q", v.Name(), v.New)
+			}
+		})
+	}
+}
+
+// Normalize resolves each variable as Lookup would, the new name first and
+// an empty value included, and gives the child it under both names, or
+// under neither; under legacy it leaves the environment as it is.
+func TestNormalize(t *testing.T) {
+	v := Scratch
+	cases := []struct {
+		name string
+		env  []string
+		want []string
+	}{
+		{"names that disagree", []string{"A=1", v.Legacy + "=old", v.New + "=new"}, []string{"A=1", v.New + "=new", v.Legacy + "=new"}},
+		{"legacy alone", []string{v.Legacy + "=old", "A=1"}, []string{"A=1", v.New + "=old", v.Legacy + "=old"}},
+		{"an empty new name", []string{v.New + "=", v.Legacy + "=old"}, []string{v.New + "=", v.Legacy + "="}},
+		{"the last entry wins", []string{v.New + "=first", v.New + "=last"}, []string{v.New + "=last", v.Legacy + "=last"}},
+		{"neither", []string{"A=1"}, []string{"A=1"}},
+	}
+	useGeneration(t, "bridge")
+	for _, tc := range cases {
+		if got := Normalize(tc.env); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("bridge, %s: Normalize = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	useGeneration(t, "legacy")
+	for _, tc := range cases {
+		if got := Normalize(tc.env); !reflect.DeepEqual(got, tc.env) {
+			t.Errorf("legacy, %s: Normalize = %q, want it unchanged", tc.name, got)
+		}
+	}
+	if NormalizePrefix() != "" {
+		t.Errorf("legacy NormalizePrefix = %q, want none", NormalizePrefix())
+	}
+	if v.Name() != v.Legacy {
+		t.Errorf("legacy Name() = %q, want %q", v.Name(), v.Legacy)
+	}
+}
+
+// A pane's shell starts from the tmux server's environment: under bridge
+// NormalizePrefix gives it this process's values under both names, and
+// clears what this process has under neither.
+func TestNormalizePrefixAndProcess(t *testing.T) {
+	useGeneration(t, "bridge")
+	for _, v := range All {
+		t.Setenv(v.New, "")
+		t.Setenv(v.Legacy, "")
+		_ = os.Unsetenv(v.New)
+		_ = os.Unsetenv(v.Legacy)
+	}
+	t.Setenv(SessionID.Legacy, "session-a")
+	t.Setenv(RunID.New, "run-new")
+	t.Setenv(RunID.Legacy, "run-old")
+	t.Setenv(Backend.New, "")
+
+	// The server's environment holds stale values of its own.
+	server := []string{"PATH=" + os.Getenv("PATH"), Scratch.Legacy + "=stale", AgentBackend.New + "=stale"}
+	var report []string
+	for _, v := range All {
+		report = append(report, `printf '%s=%s|%s\n' `+v.New+` "${`+v.New+`-unset}" "${`+v.Legacy+`-unset}"`)
+	}
+	got := childSees(t, server, NormalizePrefix()+strings.Join(report, "; "))
+	want := map[string]string{
+		SessionID.New:    "session-a|session-a",
+		RunID.New:        "run-new|run-new",
+		Backend.New:      "|",
+		RunEvents.New:    "unset|unset",
+		AgentBackend.New: "unset|unset",
+		Scratch.New:      "unset|unset",
+		TmuxSocket.New:   "unset|unset",
+	}
+	for _, line := range strings.Split(strings.TrimSpace(got), "\n") {
+		name, seen, _ := strings.Cut(line, "=")
+		if seen != want[name] {
+			t.Errorf("pane saw %s as %q, want %q", name, seen, want[name])
+		}
+	}
+
+	NormalizeProcess()
+	for _, v := range []Var{SessionID, RunID, Backend} {
+		n, nok := os.LookupEnv(v.New)
+		l, lok := os.LookupEnv(v.Legacy)
+		if !nok || !lok || n != l {
+			t.Errorf("after NormalizeProcess %s = %q (%v), %s = %q (%v)", v.New, n, nok, v.Legacy, l, lok)
+		}
+	}
+	if _, ok := os.LookupEnv(Scratch.New); ok {
+		t.Errorf("NormalizeProcess set %s, which was under neither name", Scratch.New)
+	}
+}

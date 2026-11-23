@@ -16,6 +16,7 @@ import (
 	"the-valley/flow/internal/config"
 	"the-valley/flow/internal/git"
 	gh "the-valley/flow/internal/github"
+	"the-valley/flow/internal/location"
 	"the-valley/flow/internal/run"
 	"github.com/spf13/cobra"
 )
@@ -234,7 +235,10 @@ worktree_base/.repos, so merge does not have to run inside a clone.`,
 		// from a klaus session workspace still honours that repo's settings.
 		// existingRepoDir never clones: when the repo has no local checkout,
 		// repoDir is empty and only global config applies.
-		repoDir := existingRepoDir(runner.resolveRepo(args[0]))
+		repoDir, err := existingRepoDir(runner.resolveRepo(args[0]))
+		if err != nil {
+			return err
+		}
 		cfg, err := config.Load(repoDir)
 		if err != nil {
 			return fmt.Errorf("could not load configuration: %w", err)
@@ -285,7 +289,7 @@ func rebaseAndPush(prNumber string, repo string) error {
 		return fmt.Errorf("fetching %s: %w", branch, err)
 	}
 
-	tmpDir, err := os.MkdirTemp("", "klaus-merge-*")
+	tmpDir, err := os.MkdirTemp("", location.TempPattern("merge-*"))
 	if err != nil {
 		return fmt.Errorf("creating temp dir: %w", err)
 	}

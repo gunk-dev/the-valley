@@ -42,7 +42,10 @@ type valleyListings map[string]*valley.Changes
 // the change is already on the dashboard, tracked or pushed by a run in
 // states, or the valley doesn't list exactly one change id names.
 func trackChange(ctx context.Context, proj, id string, store run.StateStore, states []*run.State, listings valleyListings) (*run.State, error) {
-	dir := existingRepoDir(proj)
+	dir, err := existingRepoDir(proj)
+	if err != nil {
+		return nil, err
+	}
 	switch {
 	case dir == "" && proj == "":
 		return nil, fmt.Errorf("no project for change %s: name it as <project>:%s, use --repo, or set a session target", id, id)

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"the-valley/flow/internal/location"
 )
 
 // Timeout constants for git operations.
@@ -503,7 +505,7 @@ func EnsureDataRef(ctx context.Context, repoDir, dataRef string) error {
 	}
 
 	// Create initial commit
-	initCommit, err := runGitStdin(ctx, repoDir, "Initialize klaus run data", "commit-tree", emptyTree)
+	initCommit, err := runGitStdin(ctx, repoDir, "Initialize "+location.Self()+" run data", "commit-tree", emptyTree)
 	if err != nil {
 		return fmt.Errorf("creating initial commit: %w", err)
 	}
@@ -555,7 +557,7 @@ func SyncToDataRef(ctx context.Context, repoDir, dataRef, commitMsg string, file
 		blobs[treePath] = blob
 	}
 
-	tmpIndex, err := os.CreateTemp("", "klaus-index-*")
+	tmpIndex, err := os.CreateTemp("", location.TempPattern("index-*"))
 	if err != nil {
 		return "", fmt.Errorf("creating temp index: %w", err)
 	}
@@ -782,8 +784,11 @@ const hookConfigName = "klaus.config"
 // trailers referencing Claude or Anthropic and removes AI attribution lines
 // (human co-author lines are kept), adds the provenance trailers named in
 // klaus.config, then runs the commit-msg hook git would otherwise have run.
-// A Change-Id already on the message is kept; a Klaus-Run is added unless
-// that same run is already listed, so an amend by a later run lists both.
+// A Change-Id already on the message is kept. The run is added unless the
+// message lists it already, under either key, so an amend by a later run
+// lists both and no run is listed under both keys. It goes under the key
+// the message lists runs under: Flow-Run when the message has Flow-Run and
+// no Klaus-Run, else Klaus-Run.
 //
 // A message that is empty, or made only of lines starting with #, gets no
 // trailers. Git keeps # lines for git commit -m but strips them from a message
@@ -816,8 +821,19 @@ if sed '/^. -\{24\} >8 -\{24\}$/,$d' "$1" | git stripspace --strip-comments | gr
   fi
   run=$(setting run)
   if [ -n "$run" ]; then
-    git interpret-trailers --in-place --no-divider \
-      --if-exists addIfDifferent --trailer "Klaus-Run: $run" "$1" || exit 1
+    # The run goes under the key the message lists runs under, Klaus-Run
+    # unless it has Flow-Run alone, and not at all when either lists it.
+    trailers=$(git interpret-trailers --parse --no-divider "$1") || exit 1
+    key=Klaus-Run
+    if printf '%s\n' "$trailers" | grep -qi '^flow-run:' &&
+      ! printf '%s\n' "$trailers" | grep -qi '^klaus-run:'; then
+      key=Flow-Run
+    fi
+    if ! printf '%s\n' "$trailers" | grep -iE '^(flow|klaus)-run:' |
+      sed 's/^[^:]*: *//' | grep -qxF -- "$run"; then
+      git interpret-trailers --in-place --no-divider \
+        --if-exists addIfDifferent --trailer "$key: $run" "$1" || exit 1
+    fi
   fi
 fi
 
@@ -1167,71 +1183,31 @@ const (
 	FlowRunTrailer  = "Flow-Run"
 )
 
-// ErrConflictingRunTrailers is returned when a commit carries both Flow-Run
-// and Klaus-Run trailers that disagree.
-var ErrConflictingRunTrailers = errors.New("conflicting Flow-Run and Klaus-Run trailers")
-
-// CommitRunID returns the run ID trailer of commit rev in dir, reading either
-// Flow-Run or Klaus-Run, or "" when the commit carries neither. When both
-// trailer keys are present they must agree; if they disagree, CommitRunID
-// returns "" and an error wrapping ErrConflictingRunTrailers.
-func CommitRunID(ctx context.Context, dir, rev string) (string, error) {
+// CommitRuns lists the runs the run trailers of commit rev in dir name,
+// Flow-Run and Klaus-Run alike, in the message's order, each once and none
+// empty; nil when it has neither. An amend by a later run, of either key,
+// adds its run to the list.
+func CommitRuns(ctx context.Context, dir, rev string) ([]string, error) {
 	out, err := runGit(ctx, dir, "log", "-1", "--format=%(trailers:key="+FlowRunTrailer+",key="+KlausRunTrailer+",unfold,separator=%x0A)", rev)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return parseRunIDTrailers(out)
+	return parseRunTrailers(out), nil
 }
 
-func parseRunIDTrailers(out string) (string, error) {
-	var flowIDs, klausIDs []string
-	var sawFlow, sawKlaus bool
-	appendUnique := func(dst []string, v string) []string {
-		if slices.Contains(dst, v) {
-			return dst
-		}
-		return append(dst, v)
-	}
+func parseRunTrailers(out string) []string {
+	var runs []string
 	for _, line := range strings.Split(out, "\n") {
 		k, v, ok := strings.Cut(line, ":")
 		if !ok {
 			continue
 		}
-		k = strings.TrimSpace(k)
-		v = strings.TrimSpace(v)
-		switch {
-		case strings.EqualFold(k, FlowRunTrailer):
-			sawFlow = true
-			flowIDs = appendUnique(flowIDs, v)
-		case strings.EqualFold(k, KlausRunTrailer):
-			sawKlaus = true
-			klausIDs = appendUnique(klausIDs, v)
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		if (strings.EqualFold(k, FlowRunTrailer) || strings.EqualFold(k, KlausRunTrailer)) && v != "" && !slices.Contains(runs, v) {
+			runs = append(runs, v)
 		}
 	}
-	nonEmpty := func(vals []string) string {
-		for _, v := range vals {
-			if v != "" {
-				return v
-			}
-		}
-		return ""
-	}
-	switch {
-	case !sawFlow && !sawKlaus:
-		return "", nil
-	case sawFlow && !sawKlaus:
-		return nonEmpty(flowIDs), nil
-	case sawKlaus && !sawFlow:
-		return nonEmpty(klausIDs), nil
-	case slices.Equal(flowIDs, klausIDs):
-		return nonEmpty(flowIDs), nil
-	default:
-		return "", fmt.Errorf("%w: %s=%s, %s=%s",
-			ErrConflictingRunTrailers,
-			FlowRunTrailer, strings.Join(flowIDs, ","),
-			KlausRunTrailer, strings.Join(klausIDs, ","),
-		)
-	}
+	return runs
 }
 
 // ensureTimeout returns a context with the given default timeout applied if

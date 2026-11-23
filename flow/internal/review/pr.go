@@ -10,6 +10,7 @@ import (
 
 	"the-valley/flow/internal/backend"
 	"the-valley/flow/internal/github"
+	"the-valley/flow/internal/location"
 )
 
 // CrossReviewMarker opens the hidden line tagging a posted cross-review; re-exported as pipeline.CrossReviewMarker.
@@ -136,7 +137,7 @@ func RunPRReview(ctx context.Context, repo, prNumber string, opts PROptions) (*R
 		return &ReviewResult{Summary: "No changes to review.", HeadSHA: pr.Head.SHA}, nil
 	}
 
-	dir, err := os.MkdirTemp("", "klaus-pr-review-")
+	dir, err := os.MkdirTemp("", location.TempPattern("pr-review-"))
 	if err != nil {
 		return nil, err
 	}

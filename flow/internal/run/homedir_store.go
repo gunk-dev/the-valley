@@ -39,6 +39,12 @@ func CreateSession(id string) (*HomeDirStore, error) {
 	if err != nil {
 		return nil, err
 	}
+	return CreateSessionIn(l, id)
+}
+
+// CreateSessionIn is CreateSession in the layout l, whose generation, when
+// set, decides the directory.
+func CreateSessionIn(l location.Layout, id string) (*HomeDirStore, error) {
 	dir, err := l.NewSession(id)
 	if err != nil {
 		return nil, err

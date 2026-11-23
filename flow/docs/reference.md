@@ -680,20 +680,24 @@ the element name it came from (run again to switch back); `--pin` holds the curr
 
 Reports, and changes nothing:
 
-- the host's `naming_generation` and the names this build gives new state under it;
+- the host's `naming_generation` and the names this build gives new state under it: legacy names
+  under `legacy`, bridge names under `bridge` and `flow`;
 - where each kind of state is, and any single-valued kind found under both names;
 - the live sessions, each with the build and the generation that created it (`legacy` when the
   session records none);
 - for each registered project, whether its worktrees' commit hooks are the current ones;
 - self-update's current and previous builds;
-- what blocks advancing to the next generation, each with its reason: among them a single-valued
-  kind under both names, a registry, session, self-update state or project's hooks it cannot read,
-  and self-update's previous build (the rollback target). Because it runs no program named in
-  self-update's state, it leaves that build's support for the operator to check with
+- what blocks each generation past the one set, with its reason and the blocked generation. This
+  build blocks `flow`, whose writers are not built. State on the host blocks the next generation (or
+  `flow` when `flow` is set): a single-valued kind under both names, a registry, session,
+  self-update state or project's hooks it cannot read, a live session created by a build that
+  records no generation, and self-update's previous build (the rollback target). Because
+  `naming status` runs no program named in self-update's state, check that build's support with
   `<store path>/bin/klaus _naming-support`.
 
 `--json` prints the same report as JSON. It cannot see other machines, or timers and helpers that
-run outside flow.
+run outside flow, and it reminds the operator that a running dashboard keeps the environment it
+started with until it restarts.
 
 ### Internal commands
 
@@ -730,7 +734,7 @@ the checkout the run's worktree belongs to, never from the agent's worktree.
 
 | Key                                                 | Default                                  | Meaning                                                       |
 | --------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------- |
-| `worktree_base`                                     | `$TMPDIR/klaus-sessions`                 | Where worktrees and `.repos/` clones go                       |
+| `worktree_base`                                     | `$TMPDIR/{klaus,valley-flow}-sessions`   | Where worktrees and `.repos/` clones go, by generation        |
 | `default_branch`                                    | `main`                                   | The repository's default branch                               |
 | `default_budget`                                    | `5.00`                                   | Claude spending cap in USD                                    |
 | `data_ref`                                          | `refs/klaus/data`                        | The [data ref](#the-data-ref)                                 |
@@ -869,17 +873,29 @@ Files equal to or under an `allow_paths` entry are skipped. The report lists `fi
 | `XDG_STATE_HOME`                                   | user                  | Self-update's legacy lock and state are in `$XDG_STATE_HOME/klaus` (default `~/.local/state`)     |
 | `CODEX_HOME`                                       | user                  | Codex authentication, also for consults                                                           |
 
-Flow exports the `KLAUS_*` names, and removes the `VALLEY_FLOW_*` name of each variable it sets so
-an inherited value cannot override it. When reading a paired variable, it uses `VALLEY_FLOW_*` if
-set, even if empty, and falls back to `KLAUS_*` only if unset. A nonempty `TMUX` overrides both
-socket variables.
+When reading a paired variable, flow uses `VALLEY_FLOW_*` if set, even if empty, and falls back to
+`KLAUS_*` only if unset. A nonempty `TMUX` overrides both socket variables. What a child gets
+follows the host's [naming generation](#naming-generations):
+
+- `legacy`: flow exports the `KLAUS_*` names, and removes the `VALLEY_FLOW_*` name of each variable
+  it sets so an inherited value cannot override it.
+- `bridge` (and `flow`): every child gets each variable under both names with one value: the value
+  flow sets for it, or else the value flow resolves. When flow has neither or removes the variable
+  (such as a local worker's socket variable without a socket), the child gets neither name. This
+  applies to processes flow runs (which inherit its environment), coordinators, opened panes (whose
+  shells start from the tmux server's environment) and sandbox workers. On a sandbox host, the
+  worker's shell keeps only the variables flow sets for it. Instructions flow writes for a worker
+  name the `VALLEY_FLOW_*` spelling.
+
+A flow process sets its own environment from `naming_generation` at start, and the processes it runs
+inherit it. Coordinators, panes and sandbox workers use the setting read when flow starts them. A
+long-running dashboard takes a changed setting at its next restart.
 
 ## Files and state
 
 Flow's state has legacy names and flow names. Flow finds and operates state under either, by the
-rule of its kind, and gives new state the legacy names (switching via
-[`naming_generation`](#naming-generations) is not built). Nothing moves: each object keeps the place
-it has.
+rule of its kind, and gives new state the names [`naming_generation`](#naming-generations) selects.
+Nothing moves: each object keeps the place it has.
 
 | State                            | Legacy name                                    | Flow name                           | Rule        |
 | -------------------------------- | ---------------------------------------------- | ----------------------------------- | ----------- |
@@ -895,7 +911,7 @@ it has.
 | Self-update lock                 | `$XDG_STATE_HOME/klaus/self-update.lock`       | `~/.valley/flow/self-update.lock`   | lock        |
 | Background project syncs         | `~/.klaus/sync.log`                            | `~/.valley/flow/sync.log`           | new         |
 | One-shot consult snapshots       | `~/.klaus/consult-snapshots/`                  | `~/.valley/flow/consult-snapshots/` | new         |
-| Scaffolding runs                 | `<clone's git common dir>/klaus/`              | `<…>/valley/flow/`                  | new         |
+| Scaffolding runs                 | `<clone's git common dir>/klaus/`              | `<…>/valley/flow/`                  | kept        |
 
 The templates are `prompt.md`, `pr-fix-prompt.md` and `session-prompt.md`, and the principles
 `principles.md`. `$XDG_STATE_HOME` defaults to `~/.local/state`. `<worktree_base>/` holds run and
@@ -907,9 +923,8 @@ coordinator worktrees and `.repos/` clones; sessions are machine-local.
   and host-only keys hold whichever names the files have.
 - **single**: the one place that exists; both existing is an error naming both, until one is removed
   or merged by hand. Writes go back where the state was read. With neither, new state follows the
-  **new** rule (the legacy name in this build). Looking up a registered project's checkout by name,
-  as merge, review by `owner/repo#n` and `track <project>:<handle>` do, does not report a registry
-  under both names: it proceeds as if the project were unregistered.
+  **new** rule. Looking up a registered project's checkout, as merge, review by `owner/repo#n` and
+  `track <project>:<handle>` do, also refuses a registry found under both names.
 - **sessions**: both roots are listed, by `status`, `queue`, `watch`, `report`, the dashboard,
   cleanup and latest-session selection. A session ID names one directory; the same ID under both is
   an error naming both. A session's runs, logs, events, prompts, workspace, jobs, consults, ledgers,
@@ -918,30 +933,69 @@ coordinator worktrees and `.repos/` clones; sessions are machine-local.
 - **lock**: held at the legacy path, then the flow path, released in reverse; a process holding
   either path alone excludes flow and is excluded by it, and two paths that are one file are locked
   once. Lock files are never removed.
-- **new**: where new state of the kind goes (the legacy name in this build; switching via
-  `naming_generation` is not built). An operation given a path keeps using that path.
+- **new**: new state of the kind goes under the names the generation gives; what exists stays where
+  it is, and an operation given a path keeps using that path. Background syncs append to the log the
+  generation names, so both logs may exist. A scaffolded declaration that exists is rewritten where
+  it is.
+- **kept**: the legacy name under `legacy` and `bridge` (the `flow` generation's writers for it are
+  not built).
 
 ### Naming generations
 
 `naming_generation`, host config only, is which names new state gets: `legacy` (the default),
-`bridge` or `flow`. Under every value this build gives new state the legacy names (implemented), and
-operates state under either name. What `bridge` and `flow` switch is not built:
+`bridge` or `flow`. Flow operates state under either name whatever the value.
 
-| Value    | New state gets                                                                                    |
-| -------- | ------------------------------------------------------------------------------------------------- |
-| `legacy` | The legacy names                                                                                  |
-| `bridge` | The flow names for home and repository state: config, registry, memory, sessions, logs, snapshots |
-| `flow`   | The flow names for the plumbing too: locks, scaffolding runs, tmux sessions, hooks, the data ref  |
+| Value    | New state gets                                                        | Status      |
+| -------- | --------------------------------------------------------------------- | ----------- |
+| `legacy` | The legacy names                                                      | implemented |
+| `bridge` | The flow names for home and repository state, as listed below         | implemented |
+| `flow`   | The flow names for the plumbing too; this build allocates as `bridge` | not built   |
 
-Existing objects keep their recorded identities: changing the setting moves no session, renames no
-tmux session and rewrites no stored path. A session records the build that created it (`created_by`)
-and the generation whose names it got (`naming_generation`), and keeps both when resumed; a run
-records the tmux session its pane is in (`tmux_session`). A record without them is legacy, and
-cleanup uses the computed legacy tmux name; it does the same, with a warning, for a recorded
-`tmux_session` that is not one flow gives the run's session. Rolling back changes the program, never
-the stored generation; if you roll back to this build, it operates state a newer build created under
-either name. [`valley flow naming status`](#valley-flow-naming-status) shows what blocks the next
-value.
+Under `bridge`, flow uses the flow names for what it writes fresh (implemented):
+
+- new sessions go under `~/.valley/flow/sessions/`, and record `naming_generation` `bridge`;
+- background syncs append to `~/.valley/flow/sync.log`, and one-shot consult snapshots go under
+  `~/.valley/flow/consult-snapshots/`;
+- scaffolding writes a host or repository declaration that does not exist yet under
+  `~/.valley/flow/` or `.valley/flow/`;
+- the project registry, shared memory and self-update state go under `~/.valley/flow/` only when
+  neither place has them;
+- `worktree_base` defaults to `$TMPDIR/valley-flow-sessions` when no config sets it (any configured
+  value is kept as written), and temporary files and directories are named `valley-flow-*`; clones
+  under `<worktree_base>/.repos/` are made afresh there;
+- children get both spellings of each flow variable ([environment](#environment-variables));
+- a coordinator's prompt names where its session's runs, the host config and self-update's state
+  are;
+- the text flow writes calls it `flow`: the coordinator's window title outside a repository, WIP
+  commit subjects and the fallback draft title, the data ref's first commit and knot comments; an
+  event's `via` and generated `command` values say `valley flow ready` and
+  `valley flow _pre-review`.
+
+`bridge` keeps the legacy names for the plumbing builds share: scaffolding runs, locks, the agents'
+tmux sessions, the data ref, the hook config file and its keys, labels, stream markers, comment
+markers and the `Klaus-Run` trailer.
+
+Where a session's own state lives follows the session: one created under `legacy` stays in its
+directory and keeps its recorded generation when resumed on a `bridge` host, and the reverse.
+Everything a command writes fresh (a new session, temporary directories, child environments,
+prompts, text and event values) follows the host's setting at the time of writing, whichever session
+it is for. A resumed coordinator keeps the instructions its conversation started with, paths
+included: Claude and Codex get the prompt rendered afresh but keep a resumed conversation's original
+instructions, and agy gets a resume message in its place, so new paths reach a coordinator at its
+next new session. A process's own environment follows the setting it read at its start. Existing
+objects keep their recorded identities: changing the setting moves no session, renames no tmux
+session and rewrites no stored path. A session records the build that created it (`created_by`) and
+the generation whose names it got (`naming_generation`), and keeps both when resumed; a run records
+the tmux session its pane is in (`tmux_session`). A record without them is legacy, and cleanup uses
+the computed legacy tmux name; it does the same, with a warning, for a recorded `tmux_session` that
+is not one flow gives the run's session.
+
+Before setting `bridge`, clear what [`valley flow naming status`](#valley-flow-naming-status) lists
+as blocking it, and check what the command cannot see: other machines, and timers and helpers that
+share the home directory or the project and run an older build. Setting `legacy` again moves
+nothing: state created under `bridge` stays where it is and is operated there, and new state gets
+the legacy names. Rolling back the program never changes the stored generation; a build that
+operates state under either name finishes sessions a newer build created.
 
 In a session directory:
 
@@ -1013,18 +1067,19 @@ Klaus-Run: <run id>
 ```
 
 `Change-Id` is in jj's change-id form (32 characters from `k` to `z`); `Klaus-Run` leads to the run
-and its prompt, log, cost and trajectory. Reading a commit's run ID accepts either `Flow-Run:` or
-`Klaus-Run:`; when both are present they must agree, or the commit is treated as carrying none. They
-label commits for finding and auditing; they grant nothing, and no tool may trust a commit or skip a
-check because of them.
+and its prompt, log, cost and trajectory. New commits carry `Klaus-Run` under every naming
+generation. Reading a commit's runs takes `Flow-Run:` and `Klaus-Run:` as one list, in the message's
+order, each run once. They label commits for finding and auditing; they grant nothing, and no tool
+may trust a commit or skip a check because of them.
 
 Launch installs, for the agent's worktree only (`core.hooksPath` set with `git config --worktree`,
 enabling `extensions.worktreeConfig` once on the clone):
 
-- **commit-msg**: strips Claude/Anthropic attribution, adds `Change-Id` unless present and
-  `Klaus-Run` unless that run is listed (an amend by a later run keeps the change ID and lists both
-  runs), then runs the repository's own `commit-msg` hook. A message empty or made only of `#` lines
-  is left alone.
+- **commit-msg**: strips Claude/Anthropic attribution, adds `Change-Id` unless present and the run
+  unless either key lists it, then runs the repository's own `commit-msg` hook. The run goes under
+  `Flow-Run` when the message has that key and no `Klaus-Run`, else under `Klaus-Run`, so an amend
+  by a later run keeps the change ID and lists both runs, and no run is listed under both keys. A
+  message empty or made only of `#` lines is left alone.
 - **pre-commit**: runs `format` from the worktree root, re-stages the files that were staged, then
   runs the repository's own `pre-commit` hook; unstaged changes stay unstaged, and a failing
   formatter stops the commit.

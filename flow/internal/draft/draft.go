@@ -17,6 +17,7 @@ import (
 
 	"the-valley/flow/internal/event"
 	"the-valley/flow/internal/git"
+	"the-valley/flow/internal/location"
 )
 
 // Runner abstracts the shell commands (git, gh) the pause flow needs.
@@ -95,7 +96,7 @@ func HandleBudgetPause(ctx context.Context, r Runner, in PauseInput) (PauseOutpu
 	out := PauseOutput{}
 
 	// Step 1: commit any uncommitted changes.
-	msg := fmt.Sprintf("WIP from klaus run %s (budget paused)\n\n%s", in.RunID, summarizePrompt(in.Prompt))
+	msg := fmt.Sprintf("WIP from %s run %s (budget paused)\n\n%s", location.Self(), in.RunID, summarizePrompt(in.Prompt))
 	committed, err := CommitWIP(ctx, r, in.Worktree, msg, git.Provenance{RunID: in.RunID, ChangeID: in.ChangeID})
 	if err != nil {
 		return out, fmt.Errorf("committing WIP: %w", err)
@@ -345,7 +346,7 @@ func titleFromPrompt(prompt, runID string) string {
 	}
 	first = strings.TrimSpace(first)
 	if first == "" {
-		return fmt.Sprintf("klaus run %s (budget paused)", runID)
+		return fmt.Sprintf("%s run %s (budget paused)", location.Self(), runID)
 	}
 	if len(first) > 72 {
 		first = strings.TrimSpace(first[:72])

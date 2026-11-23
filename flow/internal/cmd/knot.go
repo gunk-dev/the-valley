@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"the-valley/flow/internal/integration"
+	"the-valley/flow/internal/location"
 	"the-valley/flow/internal/run"
 	"the-valley/flow/internal/tmux"
 	"the-valley/flow/internal/valley"
@@ -211,7 +212,7 @@ func finishKnot(ctx context.Context, dir string, state *run.State, paused bool, 
 	}
 	k.Note = note
 	release()
-	body := fmt.Sprintf("klaus run %s %s.\n", state.ID, note)
+	body := fmt.Sprintf("%s run %s %s.\n", location.Self(), state.ID, note)
 	if k.Released {
 		body += "\nThe run no longer claims the knot.\n"
 	}
@@ -368,7 +369,7 @@ func settleKnot(ctx context.Context, dir string, lk landedKnot, changes map[inte
 	case !v.Knot.Active:
 		body = fmt.Sprintf("%s\n\nThe knot was %s already.\n", landed, v.Knot.Status)
 	case len(open) > 0:
-		body = fmt.Sprintf("%s\n\nklaus leaves the knot %s: %s.\n", landed, v.Knot.Status, strings.Join(open, "; "))
+		body = fmt.Sprintf("%s\n\n%s leaves the knot %s: %s.\n", landed, location.Self(), v.Knot.Status, strings.Join(open, "; "))
 	default:
 		var verr *valley.Error
 		switch err := valley.SetKnotStatus(ctx, dir, k.Project, k.ID, status, "status="+v.Knot.Status,
@@ -377,10 +378,11 @@ func settleKnot(ctx context.Context, dir string, lk landedKnot, changes map[inte
 			for _, s := range lk.runs {
 				s.Knot.Closed = status
 			}
-			body = fmt.Sprintf("%s\n\nEvery change the knot links has landed and it has no active children, so klaus set it %s.\n", landed, status)
+			body = fmt.Sprintf("%s\n\nEvery change the knot links has landed and it has no active children, so %s set it %s.\n", landed, location.Self(), status)
 		case errors.As(err, &verr) && verr.Conflict:
 			fail(err)
-			body = fmt.Sprintf("%s\n\nklaus leaves the knot %s: it changed as klaus went to set it %s (%s).\n", landed, v.Knot.Status, status, verr.Reason)
+			self := location.Self()
+			body = fmt.Sprintf("%s\n\n%s leaves the knot %s: it changed as %s went to set it %s (%s).\n", landed, self, v.Knot.Status, self, status, verr.Reason)
 		default:
 			fail(err)
 			return
@@ -401,7 +403,7 @@ func settleKnot(ctx context.Context, dir string, lk landedKnot, changes map[inte
 			continue
 		}
 		lk.noted[key+":"+ch.ChangeID] = true
-		note := fmt.Sprintf("%s\n\nklaus launched run %s for %s, not for this knot, so it leaves this knot as it is.\n", landed, first.ID, launchedFor)
+		note := fmt.Sprintf("%s\n\n%s launched run %s for %s, not for this knot, so it leaves this knot as it is.\n", landed, location.Self(), first.ID, launchedFor)
 		if err := valley.CommentKnot(ctx, dir, ch.Repo, other, note); err != nil {
 			fail(err)
 		}
@@ -426,7 +428,7 @@ func closingStatus(ctx context.Context, dir, project string, k valley.Knot, runs
 	for _, l := range k.Changes {
 		repo, id, ok := valley.ParseChangeLink(l)
 		if !ok {
-			pending = append(pending, l+" (klaus can't tell whether it landed)")
+			pending = append(pending, l+" ("+location.Self()+" can't tell whether it landed)")
 			continue
 		}
 		res, listed := changes[integration.ChangeKey{Repo: repo, ChangeID: id}]

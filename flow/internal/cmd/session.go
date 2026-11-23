@@ -136,8 +136,17 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 		}
 	}
 
+	// Under bridge and flow the dashboard's pane command carries this
+	// process's flow variables: one over tmux's limit fails here, before
+	// anything is created.
+	dashCmd, err := dashboardPaneCommand(id)
+	if err != nil {
+		return err
+	}
+
 	// A session resumes in the directory it has, under either root; a new
-	// one goes where location allocates it.
+	// one goes where location allocates it under the generation it records.
+	gen := cfg.Generation()
 	var store *run.HomeDirStore
 	if resuming {
 		store, err = run.OpenSession(id)
@@ -145,7 +154,11 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 			err = store.EnsureDirs()
 		}
 	} else {
-		store, err = run.CreateSession(id)
+		var l location.Layout
+		if l, err = location.Host(); err == nil {
+			l.Gen = gen
+			store, err = run.CreateSessionIn(l, id)
+		}
 	}
 	if err != nil {
 		return err
@@ -340,7 +353,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 			Worktree:         worktree,
 			CreatedAt:        createdAt,
 			CreatedBy:        version,
-			NamingGeneration: string(location.Allocates(cfg.Generation())),
+			NamingGeneration: string(location.Allocates(gen)),
 			RepoRoot:         repoRoot,
 		}
 		if err := store.Save(state); err != nil {
@@ -359,13 +372,17 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	}
 
 	// Render session system prompt
-	sessionPrompt, err := config.RenderSessionPrompt(root, config.PromptVars{
+	vars := config.PromptVars{
 		RunID:       id,
 		Branch:      branch,
 		RepoName:    repoName,
 		Projects:    projectList,
 		Coordinator: string(kind),
-	})
+	}
+	if location.Allocates(gen) != location.Legacy {
+		vars.SessionsRoot, vars.HostConfig, vars.SelfUpdateState = promptPlaces(store)
+	}
+	sessionPrompt, err := config.RenderSessionPrompt(root, vars)
 	if err != nil {
 		return fmt.Errorf("rendering session prompt: %w", err)
 	}
@@ -378,7 +395,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	if currentPane != "" {
 		windowTitle := repoName
 		if windowTitle == "" {
-			windowTitle = "klaus"
+			windowTitle = location.Self()
 		}
 		tmuxClient.SetWindowOption(ctx, currentPane, "automatic-rename", "off")
 		tmuxClient.RenameWindow(ctx, currentPane, windowTitle)
@@ -401,7 +418,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	// Launch dashboard in a bottom pane before starting the coordinator.
 	var dashPane string
 	if currentPane != "" {
-		paneID, err := tmuxClient.SplitWindowSized(ctx, currentPane, worktree, dashboardPaneCommand(id), "-v", "30%")
+		paneID, err := tmuxClient.SplitWindowSized(ctx, currentPane, worktree, dashCmd, "-v", "30%")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not open dashboard pane: %v\n", err)
 		} else {
@@ -573,16 +590,45 @@ func init() {
 	rootCmd.AddCommand(newSessionCmd)
 }
 
-// dashboardPaneCommand runs the dashboard of session id in a pane.
-func dashboardPaneCommand(id string) string {
-	return flowenv.SessionID.EnvPrefix(id) + "klaus dashboard"
+// dashboardPaneCommand runs the dashboard of session id in a pane, with
+// the flow variables this process resolves (flowenv.NormalizePrefix).
+// Under a generation that adds them, it fails when the command is over
+// tmux's limit (prefixedPaneCommandFits).
+func dashboardPaneCommand(id string) (string, error) {
+	prefix := flowenv.NormalizePrefix()
+	paneCmd := prefix + flowenv.SessionID.EnvPrefix(id) + "klaus dashboard"
+	if err := prefixedPaneCommandFits("dashboard", prefix, paneCmd); err != nil {
+		return "", err
+	}
+	return paneCmd, nil
+}
+
+// promptPlaces are the places a coordinator's prompt names under the
+// bridge generation, where they are for the session in store: the
+// sessions root its directory is in, the host config, and self-update's
+// state. Under legacy the prompt names the legacy places. One location
+// can't give is empty, which names the legacy place too.
+func promptPlaces(store *run.HomeDirStore) (sessions, hostConfig, selfUpdate string) {
+	l, err := location.Host()
+	if err != nil {
+		return "", "", ""
+	}
+	sessions = tildePath(l.Home, filepath.Dir(store.BaseDir()))
+	if p, err := l.HostConfig(); err == nil {
+		hostConfig = tildePath(l.Home, p)
+	}
+	if p, err := l.SelfUpdateState(); err == nil {
+		selfUpdate = tildePath(l.Home, p)
+	}
+	return sessions, hostConfig, selfUpdate
 }
 
 // coordinatorEnv is the environment a session's coordinator starts with:
-// environ, with the session's ID, the coordinator's backend and the
-// session's default worker backend.
+// environ, its flow variables normalized (flowenv.Normalize), with the
+// session's ID, the coordinator's backend and the session's default worker
+// backend.
 func coordinatorEnv(environ []string, id string, kind, workerKind backend.Kind) []string {
-	env := flowenv.SessionID.Set(environ, id)
+	env := flowenv.SessionID.Set(flowenv.Normalize(environ), id)
 	env = flowenv.Backend.Set(env, string(kind))
 	return flowenv.AgentBackend.Set(env, string(workerKind))
 }

@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"the-valley/flow/internal/location"
 )
 
 // PrepareAgyReadOnly limits the primary agent to file-reading tools.
@@ -17,7 +19,7 @@ func PrepareAgyReadOnly() (string, func(), error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", nil, err
 	}
-	f, err := os.CreateTemp(dir, "klaus-consult-*.md")
+	f, err := os.CreateTemp(dir, location.TempPattern("consult-*.md"))
 	if err != nil {
 		return "", nil, err
 	}

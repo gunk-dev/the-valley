@@ -33,25 +33,34 @@ func initRepo(t *testing.T, dir, origin string) string {
 	return real
 }
 
+func mustExistingRepoDir(t *testing.T, ref string) string {
+	t.Helper()
+	dir, err := existingRepoDir(ref)
+	if err != nil {
+		t.Fatalf("existingRepoDir(%q): %v", ref, err)
+	}
+	return dir
+}
+
 func TestExistingRepoDirUsesCurrentCheckout(t *testing.T) {
 	dir := initRepo(t, filepath.Join(t.TempDir(), "widget"), "https://github.com/acme/widget.git")
 	writeRegistry(t, withTempHome(t), nil)
 	t.Chdir(dir)
 
 	// No reference at all: whatever repo we are standing in.
-	if got := existingRepoDir(""); got != dir {
+	if got := mustExistingRepoDir(t, ""); got != dir {
 		t.Errorf("existingRepoDir(\"\") = %q, want %q", got, dir)
 	}
 	// A reference the current checkout demonstrably satisfies.
-	if got := existingRepoDir("acme/widget"); got != dir {
+	if got := mustExistingRepoDir(t, "acme/widget"); got != dir {
 		t.Errorf("existingRepoDir(\"acme/widget\") = %q, want %q", got, dir)
 	}
 	// A different repo must not silently resolve to the current checkout.
-	if got := existingRepoDir("acme/gadget"); got != "" {
+	if got := mustExistingRepoDir(t, "acme/gadget"); got != "" {
 		t.Errorf("existingRepoDir(\"acme/gadget\") = %q, want \"\"", got)
 	}
 	// Nor may a bare name, which says nothing about this checkout's origin.
-	if got := existingRepoDir("widget"); got != "" {
+	if got := mustExistingRepoDir(t, "widget"); got != "" {
 		t.Errorf("existingRepoDir(\"widget\") = %q, want \"\"", got)
 	}
 }
@@ -66,16 +75,16 @@ func TestExistingRepoDirFindsRegisteredProject(t *testing.T) {
 
 	// Matched by origin slug, in every reference form.
 	for _, ref := range []string{"acme/widget", "https://github.com/acme/widget", "git@github.com:acme/widget.git"} {
-		if got := existingRepoDir(ref); got != widget {
+		if got := mustExistingRepoDir(t, ref); got != widget {
 			t.Errorf("existingRepoDir(%q) = %q, want %q", ref, got, widget)
 		}
 	}
 	// A project whose origin is not a GitHub URL can only be matched by name.
-	if got := existingRepoDir("gizmo"); got != local {
+	if got := mustExistingRepoDir(t, "gizmo"); got != local {
 		t.Errorf("existingRepoDir(\"gizmo\") = %q, want %q", got, local)
 	}
 	// A GitHub repo nobody has checked out stays unresolved (no cloning here).
-	if got := existingRepoDir("acme/unknown"); got != "" {
+	if got := mustExistingRepoDir(t, "acme/unknown"); got != "" {
 		t.Errorf("existingRepoDir(\"acme/unknown\") = %q, want \"\"", got)
 	}
 }
@@ -88,9 +97,41 @@ func TestExistingRepoDirIgnoresNameCollisionWithOtherOrigin(t *testing.T) {
 	writeRegistry(t, withTempHome(t), map[string]string{"widget": widget})
 	t.Chdir(root)
 
-	if got := existingRepoDir("other/widget"); got != "" {
+	if got := mustExistingRepoDir(t, "other/widget"); got != "" {
 		t.Errorf("existingRepoDir(\"other/widget\") = %q, want \"\"", got)
 	}
+}
+
+// A registry at both its names is refused, naming both, by every lookup of
+// a checkout through it, rather than taken for one with no projects.
+func TestExistingRepoDirRefusesRegistryUnderBothNames(t *testing.T) {
+	root := t.TempDir()
+	widget := initRepo(t, filepath.Join(root, "widget"), "https://github.com/acme/widget.git")
+	home := withTempHome(t)
+	writeRegistry(t, home, map[string]string{"widget": widget})
+	flow := filepath.Join(home, ".valley", "flow", "projects.json")
+	if err := os.MkdirAll(filepath.Dir(flow), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(flow, []byte(`{"projects": {}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+
+	both := func(what string, err error) {
+		t.Helper()
+		if err == nil || !strings.Contains(err.Error(), filepath.Join(home, ".klaus", "projects.json")) || !strings.Contains(err.Error(), flow) {
+			t.Errorf("%s with a registry under both names: %v, want an error naming both", what, err)
+		}
+	}
+	_, err := existingRepoDir("acme/widget")
+	both("existingRepoDir", err)
+	_, err = resolveRepoDirUncached(context.Background(), "widget")
+	both("resolveRepoDir", err)
+	_, err = reviewRepoSlug(context.Background(), "widget")
+	both("reviewRepoSlug", err)
+	_, err = trackChange(context.Background(), "widget", "nxvp", nil, nil, valleyListings{})
+	both("trackChange", err)
 }
 
 func TestResolveRepoDirWithoutTargetOutsideRepo(t *testing.T) {

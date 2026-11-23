@@ -432,13 +432,19 @@ does not touch flow ([self-update](./reference.md#valley-flow-self-update)).
 
 ## Which names state gets
 
-flow keeps its state under `~/.klaus/` and a repository's `.klaus/`, and finds it under
-`~/.valley/flow/` and `.valley/flow/` too, so rolling back to this build keeps working on state a
-newer build wrote. Nothing moves: a session stays in its directory for its whole life.
+flow finds and works on its state under the legacy names (`~/.klaus/`, a repository's `.klaus/`) and
+the flow names (`~/.valley/flow/`, `.valley/flow/`) alike. Nothing moves: a session stays in its
+directory for its whole life, whichever names new sessions get.
 
-The host config's `naming_generation` (`legacy`, `bridge` or `flow`) says which names new state
-gets; this build gives new state the legacy names under all three (the switch to the flow names is
-not built). To see where your state is and what blocks the next generation, run:
+The host config's `naming_generation` says which names new state gets:
+
+- `legacy` (the default): the legacy names.
+- `bridge`: new sessions and other new home and repository state go under `~/.valley/flow/` and
+  `.valley/flow/`; the plumbing older builds share keeps the legacy names
+  ([what each gets](./reference.md#naming-generations)).
+- `flow`: the plumbing too (not built; uses the `bridge` names).
+
+Before you set `bridge`, run:
 
 ```bash
 valley flow naming status          # or --json
@@ -446,6 +452,9 @@ valley flow naming status          # or --json
 
 It changes nothing. It shows where each kind of state is, any kind found under both names, the live
 sessions and the build that made each, commit hooks older than the current ones, self-update's
-previous build, and what blocks the next generation with its reason. It cannot see other machines,
-or timers and helpers that run outside flow: check those yourself
-([naming generations](./reference.md#naming-generations)).
+previous build, and what blocks each generation with its reason. Clear what blocks `bridge`, check
+what the command cannot see (other machines, and timers and helpers on an older build that share
+your home directory or the project), and add `"naming_generation": "bridge"` to the host config.
+
+Switching back to `legacy` moves nothing: state made under `bridge` stays where it is and keeps
+working, while new state gets the legacy names.

@@ -62,7 +62,8 @@ const (
 	// ready on the valley its repo delivers to, as a version of the run's
 	// change. It follows agent:branch-pushed and carries repo, change_id,
 	// handle, version, title and head. `klaus ready` emits it too, with
-	// via "klaus ready", when it marks a draft ready.
+	// via naming that command ("klaus ready", or "valley flow ready" under
+	// the bridge naming generation), when it marks a draft ready.
 	AgentChangeReady = "agent:change-ready"
 	// AgentChangeRecorded signals that finalize recorded, for a run without
 	// a PR, the change or branch the run pushed in place of the ones launch

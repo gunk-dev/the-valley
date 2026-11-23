@@ -31,16 +31,23 @@ var namingStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Report the naming generation, where state is, and what blocks advancing",
 	Long: `Reports the host's naming_generation and what this build gives new state
-under it; where each kind of state is, under the legacy names (~/.klaus) or
-the flow names (~/.valley/flow), and any kind found in both; the live
-sessions, with the build and generation that created each (legacy when a
-session records none); for each registered project, whether its worktrees'
-commit hooks are the current ones; self-update's current and previous
-builds; and what blocks advancing to the next generation, each with its
-reason. It changes nothing.
+under it: legacy names under legacy, and bridge names under bridge and flow,
+since this build does not build the flow generation's writers. Bridge names
+put new sessions, the sync log, consult snapshots, scaffolded declarations,
+and single-valued state that is in neither place under the flow names
+(~/.valley/flow), and keep the legacy names (~/.klaus) for the rest.
+
+It also reports where each kind of state is, under either names, and any
+kind found in both; the live sessions, with the build and generation that
+created each (legacy when a session records none); for each registered
+project, whether its worktrees' commit hooks are the current ones;
+self-update's current and previous builds; and what blocks each generation
+past the one set, each with its reason. It changes nothing.
 
 It sees only this machine's flow state: other machines, and timers or
-helpers that run outside flow, are for the operator to check.`,
+helpers that run outside flow, are for the operator to check. A running
+dashboard keeps the environment it started with, so it takes a changed
+setting at its next restart.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cmd.SilenceUsage = true
@@ -154,11 +161,16 @@ type namingSelfUpdate struct {
 }
 
 type namingBlocker struct {
-	What   string `json:"what"`
-	Reason string `json:"reason"`
+	What   string              `json:"what"`
+	Reason string              `json:"reason"`
+	Blocks location.Generation `json:"blocks"` // the first generation it keeps the host from
 }
 
-const namingUnseen = "Not seen from here: other machines, and timers or helpers outside flow."
+// namingUnseen is what the report can't see, among it the environment of a
+// running dashboard, which a process sets up as it starts
+// (flowenv.NormalizeProcess).
+const namingUnseen = "Not seen from here: other machines, and timers or helpers outside flow.\n" +
+	"A running dashboard keeps the environment it started with until it restarts."
 
 func buildNamingReport(ctx context.Context, in namingInputs) namingReport {
 	l := in.layout
@@ -211,12 +223,16 @@ func buildNamingReport(ctx context.Context, in namingInputs) namingReport {
 	}
 	r.Places = append(r.Places, sp)
 
-	if logs := l.SyncLogs(); len(logs) > 0 {
-		r.Places = append(r.Places, namingPlace{Kind: "sync log", Paths: logs, Exists: true})
-	} else {
-		place("sync log", l.SyncLog)
+	// State of the new rule is listed wherever it exists, else where it goes.
+	newRule := func(kind string, existing []string, resolve func() (string, error)) {
+		if len(existing) > 0 {
+			r.Places = append(r.Places, namingPlace{Kind: kind, Paths: existing, Exists: true})
+		} else {
+			place(kind, resolve)
+		}
 	}
-	place("consult snapshots", l.ConsultSnapshots)
+	newRule("sync log", l.SyncLogs(), l.SyncLog)
+	newRule("consult snapshots", l.ConsultSnapshotDirs(), l.ConsultSnapshots)
 	locks := namingPlace{Kind: "global review locks", Paths: l.ReviewLockDirs()}
 	for _, d := range locks.Paths {
 		if _, err := os.Stat(d); err == nil {
@@ -267,10 +283,31 @@ func buildNamingReport(ctx context.Context, in namingInputs) namingReport {
 	}
 
 	r.SelfUpdate = namingSelfUpdateOf(l)
-	if r.Next != "" {
-		r.Blockers = namingBlockers(r)
-	}
+	r.Blockers = namingBlockers(r)
 	return r
+}
+
+// namingTarget is the generation a report's state checks are for: the next
+// one, or the one set when this build doesn't build it; "" when neither.
+func namingTarget(r namingReport) location.Generation {
+	if r.Next != "" {
+		return r.Next
+	}
+	if r.Allocates != r.Generation {
+		return r.Generation
+	}
+	return ""
+}
+
+// unbuilt is the first generation from g on whose names this build doesn't
+// give new state, or "".
+func unbuilt(g location.Generation) location.Generation {
+	for x := g; x != ""; x = x.Next() {
+		if location.Allocates(x) != x {
+			return x
+		}
+	}
+	return ""
 }
 
 // sessionLive reports whether a session's coordinator, or any of its runs'
@@ -341,32 +378,38 @@ func namingSelfUpdateOf(l location.Layout) namingSelfUpdate {
 	return su
 }
 
-// namingBlockers is what keeps the host from advancing to r.Next, each with
-// its reason.
+// namingBlockers is what keeps the host from each generation past what it
+// has, each with its reason and the first generation it blocks: this
+// build's own limit blocks the first generation it doesn't build, and the
+// state found here blocks namingTarget.
 func namingBlockers(r namingReport) []namingBlocker {
-	next := r.Next
 	b := []namingBlocker{}
-	if location.Allocates(next) != next {
+	if g := unbuilt(r.Generation); g != "" {
 		b = append(b, namingBlocker{
 			What:   "this build",
-			Reason: fmt.Sprintf("it gives new state %s names under every setting", location.Allocates(next)),
+			Reason: fmt.Sprintf("the %s generation's writers are not built", g),
+			Blocks: g,
 		})
+	}
+	next := namingTarget(r)
+	if next == "" {
+		return b
+	}
+	add := func(what, reason string) {
+		b = append(b, namingBlocker{What: what, Reason: reason, Blocks: next})
 	}
 	for _, p := range r.Places {
 		if p.Error != "" {
-			b = append(b, namingBlocker{What: p.Kind, Reason: p.Error})
+			add(p.Kind, p.Error)
 		}
 	}
 	for _, s := range r.Sessions {
 		if s.Error != "" {
-			b = append(b, namingBlocker{What: "session " + s.ID, Reason: "its runs could not be read, so it may be live: " + s.Error})
+			add("session "+s.ID, "its runs could not be read, so it may be live: "+s.Error)
 			continue
 		}
 		if s.CreatedBy == "" {
-			b = append(b, namingBlocker{
-				What:   "session " + s.ID,
-				Reason: "it was created by a build that records no naming generation; let it finish",
-			})
+			add("session "+s.ID, "it was created by a build that records no naming generation; let it finish")
 		}
 	}
 	for _, p := range r.Projects {
@@ -377,25 +420,20 @@ func namingBlockers(r namingReport) []namingBlocker {
 			}
 		}
 		if p.Error != "" {
-			b = append(b, namingBlocker{What: "project " + p.Name, Reason: "its commit hooks could not be read: " + p.Error})
+			add("project "+p.Name, "its commit hooks could not be read: "+p.Error)
 		} else if stale > 0 {
-			b = append(b, namingBlocker{
-				What:   "project " + p.Name,
-				Reason: fmt.Sprintf("%d of its %d worktrees with flow's hooks have older ones; a run or session resume there installs the current ones", stale, len(p.Hooks)),
-			})
+			add("project "+p.Name, fmt.Sprintf("%d of its %d worktrees with flow's hooks have older ones; a run or session resume there installs the current ones", stale, len(p.Hooks)))
 		}
 	}
 	if su := r.SelfUpdate; su.Error != "" && !placeFailed(r, "self-update state") {
-		b = append(b, namingBlocker{What: "self-update state", Reason: "the rollback target could not be read from it: " + su.Error})
+		add("self-update state", "the rollback target could not be read from it: "+su.Error)
 	}
 	// The report runs no program the state file names, so what the
 	// rollback target supports is for the operator to ask it.
 	if prev := r.SelfUpdate.Previous; prev != nil {
-		b = append(b, namingBlocker{
-			What: "self-update's previous build " + installLabel(prev),
-			Reason: fmt.Sprintf("it is the rollback target, and must operate %s state: %s _naming-support lists what it operates",
-				next, filepath.Join(prev.StorePath, "bin", "klaus")),
-		})
+		add("self-update's previous build "+installLabel(prev),
+			fmt.Sprintf("it is the rollback target, and must operate %s state: %s _naming-support lists what it operates",
+				next, filepath.Join(prev.StorePath, "bin", "klaus")))
 	}
 	return b
 }
@@ -418,13 +456,16 @@ func installLabel(i *selfupdate.Install) string {
 	return i.StorePath
 }
 
-func printNamingReport(w io.Writer, r namingReport, home string) {
-	tilde := func(p string) string {
-		if home != "" && (p == home || strings.HasPrefix(p, home+string(filepath.Separator))) {
-			return "~" + p[len(home):]
-		}
-		return p
+// tildePath is p as the operator writes it: ~ for home when p is in it.
+func tildePath(home, p string) string {
+	if home != "" && (p == home || strings.HasPrefix(p, home+string(filepath.Separator))) {
+		return "~" + p[len(home):]
 	}
+	return p
+}
+
+func printNamingReport(w io.Writer, r namingReport, home string) {
+	tilde := func(p string) string { return tildePath(home, p) }
 	tildes := func(ps []string) string {
 		out := make([]string, len(ps))
 		for i, p := range ps {
@@ -434,13 +475,18 @@ func printNamingReport(w io.Writer, r namingReport, home string) {
 	}
 
 	head := fmt.Sprintf("naming generation %s · new state gets %s names", r.Generation, r.Allocates)
-	switch {
-	case r.Next == "":
+	target := namingTarget(r)
+	blocking := map[location.Generation][]namingBlocker{}
+	for _, b := range r.Blockers {
+		blocking[b.Blocks] = append(blocking[b.Blocks], b)
+	}
+	switch n := len(blocking[target]); {
+	case target == "":
 		fmt.Fprintf(w, "✓ %s\n", head)
-	case len(r.Blockers) == 0:
-		fmt.Fprintf(w, "✓ %s · nothing here blocks %s\n", head, r.Next)
+	case n == 0:
+		fmt.Fprintf(w, "✓ %s · nothing here blocks %s\n", head, target)
 	default:
-		fmt.Fprintf(w, "◇ %s · %d %s %s\n", head, len(r.Blockers), plural(len(r.Blockers), "blocks", "block"), r.Next)
+		fmt.Fprintf(w, "◇ %s · %d %s %s\n", head, n, plural(n, "blocks", "block"), target)
 	}
 
 	fmt.Fprintln(w, "\nWhere state is")
@@ -514,13 +560,21 @@ func printNamingReport(w io.Writer, r namingReport, home string) {
 		}
 	}
 
-	if r.Next != "" {
-		fmt.Fprintf(w, "\nBlocks advancing to %s\n", r.Next)
-		if len(r.Blockers) == 0 {
-			fmt.Fprintln(w, "  nothing found here")
-		}
-		for _, b := range r.Blockers {
-			fmt.Fprintf(w, "  ◇ %s: %s\n", b.What, b.Reason)
+	// A section for each generation from the one set on that something
+	// blocks, and for the target even when nothing does.
+	for g := r.Generation; g != ""; g = g.Next() {
+		if bs := blocking[g]; len(bs) > 0 || g == target {
+			if g == r.Generation {
+				fmt.Fprintf(w, "\nBlocks %s\n", g)
+			} else {
+				fmt.Fprintf(w, "\nBlocks advancing to %s\n", g)
+			}
+			if len(bs) == 0 {
+				fmt.Fprintln(w, "  nothing found here")
+			}
+			for _, b := range bs {
+				fmt.Fprintf(w, "  ◇ %s: %s\n", b.What, b.Reason)
+			}
 		}
 	}
 	fmt.Fprintf(w, "\n%s\n", r.Unseen)

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"text/template"
 
+	"the-valley/flow/internal/flowenv"
 	"the-valley/flow/internal/location"
 )
 
@@ -406,7 +407,9 @@ func (c *Config) PreReviewBlockOn() string {
 	return c.PreReview.BlockOn
 }
 
-// Defaults returns a Config with default values.
+// Defaults returns a Config with default values. Its WorktreeBase is the
+// legacy generation's: Load gives the host generation's
+// (location.WorktreeBase) when no config sets worktree_base.
 func Defaults() Config {
 	return Config{
 		Consult:           ConsultConfig{Order: []string{"codex", "claude", "agy"}, DefaultRole: "partner"},
@@ -424,27 +427,40 @@ func Defaults() Config {
 // global config, except forbidden_terms and naming_generation, which only
 // the host config sets. A host config under the legacy name that can't be
 // read is skipped; one under the flow names is an error. An error from a
-// file under the flow names is a FlowFileError.
+// file under the flow names is a FlowFileError. When neither file sets
+// worktree_base, it is the default of the host's naming generation.
 func Load(repoRoot string) (Config, error) {
-	cfg := Defaults()
+	cfg, baseSet, err := load(repoRoot)
+	// A file that failed to parse partway may have set it all the same.
+	if !baseSet && cfg.WorktreeBase == Defaults().WorktreeBase {
+		cfg.WorktreeBase = location.WorktreeBase(cfg.Generation())
+	}
+	return cfg, err
+}
+
+// load is Load, saying whether a file it read sets worktree_base, to any
+// value: one that does keeps it whatever the generation.
+func load(repoRoot string) (cfg Config, baseSet bool, err error) {
+	cfg = Defaults()
 
 	// Layer 1: the host config
 	if l, err := location.Host(); err == nil {
 		globalPath, err := l.HostConfig()
 		if err != nil {
-			return cfg, &FlowFileError{err}
+			return cfg, baseSet, &FlowFileError{err}
 		}
 		data, err := os.ReadFile(globalPath)
 		switch {
 		case err == nil:
 			if err := json.Unmarshal(data, &cfg); err != nil {
-				return cfg, declarationErr(globalPath, fmt.Errorf("parsing global config %s: %w", globalPath, err))
+				return cfg, baseSet, declarationErr(globalPath, fmt.Errorf("parsing global config %s: %w", globalPath, err))
 			}
+			baseSet = setsWorktreeBase(data)
 		case !os.IsNotExist(err) && location.FlowNamed(globalPath):
-			return cfg, &FlowFileError{fmt.Errorf("reading global config: %w", err)}
+			return cfg, baseSet, &FlowFileError{fmt.Errorf("reading global config: %w", err)}
 		}
 		if _, err := location.ParseGeneration(cfg.NamingGeneration); err != nil {
-			return cfg, declarationErr(globalPath, fmt.Errorf("global config %s: %w", globalPath, err))
+			return cfg, baseSet, declarationErr(globalPath, fmt.Errorf("global config %s: %w", globalPath, err))
 		}
 	}
 
@@ -452,14 +468,14 @@ func Load(repoRoot string) (Config, error) {
 	if repoRoot != "" {
 		localPath, err := location.ProjectFile(repoRoot, location.ProjectConfig)
 		if err != nil {
-			return cfg, &FlowFileError{err}
+			return cfg, baseSet, &FlowFileError{err}
 		}
 		data, err := os.ReadFile(localPath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				return cfg, nil
+				return cfg, baseSet, nil
 			}
-			return cfg, declarationErr(localPath, fmt.Errorf("reading config: %w", err))
+			return cfg, baseSet, declarationErr(localPath, fmt.Errorf("reading config: %w", err))
 		}
 		hostTerms, hostGen := cfg.ForbiddenTerms, cfg.NamingGeneration
 		cfg.ForbiddenTerms, cfg.NamingGeneration = nil, ""
@@ -470,11 +486,21 @@ func Load(repoRoot string) (Config, error) {
 		// host config only: a repo can't change its own
 		cfg.ForbiddenTerms, cfg.NamingGeneration = hostTerms, hostGen
 		if err != nil {
-			return cfg, declarationErr(localPath, fmt.Errorf("parsing config %s: %w", localPath, err))
+			return cfg, baseSet, declarationErr(localPath, fmt.Errorf("parsing config %s: %w", localPath, err))
 		}
+		baseSet = baseSet || setsWorktreeBase(data)
 	}
 
-	return cfg, nil
+	return cfg, baseSet, nil
+}
+
+// setsWorktreeBase reports whether the config file data sets
+// worktree_base, to any value, empty included.
+func setsWorktreeBase(data []byte) bool {
+	var probe struct {
+		WorktreeBase *string `json:"worktree_base"`
+	}
+	return json.Unmarshal(data, &probe) == nil && probe.WorktreeBase != nil
 }
 
 // FlowFileError is a Load error from a declaration under the flow names: a
@@ -543,6 +569,13 @@ type PromptVars struct {
 	// agy); the session prompt names Claude Code's Monitor tool only to
 	// claude. RenderSessionPrompt reads an empty one as claude.
 	Coordinator string
+	// SessionsRoot, HostConfig and SelfUpdateState are the places the
+	// session prompt names: the sessions root the session's directory is
+	// in, the host config, and self-update's state. The default prompt
+	// names the legacy place for an empty one.
+	SessionsRoot    string
+	HostConfig      string
+	SelfUpdateState string
 }
 
 // RenderPrompt renders the repo's worker prompt template (prompt.md).
@@ -590,11 +623,15 @@ func InitGlobal() (string, error) {
 	return path, writeDefaultConfig(path)
 }
 
+// writeDefaultConfig writes the default configuration to path, with the
+// host generation's worktree_base.
 func writeDefaultConfig(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("creating config dir: %w", err)
 	}
-	data, err := json.MarshalIndent(Defaults(), "", "  ")
+	defaults := Defaults()
+	defaults.WorktreeBase = location.WorktreeBase(location.Writes())
+	data, err := json.MarshalIndent(defaults, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -785,9 +822,12 @@ func RenderWorkerPrompt(repoRoot string, vars PromptVars) (string, error) {
 	return WithWorkerRules(strings.TrimRight(prompt, "\n") + "\n\n" + delivery), nil
 }
 
-// WithWorkerRules appends WorkerRules to a worker system prompt.
+// WithWorkerRules appends WorkerRules to a worker system prompt, naming the
+// scratch directory's variable as the host's generation gives it to
+// workers.
 func WithWorkerRules(systemPrompt string) string {
-	return strings.TrimRight(systemPrompt, "\n") + "\n\n" + WorkerRules
+	rules := strings.ReplaceAll(WorkerRules, "$KLAUS_SCRATCH", "$"+flowenv.Scratch.Name())
+	return strings.TrimRight(systemPrompt, "\n") + "\n\n" + rules
 }
 
 const defaultSessionPromptTemplate = `You are a **coordinator** running inside a flow session (session ID: {{.RunID}}).
@@ -998,7 +1038,7 @@ Reviews are read-only second opinions, never approvals; ` + "`_pre-review`" + ` 
 
 ## Self-update
 
-When the host config (` + "`~/.klaus/config.json`" + `, never a repo's config) has ` + "`\"self_update\": {\"repo\": \"<git URL>\", \"branch\": \"main\"}`" + `, a timer runs ` + "`valley flow self-update`" + `: it resolves the branch with ` + "`git ls-remote`" + `, refuses a repository whose flake offers no ` + "`packages.<system>.klaus`" + `, builds exactly that commit's ` + "`packages.<system>.klaus`" + ` with nix, smoke-tests it (` + "`klaus --version`" + ` reports the commit, ` + "`klaus status`" + ` exits 0), and installs it into the user's nix profile in place of the element named klaus. Only the configured branch installs, pinned to the commit ls-remote returned, and only after it builds and passes the smoke test; PR heads never install by themselves. A commit that fails is skipped until the branch moves or ` + "`--retry`" + `. ` + "`--rollback`" + ` reinstalls the previous build (again to return), and ` + "`--pin`" + ` stops the timer from installing until ` + "`--unpin`" + `. State is in ` + "`$XDG_STATE_HOME/klaus/self-update.json`" + `. The dashboard restarts onto a new build on PATH once its keyboard is quiet, and new launches use it at once; running agents finish on the build their pane resolved.
+When the host config (` + "`{{or .HostConfig \"~/.klaus/config.json\"}}`" + `, never a repo's config) has ` + "`\"self_update\": {\"repo\": \"<git URL>\", \"branch\": \"main\"}`" + `, a timer runs ` + "`valley flow self-update`" + `: it resolves the branch with ` + "`git ls-remote`" + `, refuses a repository whose flake offers no ` + "`packages.<system>.klaus`" + `, builds exactly that commit's ` + "`packages.<system>.klaus`" + ` with nix, smoke-tests it (` + "`klaus --version`" + ` reports the commit, ` + "`klaus status`" + ` exits 0), and installs it into the user's nix profile in place of the element named klaus. Only the configured branch installs, pinned to the commit ls-remote returned, and only after it builds and passes the smoke test; PR heads never install by themselves. A commit that fails is skipped until the branch moves or ` + "`--retry`" + `. ` + "`--rollback`" + ` reinstalls the previous build (again to return), and ` + "`--pin`" + ` stops the timer from installing until ` + "`--unpin`" + `. State is in ` + "`{{or .SelfUpdateState \"$XDG_STATE_HOME/klaus/self-update.json\"}}`" + `. The dashboard restarts onto a new build on PATH once its keyboard is quiet, and new launches use it at once; running agents finish on the build their pane resolved.
 
 ## How the pipeline works
 
@@ -1026,7 +1066,7 @@ Reacting to a landing your plan depends on is different: nothing waits on you th
 
 ## State and tracking
 
-- Each agent run creates a state file at ` + "`~/.klaus/sessions/{session-id}/runs/{run-id}.json`" + `
+- Each agent run creates a state file at ` + "`{{or .SessionsRoot \"~/.klaus/sessions\"}}/{session-id}/runs/{run-id}.json`" + `
 - The dashboard watches this directory via fsnotify — new/modified files appear instantly
 - To add an existing PR without launching an agent, use ` + "`valley flow track <pr-number> --repo <repo>`" + `
 - Run states track: ID, prompt, branch, worktree, PR URL, type, target repo, cost, duration, approval/merge status

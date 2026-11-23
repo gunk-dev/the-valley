@@ -114,12 +114,25 @@ func TestSingleValuedState(t *testing.T) {
 	l := testLayout(t)
 	legacy, flow := filepath.Join(l.Home, ".klaus", "projects.json"), filepath.Join(l.Home, ".valley", "flow", "projects.json")
 
+	// With neither, new state goes where the generation puts it.
+	for g, want := range map[Generation]string{Legacy: legacy, Bridge: flow, Flow: flow} {
+		gl := l
+		gl.Gen = g
+		if got, err := gl.Registry(); err != nil || got != want {
+			t.Errorf("%s: Registry() with none = %q, %v; want %q", g, got, err, want)
+		}
+	}
+	// With one, it is the one there, whatever the generation.
+	write(t, legacy, "{}")
 	for _, g := range Generations {
 		gl := l
 		gl.Gen = g
 		if got, err := gl.Registry(); err != nil || got != legacy {
-			t.Errorf("%s: Registry() with none = %q, %v; want the legacy %q", g, got, err, legacy)
+			t.Errorf("%s: Registry() with the legacy file = %q, %v; want %q", g, got, err, legacy)
 		}
+	}
+	if err := os.Remove(legacy); err != nil {
+		t.Fatal(err)
 	}
 
 	write(t, flow, "{}")
@@ -200,25 +213,79 @@ func TestSingleValuedState(t *testing.T) {
 	}
 }
 
-// Every generation allocates the legacy names; the host config decides the
-// generation when the layout doesn't, and a bad one allocates nothing.
+// Legacy allocates the legacy names, and bridge and flow the flow names for
+// home and project state, keeping the plumbing's legacy names; the host
+// config decides the generation when the layout doesn't, and a bad one
+// allocates nothing.
 func TestAllocation(t *testing.T) {
 	l := testLayout(t)
+	repo := t.TempDir()
+	home := func(name string, flow bool) string {
+		if flow {
+			return filepath.Join(l.Home, ".valley", "flow", name)
+		}
+		return filepath.Join(l.Home, ".klaus", name)
+	}
 	for _, g := range Generations {
 		write(t, filepath.Join(l.Home, ".klaus", "config.json"), `{"naming_generation": "`+string(g)+`"}`)
 		if got, err := l.Generation(); err != nil || got != g {
 			t.Errorf("Generation() = %q, %v; want %q", got, err, g)
 		}
-		dir, err := l.NewSession("session-x")
-		if want := filepath.Join(l.Home, ".klaus", "sessions", "session-x"); err != nil || dir != want {
-			t.Errorf("%s: NewSession = %q, %v; want %q", g, dir, err, want)
+		flow := g != Legacy
+		if got := Allocates(g); got != map[bool]Generation{false: Legacy, true: Bridge}[flow] {
+			t.Errorf("Allocates(%s) = %s", g, got)
 		}
-		if got, err := l.SyncLog(); err != nil || got != filepath.Join(l.Home, ".klaus", "sync.log") {
-			t.Errorf("%s: SyncLog = %q, %v", g, got, err)
+		for name, f := range map[string]func() (string, error){
+			"sessions":          l.NewSessionsRoot,
+			"sync.log":          l.SyncLog,
+			"consult-snapshots": l.ConsultSnapshots,
+			"memory":            l.Memory,
+			"projects.json":     l.Registry,
+		} {
+			if got, err := f(); err != nil || got != home(name, flow) {
+				t.Errorf("%s: %s = %q, %v; want %q", g, name, got, err, home(name, flow))
+			}
 		}
+		if dir, err := l.NewSession("session-x"); err != nil || dir != filepath.Join(home("sessions", flow), "session-x") {
+			t.Errorf("%s: NewSession = %q, %v", g, dir, err)
+		}
+		state := filepath.Join(l.StateHome, "klaus", "self-update.json")
+		if flow {
+			state = home("self-update.json", true)
+		}
+		if got, err := l.SelfUpdateState(); err != nil || got != state {
+			t.Errorf("%s: SelfUpdateState = %q, %v; want %q", g, got, err, state)
+		}
+		project := filepath.Join(repo, ".klaus", "prompt.md")
+		if flow {
+			project = filepath.Join(repo, ".valley", "flow", "prompt.md")
+		}
+		if got, err := l.ScaffoldProjectFile(repo, WorkerPrompt); err != nil || got != project {
+			t.Errorf("%s: ScaffoldProjectFile = %q, %v; want %q", g, got, err, project)
+		}
+		// The plumbing older builds share keeps its legacy names.
 		if got, err := l.StandaloneStore("/repo/.git"); err != nil || got != filepath.Join("/repo/.git", "klaus") {
 			t.Errorf("%s: StandaloneStore = %q, %v", g, got, err)
 		}
+		if got := AgentsSession("session-x"); got != "klaus-agents-session-x" {
+			t.Errorf("%s: AgentsSession = %q", g, got)
+		}
+	}
+
+	// A sync log under the other name stays where it is; appends go to the
+	// one the generation names, and both are listed.
+	write(t, home("sync.log", false), "old\n")
+	if got, err := l.SyncLog(); err != nil || got != home("sync.log", true) {
+		t.Errorf("SyncLog under flow with a legacy log = %q, %v", got, err)
+	}
+	write(t, home("sync.log", true), "new\n")
+	if got := l.SyncLogs(); !reflect.DeepEqual(got, []string{home("sync.log", false), home("sync.log", true)}) {
+		t.Errorf("SyncLogs = %v", got)
+	}
+	// So do consult snapshot directories.
+	write(t, filepath.Join(home("consult-snapshots", true), "s", "f"), "")
+	if got := l.ConsultSnapshotDirs(); !reflect.DeepEqual(got, []string{home("consult-snapshots", true)}) {
+		t.Errorf("ConsultSnapshotDirs = %v", got)
 	}
 
 	write(t, filepath.Join(l.Home, ".valley", "flow", "config.json"), `{"naming_generation": "w2"}`)
@@ -228,6 +295,47 @@ func TestAllocation(t *testing.T) {
 	write(t, filepath.Join(l.Home, ".valley", "flow", "config.json"), `{"naming_generation": `)
 	if _, err := l.ConsultSnapshots(); err == nil {
 		t.Error("ConsultSnapshots under a malformed host config succeeded")
+	}
+}
+
+// What a command writes fresh outside flow's state follows the running
+// user's host setting, and the legacy names when it can't be read.
+func TestWritesFollowsTheHost(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cases := []struct {
+		config                    string
+		gen                       Generation
+		temp, base, self, command string
+	}{
+		{"", Legacy, "klaus-merge-*", "klaus-sessions", "klaus", "klaus ready"},
+		{`{"naming_generation": "legacy"}`, Legacy, "klaus-merge-*", "klaus-sessions", "klaus", "klaus ready"},
+		{`{"naming_generation": "bridge"}`, Bridge, "valley-flow-merge-*", "valley-flow-sessions", "flow", "valley flow ready"},
+		{`{"naming_generation": "flow"}`, Bridge, "valley-flow-merge-*", "valley-flow-sessions", "flow", "valley flow ready"},
+		{`{"naming_generation": "w2"}`, Legacy, "klaus-merge-*", "klaus-sessions", "klaus", "klaus ready"},
+	}
+	for _, tc := range cases {
+		path := filepath.Join(home, ".klaus", "config.json")
+		if tc.config == "" {
+			_ = os.Remove(path)
+		} else {
+			write(t, path, tc.config)
+		}
+		if got := Writes(); got != tc.gen {
+			t.Errorf("%s: Writes() = %s, want %s", tc.config, got, tc.gen)
+		}
+		if got := TempPattern("merge-*"); got != tc.temp {
+			t.Errorf("%s: TempPattern = %q, want %q", tc.config, got, tc.temp)
+		}
+		if got := WorktreeBase(Writes()); got != filepath.Join(os.TempDir(), tc.base) {
+			t.Errorf("%s: WorktreeBase = %q", tc.config, got)
+		}
+		if got := Self(); got != tc.self {
+			t.Errorf("%s: Self() = %q, want %q", tc.config, got, tc.self)
+		}
+		if got := Command("ready"); got != tc.command {
+			t.Errorf("%s: Command(ready) = %q, want %q", tc.config, got, tc.command)
+		}
 	}
 }
 

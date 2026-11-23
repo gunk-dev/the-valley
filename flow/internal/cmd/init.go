@@ -16,7 +16,10 @@ var initCmd = &cobra.Command{
 If run inside a git repository, writes them in the repo's .klaus/ (or over the
 ones in .valley/flow/, where a repo keeps them there).
 If run outside a git repository, writes the host config, ~/.klaus/config.json
-(or ~/.valley/flow/config.json, where the host keeps it).`,
+(or ~/.valley/flow/config.json, where the host keeps it).
+Under the bridge naming generation, a file that doesn't exist yet goes under
+.valley/flow/ (~/.valley/flow/ for the host config), and the config's
+worktree_base is the bridge default.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		root, _ := git.RepoRoot()
 

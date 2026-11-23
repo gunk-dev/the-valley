@@ -12,6 +12,7 @@ import (
 
 	"the-valley/flow/internal/backend"
 	"the-valley/flow/internal/config"
+	"the-valley/flow/internal/flowenv"
 	"the-valley/flow/internal/location"
 	"the-valley/flow/internal/run"
 	"the-valley/flow/internal/tmux"
@@ -141,6 +142,24 @@ func runNew(cmd *cobra.Command, args []string) error {
 
 	scaffoldDeps := DefaultScaffoldDeps()
 
+	prompt := BuildScaffoldPrompt(name, description, projectType, principles)
+	id, err := run.GenID()
+	if err != nil {
+		return err
+	}
+	l, err := location.Host()
+	if err != nil {
+		return err
+	}
+	sysPrompt := config.WithWorkerRules("You are scaffolding a new project. Follow all instructions carefully. Push directly to main when done.")
+	workerArgs := kind.Worker(backend.Options{SystemPrompt: sysPrompt, Budget: budget, Prompt: prompt, RunID: id, Model: defaults.Model, Effort: defaults.Effort})
+	// Under bridge and flow the pane command carries this process's flow
+	// variables: one over tmux's limit fails here, before the repository
+	// exists, checked with the directory the clone gets.
+	if _, err := newScaffoldRun(l, filepath.Join(cloneDir, name), id, name, workerArgs); err != nil {
+		return err
+	}
+
 	// Create GitHub repo and clone it
 	fmt.Printf("Creating repository %s...\n", name)
 	ghOutput, err := scaffoldDeps.RunGHRepoCreate(name)
@@ -165,55 +184,22 @@ func runNew(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Generate the scaffolding prompt
-	prompt := BuildScaffoldPrompt(name, description, projectType, principles)
-
-	// Generate a run ID for state tracking
-	id, err := run.GenID()
-	if err != nil {
-		return err
-	}
-
 	// We need a .git dir for state tracking — the cloned repo has one
-	gitCommonDir := resolveGitCommonDir(repoDir)
-	l, err := location.Host()
+	sr, err := newScaffoldRun(l, repoDir, id, name, workerArgs)
 	if err != nil {
 		return err
 	}
-	storeDir, err := l.StandaloneStore(gitCommonDir)
-	if err != nil {
-		return err
-	}
-	store := run.NewGitDirStore(storeDir)
+	store, logFile := sr.store, sr.logFile
 	if err := store.EnsureDirs(); err != nil {
 		return err
 	}
-
-	logFile := filepath.Join(store.LogDir(), id+".jsonl")
-
-	// Build claude command
-	sysPrompt := config.WithWorkerRules("You are scaffolding a new project. Follow all instructions carefully. Push directly to main when done.")
-	promptPath := filepath.Join(run.PromptDir(store), id+".md")
-	if err := run.WritePromptFile(promptPath, kind.Stdin(sysPrompt, prompt)); err != nil {
+	if err := run.WritePromptFile(sr.promptPath, kind.Stdin(sysPrompt, prompt)); err != nil {
 		return err
 	}
-	workerArgs := kind.Worker(backend.Options{SystemPrompt: sysPrompt, Budget: budget, Prompt: prompt, RunID: id, Model: defaults.Model, Effort: defaults.Effort})
-	claudeCmd := backend.ShellCommand(workerArgs) + stdinFrom(promptPath)
-
-	// Build pane command — no finalize prefix (new repo, no state ref setup)
-	selfBin := "klaus"
-	paneCmd := fmt.Sprintf(
-		"cd %s && %s | tee %s | %s _format-stream; echo ''; echo \"Scaffolding %s complete. Press Enter to close.\"; read",
-		shellQuote(repoDir),
-		claudeCmd,
-		shellQuote(logFile),
-		selfBin,
-		name,
-	)
 
 	// Launch the scaffolding agent's tmux pane (detached by default)
 	paneID, _, tmuxSession, err := startAgentPane(ctx, tmuxClient, cfg.AgentDisplayMode(),
-		id, repoDir, paneCmd, FormatPaneTitle(id, "", "new "+name))
+		id, repoDir, sr.paneCmd, FormatPaneTitle(id, "", "new "+name))
 	if err != nil {
 		return err
 	}
@@ -292,6 +278,45 @@ Your task:
 10. Commit everything and push
 11. Do NOT create a PR — push directly to main (this is the initial scaffold)`,
 		projectType, name, description, principles, projectType)
+}
+
+// scaffoldRun is where a scaffolding run in a new clone keeps its state,
+// and the command of the pane it runs in.
+type scaffoldRun struct {
+	store      *run.GitDirStore // in the clone's git common directory
+	logFile    string
+	promptPath string // the agent's stdin
+	paneCmd    string
+}
+
+// newScaffoldRun is run id's scaffoldRun for a clone at repoDir, running
+// workerArgs. Under a generation that adds the flow variables to the pane
+// command, it fails when the command is over tmux's limit
+// (prefixedPaneCommandFits). The pane has no finalize step: a new
+// repository has no state ref.
+func newScaffoldRun(l location.Layout, repoDir, id, name string, workerArgs []string) (scaffoldRun, error) {
+	storeDir, err := l.StandaloneStore(resolveGitCommonDir(repoDir))
+	if err != nil {
+		return scaffoldRun{}, err
+	}
+	sr := scaffoldRun{store: run.NewGitDirStore(storeDir)}
+	sr.logFile = filepath.Join(sr.store.LogDir(), id+".jsonl")
+	sr.promptPath = filepath.Join(run.PromptDir(sr.store), id+".md")
+	const selfBin = "klaus"
+	prefix := flowenv.NormalizePrefix()
+	sr.paneCmd = fmt.Sprintf(
+		"%scd %s && %s | tee %s | %s _format-stream; echo ''; echo \"Scaffolding %s complete. Press Enter to close.\"; read",
+		prefix,
+		shellQuote(repoDir),
+		backend.ShellCommand(workerArgs)+stdinFrom(sr.promptPath),
+		shellQuote(sr.logFile),
+		selfBin,
+		name,
+	)
+	if err := prefixedPaneCommandFits("agent", prefix, sr.paneCmd); err != nil {
+		return scaffoldRun{}, err
+	}
+	return sr, nil
 }
 
 // ScaffoldDeps holds dependencies for the scaffold (new) command.

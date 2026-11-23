@@ -12,6 +12,7 @@ import (
 	"the-valley/flow/internal/config"
 	"the-valley/flow/internal/event"
 	"the-valley/flow/internal/flowenv"
+	"the-valley/flow/internal/location"
 	"the-valley/flow/internal/review"
 	"the-valley/flow/internal/stream"
 	"github.com/spf13/cobra"
@@ -216,7 +217,7 @@ type preReviewCheck struct {
 
 func startPreReviewCheck() *preReviewCheck {
 	c := &preReviewCheck{start: time.Now()}
-	c.data = map[string]interface{}{"kind": event.CheckPreReview, "command": "klaus _pre-review", "source": "pre-review", "started_at": eventTime(c.start)}
+	c.data = map[string]interface{}{"kind": event.CheckPreReview, "command": location.Command("_pre-review"), "source": "pre-review", "started_at": eventTime(c.start)}
 	if flowenv.RunID.Get() != "" && flowenv.RunEvents.Get() == runEventsOutput {
 		c.report = os.Stdout
 		return c

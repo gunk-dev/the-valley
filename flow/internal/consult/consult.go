@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"the-valley/flow/internal/backend"
+	"the-valley/flow/internal/location"
 )
 
 // LookupBinary permits executable substitution without adding fake backend kinds.
@@ -62,7 +63,7 @@ func Ask(ctx context.Context, t *Thread, prompt string, threaded bool, sessionID
 		}
 		defer cleanup()
 		if threaded {
-			f, err := os.CreateTemp("", "klaus-consult-agy-*.log")
+			f, err := os.CreateTemp("", location.TempPattern("consult-agy-*.log"))
 			if err != nil {
 				return Result{}, err
 			}

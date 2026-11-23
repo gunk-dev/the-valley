@@ -24,6 +24,7 @@ import (
 	"the-valley/flow/internal/backend"
 	"the-valley/flow/internal/consult"
 	kgit "the-valley/flow/internal/git"
+	"the-valley/flow/internal/location"
 )
 
 // CommitFile is the file name edits to the head commit's message use.
@@ -401,7 +402,7 @@ func build(dir string, in *input, r *Result) (patch, message string) {
 
 // diffFile is a git-style diff of file from old to new, for git apply.
 func diffFile(file, old, new string) (string, error) {
-	tmp, err := os.MkdirTemp("", "klaus-prose-")
+	tmp, err := os.MkdirTemp("", location.TempPattern("prose-"))
 	if err != nil {
 		return "", err
 	}

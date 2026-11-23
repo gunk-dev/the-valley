@@ -19,6 +19,7 @@ import (
 	"the-valley/flow/internal/event"
 	"the-valley/flow/internal/git"
 	"the-valley/flow/internal/github"
+	"the-valley/flow/internal/location"
 	"the-valley/flow/internal/run"
 	"the-valley/flow/internal/scan"
 	"the-valley/flow/internal/stream"
@@ -720,7 +721,7 @@ func salvageUnfinishedWork(ctx context.Context, r draft.Runner, gc git.Client, s
 		res.reason = "session_limit"
 	}
 
-	committed, err := draft.CommitWIP(ctx, r, wt, "wip: klaus finalize salvage "+state.ID, git.Provenance{RunID: state.ID, ChangeID: state.ChangeID})
+	committed, err := draft.CommitWIP(ctx, r, wt, "wip: "+location.Self()+" finalize salvage "+state.ID, git.Provenance{RunID: state.ID, ChangeID: state.ChangeID})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: salvage WIP commit: %v\n", err)
 		res.dirty = true

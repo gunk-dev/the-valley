@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+
+	"the-valley/flow/internal/flowenv"
 )
 
 var (
@@ -37,6 +39,9 @@ a fresh session.`,
 
 func Execute() error {
 	nameRoot(invokedAs(os.Args[0]))
+	// Every process flow starts inherits this one's environment: under
+	// the bridge generation it holds each flow variable under both names.
+	flowenv.NormalizeProcess()
 	return rootCmd.Execute()
 }
 

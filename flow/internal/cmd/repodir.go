@@ -63,8 +63,8 @@ func resolveRepoDir(ctx context.Context, repoRef string) (string, error) {
 }
 
 func resolveRepoDirUncached(ctx context.Context, repoRef string) (string, error) {
-	if dir := existingRepoDir(repoRef); dir != "" {
-		return dir, nil
+	if dir, err := existingRepoDir(repoRef); err != nil || dir != "" {
+		return dir, err
 	}
 	if repoRef == "" {
 		return "", errNoTargetRepo
@@ -91,18 +91,19 @@ func resolveRepoDirUncached(ctx context.Context, repoRef string) (string, error)
 //
 // An empty repoRef means "whatever repo the current directory is in". A
 // non-empty one matches the current checkout only when their origins agree, and
-// otherwise falls back to a registered project.
-func existingRepoDir(repoRef string) string {
+// otherwise falls back to a registered project. A project registry at both
+// its names is an error naming both: going on would silently read neither.
+func existingRepoDir(repoRef string) (string, error) {
 	cwdRoot, _ := git.RepoRoot() // "" outside a checkout
 	if repoRef == "" {
-		return cwdRoot
+		return cwdRoot, nil
 	}
 	wantSlug := repoSlug(repoRef)
 	// The current checkout counts only when it is demonstrably the requested
 	// repo. A bare project name never matches it: the name says nothing about
 	// which remote this checkout points at.
 	if cwdRoot != "" && wantSlug != "" && strings.EqualFold(repoSlugForDir(cwdRoot), wantSlug) {
-		return cwdRoot
+		return cwdRoot, nil
 	}
 	return registeredProjectDir(repoRef, wantSlug)
 }
@@ -112,11 +113,16 @@ func existingRepoDir(repoRef string) string {
 // origin remote resolves to the same owner/repo slug. When a project's origin
 // is not a GitHub URL (a local path, say), its name is matched against the repo
 // portion of the reference instead — but a project whose origin points at a
-// different GitHub repo is never matched by name.
-func registeredProjectDir(repoRef, wantSlug string) string {
+// different GitHub repo is never matched by name. A registry that can't be
+// read has no project, but one at both its names is an error.
+func registeredProjectDir(repoRef, wantSlug string) (string, error) {
 	reg, err := project.Load()
+	var conflict *location.ConflictError
+	if errors.As(err, &conflict) {
+		return "", err
+	}
 	if err != nil || reg == nil {
-		return ""
+		return "", nil
 	}
 	projects := reg.List()
 
@@ -136,13 +142,13 @@ func registeredProjectDir(repoRef, wantSlug string) string {
 		dir := projects[name]
 		slug := repoSlugForDir(dir)
 		if wantSlug != "" && strings.EqualFold(slug, wantSlug) {
-			return dir
+			return dir, nil
 		}
 		if slug == "" && name == shortName && nameMatch == "" {
 			nameMatch = dir
 		}
 	}
-	return nameMatch
+	return nameMatch, nil
 }
 
 // repoSlug normalizes a repo reference to "owner/repo", or "" when it has no

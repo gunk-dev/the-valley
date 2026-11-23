@@ -144,6 +144,89 @@ func TestAgyWorkerReadsLongBriefOnStdin(t *testing.T) {
 	}
 }
 
+// A sandbox worker's shell starts from the sandbox's environment. Under
+// bridge the worker gets each flow variable flow sets for it (run ID, run
+// events, backend) under both names, and every other one under neither,
+// though the sandbox holds disagreeing spellings; under legacy the remote
+// command is the legacy one. Runs the real pane command with stand-in
+// binaries; nothing here runs tmux.
+func TestSandboxWorkerEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	seen := filepath.Join(dir, "agy.env")
+	report := "#!/bin/sh\n: > " + shellQuote(seen) + "\n"
+	for _, v := range flowenv.All {
+		for _, name := range []string{v.New, v.Legacy} {
+			report += "printf '%s\\n' \"" + name + "=${" + name + "-unset}\" >> " + shellQuote(seen) + "\n"
+		}
+	}
+	// ssh runs the remote command in the sandbox's own environment.
+	sandbox := "PATH=\"$PATH\" " + flowenv.AgentBackend.New + "=codex " + flowenv.AgentBackend.Legacy + "=claude " +
+		flowenv.SessionID.New + "=session-a " + flowenv.Scratch.Legacy + "=/scratch " + flowenv.RunID.Legacy + "=stale"
+	for name, script := range map[string]string{
+		"agy":   report,
+		"ssh":   "#!/bin/sh\nshift\nexec env -i " + sandbox + " sh -c \"$1\"\n",
+		"rsync": "#!/bin/sh\nexit 0\n",
+		"klaus": "#!/bin/sh\nif [ \"$1\" = _format-stream ]; then cat; fi\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	worktree := filepath.Join(dir, "worktree")
+	if err := os.Mkdir(worktree, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	o := backend.Options{SystemPrompt: "sys", Prompt: "go", RunID: "r"}
+	inputFile := filepath.Join(dir, "r.input.md")
+	if err := run.WritePromptFile(inputFile, backend.Agy.Stdin(o.SystemPrompt, o.Prompt)); err != nil {
+		t.Fatal(err)
+	}
+	command := func(t *testing.T) string {
+		t.Helper()
+		cmd, err := agentPaneCommand(backend.Agy, o, inputFile, "sandbox-0", worktree, filepath.Join(dir, "log.jsonl"), "", "r", workerDirs{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cmd
+	}
+
+	t.Run("legacy", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		remote := "unset VALLEY_FLOW_RUN_ID; export KLAUS_RUN_ID='r'; unset VALLEY_FLOW_RUN_EVENTS; export KLAUS_RUN_EVENTS='output'; cd " +
+			shellQuote(worktree) + " && env -u VALLEY_FLOW_BACKEND KLAUS_BACKEND='agy' " + backend.ShellCommand(backend.Agy.Worker(o))
+		if cmd := command(t); !strings.Contains(cmd, "ssh 'sandbox-0' "+shellQuote(remote)+" <") {
+			t.Errorf("legacy sandbox command %q does not run %q", cmd, remote)
+		}
+	})
+
+	t.Run("bridge", func(t *testing.T) {
+		bridgeHost(t)
+		if out, err := exec.Command("sh", "-c", command(t)).CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		data, err := os.ReadFile(seen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]string{}
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			k, v, _ := strings.Cut(line, "=")
+			got[k] = v
+		}
+		want := map[string]string{}
+		for _, v := range flowenv.All {
+			want[v.New], want[v.Legacy] = "unset", "unset"
+		}
+		for v, value := range map[flowenv.Var]string{flowenv.RunID: "r", flowenv.RunEvents: runEventsOutput, flowenv.Backend: "agy"} {
+			want[v.New], want[v.Legacy] = value, value
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("sandbox worker environment = %v, want %v", got, want)
+		}
+	})
+}
+
 func TestAgentsSessionName(t *testing.T) {
 	t.Run("uses KLAUS_SESSION_ID", func(t *testing.T) {
 		t.Setenv(sessionIDEnv, "session-20260907-1241-c0da2e6d")

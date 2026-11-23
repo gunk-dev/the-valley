@@ -3,6 +3,8 @@ package draft
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -350,5 +352,32 @@ func TestTitleFromPrompt(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("titleFromPrompt(%q, %q) = %q, want %q", tt.prompt, tt.runID, got, tt.want)
 		}
+	}
+}
+
+// Under the bridge naming generation, the WIP commit and the fallback draft
+// title a budget pause writes call flow by its flow name.
+func TestBudgetPauseTextUnderBridge(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".klaus"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".klaus", "config.json"), []byte(`{"naming_generation": "bridge"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := titleFromPrompt("", "myid"); got != "flow run myid (budget paused)" {
+		t.Errorf("fallback title %q", got)
+	}
+	r := &recorderRunner{}
+	r.addGitStub([]string{"status", "--porcelain"}, " M foo.go\n", nil)
+	r.addGHStub([]string{"pr", "list", "--head"}, "", nil)
+	r.addGHStub([]string{"pr", "create"}, "https://github.com/owner/repo/pull/42\n", nil)
+	if _, err := HandleBudgetPause(context.Background(), r, PauseInput{RunID: "20260101-1200-aaaa", Worktree: "/tmp/wt", Branch: "agent/x", Repo: "owner/repo", Prompt: "fix it", CostUSD: 4.95, BudgetUSD: 5}); err != nil {
+		t.Fatal(err)
+	}
+	c := r.findGitCall("commit", "-m")
+	if c == nil || !strings.Contains(strings.Join(c.args, " "), "WIP from flow run 20260101-1200-aaaa (budget paused)") {
+		t.Errorf("WIP commit %v, want it from flow", c)
 	}
 }

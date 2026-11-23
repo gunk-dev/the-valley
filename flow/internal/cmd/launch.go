@@ -45,7 +45,9 @@ agents' panes and your session live on. flow commands it runs still reach
 that server through KLAUS_TMUX_SOCKET. It also gets KLAUS_SCRATCH, its run's
 own directory outside the worktree (scratch/<run-id> in the session
 directory) for build output and other scratch files; finalize removes it with
-the worktree. A sandbox worker gets neither.
+the worktree. A sandbox worker gets neither. Under the bridge naming
+generation the pane gets each flow variable under both its KLAUS_* and
+VALLEY_FLOW_* names, with one value.
 
 A local worker gets launch's own PATH: tmux gives a pane the PATH of the
 client that creates it. Launch fails, before creating a worktree, when a
@@ -1399,10 +1401,10 @@ func agentPaneCommand(kind backend.Kind, o backend.Options, inputFile, sandboxHo
 		}
 		paneCmd = buildPaneCommand(worktree, workerEnv(dirs)+agentCmd, inputFile, logFile, selfBin, finalizePrefix, id)
 	}
-	if len(paneCmd) <= maxPaneCommandBytes {
+	err := paneCommandFits("agent", paneCmd)
+	if err == nil {
 		return paneCmd, nil
 	}
-	msg := fmt.Sprintf("agent pane command is %d bytes, over the %d-byte limit for a tmux command", len(paneCmd), maxPaneCommandBytes)
 	// Codex, and Claude without its file flag, take the system prompt in
 	// argv; agy reads it on stdin with the prompt.
 	if kind == backend.Codex || kind == backend.Claude && o.SystemPromptFile == "" {
@@ -1410,9 +1412,31 @@ func agentPaneCommand(kind backend.Kind, o backend.Options, inputFile, sandboxHo
 		if kind == backend.Claude {
 			where, fix = "sandbox", fix+", or use --local, where claude reads it from a file"
 		}
-		return "", fmt.Errorf("%s: the worker system prompt is %d bytes and goes inline for %s runs; %s", msg, len(o.SystemPrompt), where, fix)
+		return "", fmt.Errorf("%v: the worker system prompt is %d bytes and goes inline for %s runs; %s", err, len(o.SystemPrompt), where, fix)
 	}
-	return "", fmt.Errorf("%s", msg)
+	return "", err
+}
+
+// paneCommandFits says whether paneCmd, the command of a pane running what
+// ("agent", "dashboard"), is within tmux's limit (maxPaneCommandBytes):
+// nil, or the error a caller fails with before it creates anything.
+func paneCommandFits(what, paneCmd string) error {
+	if len(paneCmd) <= maxPaneCommandBytes {
+		return nil
+	}
+	return fmt.Errorf("%s pane command is %d bytes, over the %d-byte limit for a tmux command", what, len(paneCmd), maxPaneCommandBytes)
+}
+
+// prefixedPaneCommandFits is paneCommandFits for the dashboard's and the
+// scaffolding agent's pane commands, which start with prefix, the flow
+// variables (flowenv.NormalizePrefix). It checks only under a generation
+// that adds them: under legacy prefix is empty, and the command goes to
+// tmux unchecked.
+func prefixedPaneCommandFits(what, prefix, paneCmd string) error {
+	if prefix == "" {
+		return nil
+	}
+	return paneCommandFits(what, paneCmd)
 }
 
 func withExitEvent(command string) string {
@@ -1427,9 +1451,13 @@ func stdinFrom(promptFile string) string {
 	return " < " + shellQuote(promptFile)
 }
 
+// buildPaneCommand is a local worker's pane command. A pane's shell starts
+// from the tmux server's environment, so it starts by giving the pane the
+// flow variables this process resolves (flowenv.NormalizePrefix).
 func buildPaneCommand(worktree, agentCmd, promptFile, logFile, selfBin, finalizePrefix, id string) string {
 	return fmt.Sprintf(
-		"%s%scd %s && %s | tee %s | %s _format-stream; %s%s _finalize %s",
+		"%s%s%scd %s && %s | tee %s | %s _format-stream; %s%s _finalize %s",
+		flowenv.NormalizePrefix(),
 		tmuxSessionEnvPrefix(),
 		runEnvPrefix(id),
 		shellQuote(worktree),
@@ -1624,12 +1652,17 @@ func buildSandboxPaneCommand(host, worktree, agentCmd, promptFile, logFile, self
 	// prompt file as the remote command's stdin. The remote command gets the
 	// run's ID too: the sandbox has no event log for the run, so _pre-review
 	// there reports its check in its output, which the stream brings back to
-	// _format-stream --sandbox.
+	// _format-stream --sandbox. The remote shell starts from the sandbox's
+	// environment, so it first drops every flow variable but those it sets:
+	// the run's ID and events, and the backend agentCmd sets
+	// (flowenv.ClearPrefix).
 	rsyncBack := fmt.Sprintf("rsync -az %s:%s/ %s/",
 		shellQuote(host), shellQuote(worktree), shellQuote(worktree))
-	remoteCmd := remoteRunEnvPrefix(id) + "cd " + shellQuote(worktree) + " && " + agentCmd
+	remoteCmd := flowenv.ClearPrefix(flowenv.RunID, flowenv.RunEvents, flowenv.Backend) +
+		remoteRunEnvPrefix(id) + "cd " + shellQuote(worktree) + " && " + agentCmd
 	return fmt.Sprintf(
-		"%s%s%s | tee %s | %s _format-stream --sandbox; %s%s _finalize %s; %s",
+		"%s%s%s%s | tee %s | %s _format-stream --sandbox; %s%s _finalize %s; %s",
+		flowenv.NormalizePrefix(),
 		tmuxSessionEnvPrefix(),
 		runEnvPrefix(id),
 		withExitEvent("ssh "+shellQuote(host)+" "+shellQuote(remoteCmd)+stdinFrom(promptFile)),

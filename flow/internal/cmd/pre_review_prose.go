@@ -13,6 +13,7 @@ import (
 	"the-valley/flow/internal/config"
 	"the-valley/flow/internal/flowenv"
 	"the-valley/flow/internal/jobs"
+	"the-valley/flow/internal/location"
 	"the-valley/flow/internal/prose"
 	"the-valley/flow/internal/run"
 )
@@ -101,7 +102,7 @@ func saveProse(w io.Writer, store *jobs.Store, job *jobs.Job, ext, text string) 
 		}
 		warnJob(w, job, err)
 	}
-	f, err := os.CreateTemp("", "klaus-prose-*"+ext)
+	f, err := os.CreateTemp("", location.TempPattern("prose-*"+ext))
 	if err != nil {
 		fmt.Fprintf(w, "  warning: saving the %s: %v\n", ext[1:], err)
 		return ""

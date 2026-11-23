@@ -12,6 +12,7 @@ import (
 
 	"the-valley/flow/internal/backend"
 	"the-valley/flow/internal/git"
+	"the-valley/flow/internal/location"
 )
 
 // ReviewConfig configures the peer review agent.
@@ -117,7 +118,7 @@ func withHouseRules(system, rules string) string {
 func runReviewer(ctx context.Context, kind backend.Kind, model, systemPrompt, userPrompt, dir string) (string, error) {
 	var lastMessage, agyAgent string
 	if kind == backend.Codex {
-		tmp, err := os.MkdirTemp("", "klaus-review-")
+		tmp, err := os.MkdirTemp("", location.TempPattern("review-"))
 		if err != nil {
 			return "", err
 		}

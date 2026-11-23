@@ -93,7 +93,10 @@ func TestNamingReport(t *testing.T) {
 		Current:  &selfupdate.Install{Commit: "1111111111", StorePath: "/nix/store/new"},
 		Previous: &selfupdate.Install{Commit: "2222222222", StorePath: previous},
 	})
-	for _, d := range []string{filepath.Join(home, ".klaus", "memory"), filepath.Join(home, ".valley", "flow", "memory")} {
+	// Snapshots a consult under bridge left, which a legacy host no longer
+	// allocates to.
+	snapshots := filepath.Join(home, ".valley", "flow", "consult-snapshots")
+	for _, d := range []string{filepath.Join(home, ".klaus", "memory"), filepath.Join(home, ".valley", "flow", "memory"), snapshots} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -126,6 +129,9 @@ func TestNamingReport(t *testing.T) {
 	}
 	if p := places["shared memory"]; p.Error == "" || len(p.Paths) != 2 {
 		t.Errorf("memory under both names reported %+v, want a conflict naming both", p)
+	}
+	if p := places["consult snapshots"]; len(p.Paths) != 1 || p.Paths[0] != snapshots || !p.Exists {
+		t.Errorf("consult snapshots place %+v, want %s, where they are", p, snapshots)
 	}
 
 	if len(r.Sessions) != 2 || r.Sessions[0].ID != "session-a" || r.Sessions[0].CreatedBy != "" ||
@@ -217,16 +223,53 @@ func TestNamingReportUnreadableState(t *testing.T) {
 	}
 }
 
-// At flow, the last generation, nothing is left to advance to.
-func TestNamingReportAtFlow(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	r := buildNamingReport(context.Background(), namingInputs{
-		layout: location.Layout{Home: home, StateHome: filepath.Join(home, "state"), Gen: location.Flow},
-		tmux:   run.TmuxDeps{PaneExists: func(string) bool { return false }, PaneIsIdle: func(string) bool { return true }, PaneIsDead: func(string) bool { return true }},
-	})
-	if r.Next != "" || len(r.Blockers) != 0 {
-		t.Errorf("at flow: next %q, blockers %+v", r.Next, r.Blockers)
+// Under each generation the report says which names new state gets in
+// this build, and that this build keeps the host from flow: legacy gives
+// legacy names, bridge and flow bridge names, and only the state checks
+// block bridge.
+func TestNamingReportPerGeneration(t *testing.T) {
+	for _, tc := range []struct {
+		gen       location.Generation
+		allocates location.Generation
+		glyph     string // the verdict's: the head line's target is blocked or not
+		target    location.Generation
+		sessions  string // where new sessions go, under home
+	}{
+		{location.Legacy, location.Legacy, "✓", location.Bridge, ".klaus/sessions"},
+		{location.Bridge, location.Bridge, "◇", location.Flow, ".valley/flow/sessions"},
+		{location.Flow, location.Bridge, "◇", location.Flow, ".valley/flow/sessions"},
+	} {
+		t.Run(string(tc.gen), func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			r := buildNamingReport(context.Background(), namingInputs{
+				layout: location.Layout{Home: home, StateHome: filepath.Join(home, "state"), Gen: tc.gen},
+				tmux:   run.TmuxDeps{PaneExists: func(string) bool { return false }, PaneIsIdle: func(string) bool { return true }, PaneIsDead: func(string) bool { return true }},
+			})
+			if r.Allocates != tc.allocates {
+				t.Errorf("allocates %q, want %q", r.Allocates, tc.allocates)
+			}
+			if len(r.Blockers) != 1 || r.Blockers[0].What != "this build" || r.Blockers[0].Blocks != location.Flow {
+				t.Errorf("blockers %+v, want this build alone, blocking flow", r.Blockers)
+			}
+			for _, p := range r.Places {
+				if p.Kind == "sessions" && (len(p.Paths) != 1 || p.Paths[0] != filepath.Join(home, tc.sessions)) {
+					t.Errorf("new sessions go to %v, want %s", p.Paths, filepath.Join(home, tc.sessions))
+				}
+			}
+			if got := namingTarget(r); got != tc.target {
+				t.Errorf("the report's target is %q, want %q", got, tc.target)
+			}
+			var out bytes.Buffer
+			printNamingReport(&out, r, home)
+			if first, _, _ := strings.Cut(out.String(), "\n"); !strings.HasPrefix(first, tc.glyph) ||
+				!strings.Contains(first, string(tc.allocates)) || !strings.Contains(first, string(tc.target)) {
+				t.Errorf("head line %q gives no %s verdict on %s with %s names", first, tc.glyph, tc.target, tc.allocates)
+			}
+			if !strings.Contains(out.String(), "this build") {
+				t.Errorf("report does not list this build's blocker:\n%s", out.String())
+			}
+		})
 	}
 }
 

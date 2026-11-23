@@ -29,7 +29,11 @@ func TestSessionChildrenGetTheirSessionID(t *testing.T) {
 		}
 		t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
 		t.Setenv(flowenv.SessionID.New, "session-a")
-		out, err := exec.Command("sh", "-c", dashboardPaneCommand("session-b")).CombinedOutput()
+		paneCmd, err := dashboardPaneCommand("session-b")
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := exec.Command("sh", "-c", paneCmd).CombinedOutput()
 		if err != nil {
 			t.Fatalf("%v: %s", err, out)
 		}
@@ -396,6 +400,216 @@ func TestGenUUIDv4(t *testing.T) {
 	for _, pos := range []int{8, 13, 18, 23} {
 		if id[pos] != '-' {
 			t.Errorf("UUID[%d] = %c, want '-'", pos, id[pos])
+		}
+	}
+}
+
+// bridgeHost gives the test a HOME whose host config sets naming_generation
+// bridge.
+func bridgeHost(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".klaus"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".klaus", "config.json"), []byte(`{"naming_generation": "bridge"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
+// Under the bridge naming generation a session's coordinator and dashboard
+// pane get every flow variable under both names with one value: what the
+// session sets, else what the parent resolves, the new name first, and
+// under neither what the parent has under neither. _pre-review's check
+// names its command by the flow spelling.
+func TestSessionChildrenUnderBridge(t *testing.T) {
+	bridgeHost(t)
+	t.Run("coordinator", func(t *testing.T) {
+		environ := []string{"PATH=/bin", flowenv.SessionID.Legacy + "=session-a", flowenv.RunID.New + "=run-a", flowenv.RunID.Legacy + "=run-b", flowenv.Scratch.Legacy + "=/scratch", flowenv.TmuxSocket.New + "="}
+		env := map[string]string{}
+		for _, kv := range coordinatorEnv(environ, "session-b", backend.Claude, backend.Agy) {
+			k, v, _ := strings.Cut(kv, "=")
+			if _, dup := env[k]; dup {
+				t.Errorf("coordinator environment sets %s twice", k)
+			}
+			env[k] = v
+		}
+		want := map[string]string{"PATH": "/bin"}
+		for v, value := range map[flowenv.Var]string{flowenv.SessionID: "session-b", flowenv.Backend: "claude", flowenv.AgentBackend: "agy", flowenv.RunID: "run-a", flowenv.Scratch: "/scratch", flowenv.TmuxSocket: ""} {
+			want[v.New], want[v.Legacy] = value, value
+		}
+		if !reflect.DeepEqual(env, want) {
+			t.Errorf("coordinator environment = %v, want %v", env, want)
+		}
+	})
+
+	t.Run("dashboard pane", func(t *testing.T) {
+		dir := t.TempDir()
+		stub := "#!/bin/sh\nprintf '%s %s %s %s %s' \"${" + flowenv.SessionID.New + "-unset}\" \"${" + flowenv.SessionID.Legacy + "-unset}\" \"${" + flowenv.Backend.New + "-unset}\" \"${" + flowenv.Backend.Legacy + "-unset}\" \"$*\"\n"
+		if err := os.WriteFile(filepath.Join(dir, "klaus"), []byte(stub), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+		for _, v := range flowenv.All {
+			t.Setenv(v.New, "")
+			t.Setenv(v.Legacy, "")
+			os.Unsetenv(v.New)
+			os.Unsetenv(v.Legacy)
+		}
+		t.Setenv(flowenv.SessionID.New, "session-a")
+		// The pane's shell starts from the tmux server's environment, which
+		// may hold values flow doesn't.
+		paneCmd, err := dashboardPaneCommand("session-b")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("sh", "-c", paneCmd)
+		cmd.Env = append(os.Environ(), flowenv.Backend.Legacy+"=stale")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		if want := "session-b session-b unset unset dashboard"; string(out) != want {
+			t.Errorf("dashboard saw %q, want %q", out, want)
+		}
+	})
+
+	t.Run("pre-review check", func(t *testing.T) {
+		for _, v := range []flowenv.Var{flowenv.RunID, flowenv.RunEvents, flowenv.SessionID} {
+			t.Setenv(v.New, "")
+			t.Setenv(v.Legacy, "")
+			os.Unsetenv(v.New)
+			os.Unsetenv(v.Legacy)
+		}
+		if got := startPreReviewCheck().data["command"]; got != "valley flow _pre-review" {
+			t.Errorf("pre-review check command %q", got)
+		}
+	})
+}
+
+// Under bridge the dashboard's and the scaffolding agent's pane commands
+// carry flow's variables, so one too long for tmux fails, with launch's
+// message, before a session, a repository or a registration exists. Runs
+// outside any repository with a PATH of stand-ins only, so nothing reaches
+// git, tmux, GitHub or a backend.
+func TestOverlongPaneCommandsFailFirst(t *testing.T) {
+	home := bridgeHost(t)
+	t.Chdir(t.TempDir())
+	bin := t.TempDir()
+	ran := filepath.Join(bin, "gh-ran")
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\n: > "+shellQuote(ran)+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("TMUX", filepath.Join(home, "no-server")+",1,0")
+	t.Setenv(flowenv.RunEvents.New, strings.Repeat("x", maxPaneCommandBytes))
+	overLimit := func(err error, what string) bool {
+		return err != nil && strings.HasPrefix(err.Error(), what+" pane command is ") &&
+			strings.HasSuffix(err.Error(), fmt.Sprintf(" bytes, over the %d-byte limit for a tmux command", maxPaneCommandBytes))
+	}
+
+	t.Run("session", func(t *testing.T) {
+		if err := runSession(sessionCmd, true); !overLimit(err, "dashboard") {
+			t.Fatalf("runSession = %v, want the dashboard pane command over tmux's limit", err)
+		}
+		for _, root := range []string{filepath.Join(home, ".klaus", "sessions"), filepath.Join(home, ".valley")} {
+			if _, err := os.Stat(root); !os.IsNotExist(err) {
+				t.Errorf("a session start that failed made %s: %v", root, err)
+			}
+		}
+	})
+
+	t.Run("scaffold", func(t *testing.T) {
+		setScaffoldFlags(t)
+		if err := runNew(scaffoldCmd, []string{"app"}); !overLimit(err, "agent") {
+			t.Fatalf("runNew = %v, want the agent pane command over tmux's limit", err)
+		}
+		if _, err := os.Stat(ran); !os.IsNotExist(err) {
+			t.Error("scaffold created the repository before failing")
+		}
+	})
+}
+
+// Under legacy flow hands tmux the scaffolding agent's pane command
+// unchecked, one over tmux's limit included: here from a clone path of
+// 3,004 bytes, in the default projects directory of a long home. The
+// stand-in tmux records the length of each argument and fails.
+func TestLegacyScaffoldPaneCommandGoesToTmux(t *testing.T) {
+	home := t.TempDir()
+	for len(home)+len("/src/app") < 3004 {
+		home = filepath.Join(home, strings.Repeat("d", min(200, 3004-len("/src/app")-len(home)-1)))
+	}
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("TMUX", filepath.Join(home, "no-server")+",1,0")
+	t.Chdir(t.TempDir())
+	mkdir, err := exec.LookPath("mkdir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	lengths := filepath.Join(bin, "tmux-arg-lengths")
+	for name, script := range map[string]string{
+		"gh":   shellQuote(mkdir) + " -p \"$HOME/src/app\"\n",
+		"tmux": "for a; do printf '%s\\n' \"${#a}\"; done >> " + shellQuote(lengths) + "\nexit 1\n",
+	} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
+	setScaffoldFlags(t)
+	runErr := runNew(scaffoldCmd, []string{"app"})
+	if runErr == nil {
+		t.Fatal("runNew succeeded with a tmux that fails")
+	}
+	recorded, err := os.ReadFile(lengths)
+	if err != nil {
+		t.Fatalf("runNew failed before reaching tmux: %v", runErr)
+	}
+	longest := 0
+	for _, field := range strings.Fields(string(recorded)) {
+		var n int
+		if _, err := fmt.Sscan(field, &n); err != nil {
+			t.Fatal(err)
+		}
+		longest = max(longest, n)
+	}
+	if longest <= maxPaneCommandBytes {
+		t.Errorf("longest argument tmux got is %d bytes, want the pane command over %d", longest, maxPaneCommandBytes)
+	}
+}
+
+// setScaffoldFlags gives scaffoldCmd a description, a type and the claude
+// backend for one test.
+func setScaffoldFlags(t *testing.T) {
+	t.Helper()
+	for flag, value := range map[string]string{"description": "a tool", "type": "cli", "backend": "claude", "budget": ""} {
+		old, _ := scaffoldCmd.Flags().GetString(flag)
+		if err := scaffoldCmd.Flags().Set(flag, value); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = scaffoldCmd.Flags().Set(flag, old) })
+	}
+}
+
+// Under bridge a coordinator's prompt names where its session's directory,
+// the host config and self-update's state are: a new session's under the
+// flow root, an earlier one's under the legacy root, the host config where
+// it is, and self-update's state where it goes.
+func TestPromptPlacesUnderBridge(t *testing.T) {
+	home := bridgeHost(t)
+	for root, want := range map[string]string{
+		filepath.Join(home, ".valley", "flow", "sessions"): "~/.valley/flow/sessions",
+		filepath.Join(home, ".klaus", "sessions"):          "~/.klaus/sessions",
+	} {
+		sessions, hostConfig, selfUpdate := promptPlaces(run.NewHomeDirStoreFromPath(filepath.Join(root, "session-x")))
+		if sessions != want || hostConfig != "~/.klaus/config.json" || selfUpdate != "~/.valley/flow/self-update.json" {
+			t.Errorf("places for a session in %s = %q, %q, %q", root, sessions, hostConfig, selfUpdate)
 		}
 	}
 }

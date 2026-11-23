@@ -2,11 +2,11 @@ package git
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -401,77 +401,79 @@ func TestCommitChangeID(t *testing.T) {
 	}
 }
 
-func TestCommitRunID(t *testing.T) {
+// CommitRuns reads Flow-Run and Klaus-Run as one list of runs, in the
+// message's order, each once.
+func TestCommitRuns(t *testing.T) {
 	ctx := context.Background()
-	cases := []struct {
-		name        string
-		msg         string
-		wantID      string
-		wantErrIs   error
-		wantErrSub  []string
+	clone := testClone(t)
+	wt := addWorktree(t, clone, "run-id-test")
+	for _, tc := range []struct {
+		name string
+		msg  string
+		want []string
 	}{
-		{
-			name:   "no run trailer",
-			msg:    "plain commit",
-			wantID: "",
-		},
-		{
-			name:   "legacy Klaus-Run only",
-			msg:    "add a\n\nKlaus-Run: " + testRunA,
-			wantID: testRunA,
-		},
-		{
-			name:   "new Flow-Run only",
-			msg:    "add b\n\nFlow-Run: " + testRunA,
-			wantID: testRunA,
-		},
-		{
-			name:   "case-insensitive keys",
-			msg:    "add c\n\nflow-run: " + testRunA,
-			wantID: testRunA,
-		},
-		{
-			name:   "both present and agreeing",
-			msg:    "add d\n\nKlaus-Run: " + testRunA + "\nFlow-Run: " + testRunA,
-			wantID: testRunA,
-		},
-		{
-			name:       "both present and disagreeing yields none with error",
-			msg:        "add e\n\nKlaus-Run: " + testRunA + "\nFlow-Run: " + testRunB,
-			wantID:     "",
-			wantErrIs:  ErrConflictingRunTrailers,
-			wantErrSub: []string{testRunA, testRunB},
-		},
-		{
-			name:       "empty Flow-Run with nonempty Klaus-Run disagrees",
-			msg:        "add f\n\nKlaus-Run: " + testRunA + "\nFlow-Run:",
-			wantID:     "",
-			wantErrIs:  ErrConflictingRunTrailers,
-			wantErrSub: []string{testRunA},
-		},
+		{"no run trailer", "plain commit", nil},
+		{"Klaus-Run only", "add a\n\nKlaus-Run: " + testRunA, []string{testRunA}},
+		{"Flow-Run only", "add b\n\nFlow-Run: " + testRunA, []string{testRunA}},
+		{"case-insensitive keys", "add c\n\nflow-run: " + testRunA, []string{testRunA}},
+		{"one run under both keys", "add d\n\nKlaus-Run: " + testRunA + "\nFlow-Run: " + testRunA, []string{testRunA}},
+		{"runs under both keys, in order", "add e\n\nKlaus-Run: " + testRunA + "\nFlow-Run: " + testRunB, []string{testRunA, testRunB}},
+		{"Flow-Run first", "add f\n\nFlow-Run: " + testRunB + "\nKlaus-Run: " + testRunA + "\nKlaus-Run: " + testRunB, []string{testRunB, testRunA}},
+		{"an empty value names no run", "add g\n\nKlaus-Run: " + testRunA + "\nFlow-Run:", []string{testRunA}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// No hooks are installed: the message is committed as written.
+			mustGit(t, wt, "commit", "--quiet", "--allow-empty", "-m", tc.msg)
+			got, err := CommitRuns(ctx, wt, "HEAD")
+			if err != nil {
+				t.Fatalf("CommitRuns: %v", err)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("CommitRuns = %q, want %q", got, tc.want)
+			}
+		})
 	}
+}
 
-	for _, tc := range cases {
+// The commit-msg hook adds an amending run under the key the message lists
+// runs under, Klaus-Run unless it has Flow-Run alone, and never lists one
+// run under both keys, so a commit amended by builds of either key keeps
+// one list of runs.
+func TestInstallHooks_RunTrailerKeepsTheMessagesKey(t *testing.T) {
+	ctx := context.Background()
+	const testRunC = "20261013-1400-cccccccc"
+	for _, tc := range []struct {
+		name         string
+		trailers     string // the commit's before the amend
+		run          string // the amending run
+		klaus, flowr []string
+	}{
+		{"a Flow-Run commit", "Flow-Run: " + testRunA, testRunB, nil, []string{testRunA, testRunB}},
+		{"a Klaus-Run commit", "Klaus-Run: " + testRunA, testRunB, []string{testRunA, testRunB}, nil},
+		{"a commit under both keys", "Klaus-Run: " + testRunA + "\nFlow-Run: " + testRunB, testRunC, []string{testRunA, testRunC}, []string{testRunB}},
+		{"a Flow-Run commit its run amends", "Flow-Run: " + testRunA, testRunA, nil, []string{testRunA}},
+		{"a commit under both keys a Flow-Run run amends", "Klaus-Run: " + testRunA + "\nFlow-Run: " + testRunB, testRunB, []string{testRunA}, []string{testRunB}},
+		{"a commit with neither", "", testRunA, []string{testRunA}, nil},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			clone := testClone(t)
-			wt := addWorktree(t, clone, "run-id-test")
-			commitFile(t, wt, "f.txt", tc.msg)
-
-			got, err := CommitRunID(ctx, wt, "HEAD")
-			if tc.wantErrIs != nil {
-				if !errors.Is(err, tc.wantErrIs) {
-					t.Fatalf("err = %v, want errors.Is(_, %v)", err, tc.wantErrIs)
-				}
-				for _, sub := range tc.wantErrSub {
-					if !strings.Contains(err.Error(), sub) {
-						t.Errorf("err %q missing %q", err.Error(), sub)
-					}
-				}
-			} else if err != nil {
-				t.Fatalf("CommitRunID error: %v", err)
+			wt := addWorktree(t, clone, "run")
+			msg := "add a"
+			if tc.trailers != "" {
+				msg += "\n\n" + tc.trailers
 			}
-			if got != tc.wantID {
-				t.Errorf("CommitRunID = %q, want %q", got, tc.wantID)
+			commitFile(t, wt, "a.txt", msg)
+			install(t, wt, Provenance{RunID: tc.run})
+			mustGit(t, wt, "commit", "--quiet", "--amend", "--no-edit")
+			if got := trailerValues(t, wt, KlausRunTrailer); !slices.Equal(got, tc.klaus) {
+				t.Errorf("Klaus-Run = %q, want %q\n%s", got, tc.klaus, headMessage(t, wt))
+			}
+			if got := trailerValues(t, wt, FlowRunTrailer); !slices.Equal(got, tc.flowr) {
+				t.Errorf("Flow-Run = %q, want %q\n%s", got, tc.flowr, headMessage(t, wt))
+			}
+			runs, err := CommitRuns(ctx, wt, "HEAD")
+			if err != nil || !slices.Contains(runs, tc.run) {
+				t.Errorf("CommitRuns = %q, %v; want it to list %s", runs, err, tc.run)
 			}
 		})
 	}

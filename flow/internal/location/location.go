@@ -19,9 +19,18 @@
 //   - a lock that moves is held at both paths;
 //   - new state goes where the host's naming_generation says.
 //
-// Nothing is moved, and every generation gives new state the legacy names:
-// sessions outlive updates, records hold absolute paths, and an older build
-// may still be running.
+// Under legacy, new state gets the legacy names. Under bridge, new home and
+// project state gets the flow names: new sessions, the sync log, consult
+// snapshots, scaffolded declarations, and single-valued state when neither
+// place has it. The plumbing older builds share (the standalone store,
+// locks, the agents tmux session) keeps the legacy names. This build
+// allocates under flow as under bridge. Nothing is moved: sessions outlive
+// updates, records hold absolute paths, and an older build may still be
+// running.
+//
+// The package also names what flow writes fresh outside its state, by the
+// same generation: temporary directories, the default worktree root, and
+// the name flow gives itself in the text it writes.
 package location
 
 import (
@@ -42,11 +51,12 @@ type Generation string
 const (
 	// Legacy gives every new object the legacy names.
 	Legacy Generation = "legacy"
-	// Bridge is to give new home and project state the flow names
+	// Bridge gives new home and project state the flow names
 	// (~/.valley/flow, <project>/.valley/flow), keeping the legacy names
 	// for the plumbing older builds share.
 	Bridge Generation = "bridge"
 	// Flow is to give every new object the flow names, the plumbing too.
+	// This build allocates under it as under Bridge.
 	Flow Generation = "flow"
 )
 
@@ -76,9 +86,31 @@ func (g Generation) Next() Generation {
 }
 
 // Allocates is the generation whose names this build gives new state when
-// the host selects g: Legacy for every g. The writers that give new state
-// the flow names are not built.
-func Allocates(Generation) Generation { return Legacy }
+// the host selects g: Legacy for Legacy, and Bridge for Bridge and Flow,
+// since the writers that give the plumbing the flow names are not built.
+func Allocates(g Generation) Generation {
+	if g == Legacy || g == "" {
+		return Legacy
+	}
+	return Bridge
+}
+
+// Writes is the generation whose names this build gives what a command
+// writes fresh, by the running user's host setting: Allocates of it, and
+// Legacy when the setting can't be read, since every build reads what the
+// legacy names give. It is for writes that have no error to return;
+// config.Load reports a host config it can't read.
+func Writes() Generation {
+	l, err := Host()
+	if err != nil {
+		return Legacy
+	}
+	g, err := l.Generation()
+	if err != nil {
+		return Legacy
+	}
+	return Allocates(g)
+}
 
 // Operates lists the generations whose stores this build finds, reads and
 // writes: all of them, whichever is selected.
@@ -92,7 +124,54 @@ var (
 	legacyGitDir = "klaus"                          // under a clone's git common directory
 	flowGitDir   = filepath.Join("valley", "flow")  // under a clone's git common directory
 	legacyAgents = "klaus-agents"                   // a detached tmux session of agent panes
+	legacyTemp   = "klaus-"                         // starts a temporary file or directory's name
+	flowTemp     = "valley-flow-"                   // starts a temporary file or directory's name
+	legacySelf   = "klaus"                          // what flow calls itself in text it writes
+	flowSelf     = "flow"                           // what flow calls itself in text it writes
+	flowCommand  = "valley flow"                    // the command line that runs flow
 )
+
+// TempPattern is the pattern, for os.MkdirTemp or os.CreateTemp, of a
+// temporary file or directory of the use pattern names, e.g. "merge-*":
+// "klaus-merge-*", or "valley-flow-merge-*" by the host's generation
+// (Writes). Every user of one keeps the path it was given.
+func TempPattern(pattern string) string {
+	if Writes() == Legacy {
+		return legacyTemp + pattern
+	}
+	return flowTemp + pattern
+}
+
+// WorktreeBase is the default worktree_base, the root worktrees and clones
+// go under, for the generation g a host selects: klaus-sessions, or
+// valley-flow-sessions, in the temporary directory. A config that sets
+// worktree_base keeps its value, and a recorded path is never recomputed.
+func WorktreeBase(g Generation) string {
+	if Allocates(g) == Legacy {
+		return filepath.Join(os.TempDir(), legacyTemp+"sessions")
+	}
+	return filepath.Join(os.TempDir(), flowTemp+"sessions")
+}
+
+// Self is the name flow calls itself in the text it writes fresh (commit
+// subjects, titles, knot comments), by the host's generation: klaus, or
+// flow.
+func Self() string {
+	if Writes() == Legacy {
+		return legacySelf
+	}
+	return flowSelf
+}
+
+// Command is the command line flow names a subcommand by in the values it
+// writes fresh, such as an event's via, by the host's generation: "klaus
+// ready", or "valley flow ready".
+func Command(sub string) string {
+	if Writes() == Legacy {
+		return legacySelf + " " + sub
+	}
+	return flowCommand + " " + sub
+}
 
 // Layout is one user's state: where their home directory and state
 // directory are, and which generation new state takes.
@@ -163,10 +242,23 @@ func (l Layout) Generation() (Generation, error) {
 	return g, nil
 }
 
-// allocate is where new state of a kind goes, legacy being its legacy
-// path: the legacy path under every generation, once the generation is
-// known to be one.
-func (l Layout) allocate(legacy string) (string, error) {
+// allocate is where new state of a kind goes: flow when the host's
+// generation gives new state the bridge names, else legacy.
+func (l Layout) allocate(legacy, flow string) (string, error) {
+	g, err := l.Generation()
+	if err != nil {
+		return "", err
+	}
+	if Allocates(g) == Legacy {
+		return legacy, nil
+	}
+	return flow, nil
+}
+
+// keep is where new plumbing state goes, which every generation this build
+// allocates gives the legacy name: legacy, once the generation is known to
+// be one.
+func (l Layout) keep(legacy string) (string, error) {
 	if _, err := l.Generation(); err != nil {
 		return "", err
 	}
@@ -225,13 +317,13 @@ func ProjectFile(root, name string) (string, error) {
 
 // ScaffoldProjectFile is where scaffolding writes the declaration file
 // name of the project checked out at root: the file there is, else where
-// a new one goes.
+// the host's generation puts a new one.
 func (l Layout) ScaffoldProjectFile(root, name string) (string, error) {
 	return l.scaffold(filepath.Join(root, legacyHome, name), filepath.Join(root, flowHome, name))
 }
 
 // ScaffoldHostConfig is where scaffolding writes the host config: the
-// file there is, else where a new one goes.
+// file there is, else where the host's generation puts a new one.
 func (l Layout) ScaffoldHostConfig() (string, error) {
 	return l.scaffold(l.legacy("config.json"), l.flow("config.json"))
 }
@@ -244,7 +336,7 @@ func (l Layout) scaffold(legacy, flow string) (string, error) {
 	if _, err := os.Lstat(legacy); err == nil {
 		return legacy, nil
 	}
-	return l.allocate(legacy)
+	return l.allocate(legacy, flow)
 }
 
 // ConflictError is state flow keeps in one place found in two.
@@ -259,7 +351,8 @@ func (e *ConflictError) Error() string {
 }
 
 // one is the place of single-valued state: whichever of legacy and flow
-// exists, and when neither does, where new state of its kind goes. Both
+// exists, and when neither does, where the host's generation puts new
+// state of its kind. Both
 // existing is a ConflictError, unless symlinks make them one file, which
 // is then named by its own path: a save renames a new file over the name
 // it is given, which would replace a symlink, and parts a hard link's
@@ -288,7 +381,7 @@ func (l Layout) one(what, legacy, flow string) (string, error) {
 	case ferr == nil:
 		return flow, nil
 	}
-	return l.allocate(legacy)
+	return l.allocate(legacy, flow)
 }
 
 // Registry is the project registry file.
@@ -330,7 +423,7 @@ func ContinuationLocks(gitCommonDir string) []string {
 
 // AgentsSession is the detached tmux session the agents of the flow
 // session id run in, id being empty outside a session. Every generation
-// gives it the legacy name.
+// this build allocates gives it the legacy name.
 func AgentsSession(id string) string {
 	if id == "" {
 		return legacyAgents
@@ -341,8 +434,8 @@ func AgentsSession(id string) string {
 
 // AgentsSessions are the names flow gives the agents session of the flow
 // session id under some generation: AgentsSession's alone, since every
-// generation allocates the legacy names. A tmux session a run of that
-// session records outside them is not one flow made for it.
+// generation this build allocates gives it the legacy name. A tmux session
+// a run of that session records outside them is not one flow made for it.
 func AgentsSessions(id string) []string {
 	return []string{AgentsSession(id)}
 }
@@ -350,12 +443,19 @@ func AgentsSessions(id string) []string {
 // ConsultSnapshots is the directory one-shot consult snapshots go in.
 // Each consult removes its own, at the path it was given.
 func (l Layout) ConsultSnapshots() (string, error) {
-	return l.allocate(l.legacy("consult-snapshots"))
+	return l.allocate(l.legacy("consult-snapshots"), l.flow("consult-snapshots"))
 }
 
-// SyncLog is the file background project syncs append to.
+// ConsultSnapshotDirs are the consult snapshot directories that exist,
+// legacy first: a consult under either generation may have left one.
+func (l Layout) ConsultSnapshotDirs() []string {
+	return existing(l.legacy("consult-snapshots"), l.flow("consult-snapshots"))
+}
+
+// SyncLog is the file background project syncs append to: the one the
+// host's generation names, whichever exists.
 func (l Layout) SyncLog() (string, error) {
-	return l.allocate(l.legacy("sync.log"))
+	return l.allocate(l.legacy("sync.log"), l.flow("sync.log"))
 }
 
 // SyncLogs are the sync log files that exist, legacy first: an older build
@@ -366,9 +466,10 @@ func (l Layout) SyncLogs() []string {
 
 // StandaloneStore is the directory a run started outside a session keeps
 // its runs/ and logs/ in, in the clone whose git common directory is
-// gitCommonDir.
+// gitCommonDir. Every generation this build allocates gives it the legacy
+// name.
 func (l Layout) StandaloneStore(gitCommonDir string) (string, error) {
-	return l.allocate(filepath.Join(gitCommonDir, legacyGitDir))
+	return l.keep(filepath.Join(gitCommonDir, legacyGitDir))
 }
 
 func existing(paths ...string) []string {
@@ -513,7 +614,9 @@ func (l Layout) NewSession(id string) (string, error) {
 	return filepath.Join(root, id), nil
 }
 
-// NewSessionsRoot is the sessions root new sessions go under.
+// NewSessionsRoot is the sessions root new sessions go under, by the
+// host's generation.
 func (l Layout) NewSessionsRoot() (string, error) {
-	return l.allocate(l.SessionRoots()[0])
+	roots := l.SessionRoots()
+	return l.allocate(roots[0], roots[1])
 }

@@ -52,8 +52,10 @@ defaults to main. Each run:
      flow, and the state records no install and no failure, so the next run
      installs the tip. Any system install stays underneath as the fallback;
   9. records the current and previous store paths, commits and profile
-     elements, the time and any failure in
-     $XDG_STATE_HOME/klaus/self-update.json.
+     elements, the time and any failure in its state file: whichever of
+     $XDG_STATE_HOME/klaus/self-update.json and
+     ~/.valley/flow/self-update.json exists, else the one the host's
+     naming_generation names (the second under bridge).
 
 Only the configured branch installs, pinned to the commit ls-remote returned,
 and only after it builds and passes the smoke test. A profile holding flow

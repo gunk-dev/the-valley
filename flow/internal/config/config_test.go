@@ -201,6 +201,62 @@ func TestRenderSessionPromptDefault(t *testing.T) {
 	}
 }
 
+// Without places, as under the legacy generation, the session prompt is
+// the template with each place's literal legacy text; given places, as
+// under bridge, it names them.
+func TestRenderSessionPromptPlaces(t *testing.T) {
+	literal := defaultSessionPromptTemplate
+	for action, text := range map[string]string{
+		`{{or .HostConfig "~/.klaus/config.json"}}`:                        "~/.klaus/config.json",
+		`{{or .SelfUpdateState "$XDG_STATE_HOME/klaus/self-update.json"}}`: "$XDG_STATE_HOME/klaus/self-update.json",
+		`{{or .SessionsRoot "~/.klaus/sessions"}}`:                         "~/.klaus/sessions",
+	} {
+		if strings.Count(literal, action) != 1 {
+			t.Fatalf("the session prompt has %q %d times, want once", action, strings.Count(literal, action))
+		}
+		literal = strings.Replace(literal, action, text, 1)
+	}
+	vars := PromptVars{RunID: "session-x", Branch: "session/session-x", RepoName: "app", Projects: "- app", Coordinator: "claude"}
+	want, err := renderTemplate(literal, vars)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := RenderSessionPrompt("", vars)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("the session prompt without places differs from its legacy literals")
+	}
+	for _, line := range []string{
+		"When the host config (`~/.klaus/config.json`, never a repo's config)",
+		"State is in `$XDG_STATE_HOME/klaus/self-update.json`.",
+		"- Each agent run creates a state file at `~/.klaus/sessions/{session-id}/runs/{run-id}.json`\n",
+	} {
+		if !strings.Contains(got, line) {
+			t.Errorf("the session prompt without places lacks %q", line)
+		}
+	}
+
+	vars.SessionsRoot, vars.HostConfig, vars.SelfUpdateState = "~/.valley/flow/sessions", "/etc/flow/config.json", "~/.valley/flow/self-update.json"
+	got, err = RenderSessionPrompt("", vars)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []string{
+		"When the host config (`/etc/flow/config.json`, never a repo's config)",
+		"State is in `~/.valley/flow/self-update.json`.",
+		"- Each agent run creates a state file at `~/.valley/flow/sessions/{session-id}/runs/{run-id}.json`\n",
+	} {
+		if !strings.Contains(got, line) {
+			t.Errorf("the session prompt with places lacks %q", line)
+		}
+	}
+	if strings.Contains(got, "~/.klaus/") || strings.Contains(got, "XDG_STATE_HOME") {
+		t.Error("the session prompt with places still names a legacy place")
+	}
+}
+
 func TestRenderSessionPromptCustomTemplate(t *testing.T) {
 	dir := t.TempDir()
 	klausDir := filepath.Join(dir, ".klaus")
@@ -1302,5 +1358,97 @@ func TestLoadReadsLegacyFilesAsBefore(t *testing.T) {
 	}
 	if _, err := Load(""); !errors.As(err, &flowErr) {
 		t.Errorf("Load with an unreadable host config under the flow names = %v; want a FlowFileError", err)
+	}
+}
+
+// hostGeneration gives the test a HOME whose host config sets
+// naming_generation g, and the other host settings in extra.
+func hostGeneration(t *testing.T, g, extra string) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".klaus"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".klaus", "config.json"), []byte(`{"naming_generation": "`+g+`"`+extra+`}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
+// The default worktree root follows the host's generation only when no
+// config sets worktree_base: a value a config sets, the legacy default and
+// an empty one included, is kept.
+func TestWorktreeBaseFollowsTheGeneration(t *testing.T) {
+	bridgeBase := filepath.Join(os.TempDir(), "valley-flow-sessions")
+	repo := func(t *testing.T, config string) string {
+		t.Helper()
+		dir := t.TempDir()
+		if config != "" {
+			if err := os.MkdirAll(filepath.Join(dir, ".klaus"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, ".klaus", "config.json"), []byte(config), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return dir
+	}
+	for _, tc := range []struct {
+		name, gen, host, repo, want string
+	}{
+		{"legacy, set nowhere", "legacy", "", "", wantWorktreeBase},
+		{"bridge, set nowhere", "bridge", "", `{"default_budget": "1.00"}`, bridgeBase},
+		{"flow, set nowhere", "flow", "", "", bridgeBase},
+		{"bridge, the repo sets the legacy default", "bridge", "", `{"worktree_base": "` + wantWorktreeBase + `"}`, wantWorktreeBase},
+		{"bridge, the repo sets it empty", "bridge", "", `{"worktree_base": ""}`, ""},
+		{"bridge, the host sets it", "bridge", `, "worktree_base": "/srv/wt"`, "", "/srv/wt"},
+		{"bridge, null sets nothing", "bridge", "", `{"worktree_base": null}`, bridgeBase},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hostGeneration(t, tc.gen, tc.host)
+			cfg, err := Load(repo(t, tc.repo))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.WorktreeBase != tc.want {
+				t.Errorf("WorktreeBase = %q, want %q", cfg.WorktreeBase, tc.want)
+			}
+		})
+	}
+}
+
+// Under bridge, scaffolding writes new declarations under the flow names,
+// with the bridge default worktree root, and worker rules name the scratch
+// directory by its flow name.
+func TestBridgeScaffoldingAndRules(t *testing.T) {
+	hostGeneration(t, "bridge", "")
+	dir := t.TempDir()
+	configPath, promptPath, err := Init(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(dir, ".valley", "flow", "config.json"); configPath != want {
+		t.Errorf("Init wrote %s, want %s", configPath, want)
+	}
+	if want := filepath.Join(dir, ".valley", "flow", "prompt.md"); promptPath != want {
+		t.Errorf("Init wrote %s, want %s", promptPath, want)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil || cfg.WorktreeBase != filepath.Join(os.TempDir(), "valley-flow-sessions") {
+		t.Errorf("scaffolded worktree_base %q, %v", cfg.WorktreeBase, err)
+	}
+
+	rules := WithWorkerRules("prompt")
+	if strings.Contains(rules, "KLAUS_SCRATCH") || !strings.Contains(rules, `go build -o "$VALLEY_FLOW_SCRATCH/<name>"`) {
+		t.Errorf("bridge worker rules name the scratch directory wrongly:\n%s", rules)
+	}
+	hostGeneration(t, "legacy", "")
+	if got := WithWorkerRules("prompt"); got != "prompt\n\n"+WorkerRules {
+		t.Errorf("legacy worker rules differ from WorkerRules")
 	}
 }

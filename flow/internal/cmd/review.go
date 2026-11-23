@@ -95,7 +95,11 @@ Examples:
 			return err
 		}
 
-		cfg, err := config.Load(existingRepoDir(ownerRepo))
+		repoDir, err := existingRepoDir(ownerRepo)
+		if err != nil {
+			return err
+		}
+		cfg, err := config.Load(repoDir)
 		if err != nil {
 			return fmt.Errorf("could not load configuration: %w", err)
 		}
@@ -216,7 +220,11 @@ func reviewRepoSlug(ctx context.Context, ref string) (string, error) {
 	if slug := repoSlug(ref); slug != "" {
 		return slug, nil
 	}
-	if slug := repoSlugForDir(existingRepoDir(ref)); slug != "" {
+	dir, err := existingRepoDir(ref)
+	if err != nil {
+		return "", err
+	}
+	if slug := repoSlugForDir(dir); slug != "" {
 		return slug, nil
 	}
 	return "", fmt.Errorf("cannot resolve repo %q to owner/repo", ref)

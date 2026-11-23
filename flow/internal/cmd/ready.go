@@ -9,6 +9,7 @@ import (
 	"the-valley/flow/internal/event"
 	"the-valley/flow/internal/git"
 	"the-valley/flow/internal/integration"
+	"the-valley/flow/internal/location"
 	"the-valley/flow/internal/run"
 	"the-valley/flow/internal/tmux"
 	"the-valley/flow/internal/valley"
@@ -39,9 +40,10 @@ follow-up's push isn't a version yet; if origin can't be asked, it refuses. That
 --head <head> <branch>', run in the run's clone, within 30 seconds. A draft
 at its active version's head is ready again at that version. valley flow ready then
 records the version on the run of this session that pushed the head, if any,
-emits agent:change-ready, with "via": "klaus ready", as finalize does when it
-marks a change ready, and prints the version and the head it marked ready,
-e.g. "widget nxvp v2 ready at <head> (run <run-id>)".
+emits agent:change-ready, with "via": "klaus ready" ("valley flow ready" under
+the bridge naming generation), as finalize does when it marks a change ready,
+and prints the version and the head it marked ready, e.g. "widget nxvp v2
+ready at <head> (run <run-id>)".
 
 It refuses while an agent in any session is running on the change, as a
 follow-up replacing its head is, and when the run's repo doesn't deliver to a
@@ -177,7 +179,7 @@ take, so a follow-up launch can't start between that check and the ready.`,
 				"version":   r.Version,
 				"title":     title,
 				"head":      t.Head,
-				"via":       "klaus ready",
+				"via":       location.Command("ready"),
 			})
 		}
 		fmt.Printf("%s %s v%d ready at %s (run %s)\n", r.Repo, r.Handle, r.Version, t.Head, on.ID)

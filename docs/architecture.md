@@ -874,10 +874,10 @@ other pass. A mark grants nothing.
 The writers are these (`nix/valley-host.nix`, `integrator/bus.go`):
 
 - The post-receive hook `valley-integrator-wake`, on every project a controller serves. A push that
-  moves any ref other than knots, `integration-outcomes`, `integration-inputs`,
-  `integration-landings` or `refs/the-valley/signers` marks that project's controller. This covers
-  requests, attestation refs, change records, including a withdrawal, and target branches. The hook
-  always exits 0, so the hooks after it still run.
+  moves any ref other than knots, `refs/the-valley/flow/data`, `integration-outcomes`,
+  `integration-inputs`, `integration-landings` or `refs/the-valley/signers` marks that project's
+  controller. This covers requests, attestation refs, change records, including a withdrawal, and
+  target branches. The hook always exits 0, so the hooks after it still run.
 - The same hook in the instance project, when a push moves `refs/heads/main`, which holds the floor.
   It then also marks every other controller, since each reads the floor. No other push marks a
   controller of another project.
@@ -1631,8 +1631,9 @@ The writers are these:
 
 - a push to one of `worker.projects` or to `integrator.instanceProject`, through the
   `post-receive.d/valley-wake` hook. A push that moves only `refs/the-valley/knots`,
-  `refs/the-valley/integration-outcomes/*` or `refs/the-valley/integration-landings/*` marks
-  nothing. Every other ref marks, the worker's own evidence included.
+  `refs/the-valley/flow/data`, `refs/the-valley/integration-outcomes/*` or
+  `refs/the-valley/integration-landings/*` marks nothing. Every other ref marks, the worker's own
+  evidence included.
 - the integrator, after a landing in one of those projects. A local landing runs no hook, so the
   controller marks `due` itself, right after the landing commits and before the mirror queue and the
   bus.

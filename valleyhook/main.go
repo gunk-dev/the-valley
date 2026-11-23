@@ -36,7 +36,7 @@ pre-receive hook answers for the push and not for each ref.
 A write is allowed only if every rule that applies to its ref allows it:
 
   refs/replace/*, refs/notes/*, and refs/the-valley/* other than the seven
-  namespaces below
+  namespaces below and refs/the-valley/flow/data
                     nobody, whatever a declaration says. A replacement ref
                     makes one object stand in for another wherever git
                     looks it up; a note attaches text every reader sees;
@@ -119,7 +119,8 @@ A write is allowed only if every rule that applies to its ref allows it:
                     it: the edit keeps the author and names the pusher
                     in edited_by. No push deletes the ref.
   anything else     principals a named grant of the project opens the ref
-                    to. Tags open only this way.
+                    to. Tags and refs/the-valley/flow/data (that name
+                    exactly) open only this way.
   a protected ref   also a declared writer of the project. Protection adds
                     this requirement and removes none of the ones above.
 

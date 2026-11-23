@@ -723,7 +723,7 @@ in
           idle()
           host.succeed("systemctl is-active valley-worker.path")
 
-      with subtest("a push to the instance, which the worker does not build, and a check request's create, move and delete mark it due, and knots and bookkeeping do not"):
+      with subtest("a push to the instance, which the worker does not build, and a check request's create, move and delete mark it due, and knots, flow's conversation and bookkeeping do not"):
           host.succeed("systemctl stop valley-worker.path")
           host.succeed(
               f"cd /root && rm -rf instance && GIT_SSH_COMMAND={ssh} git clone --quiet git@localhost:instance.git instance",
@@ -732,6 +732,7 @@ in
           hook = "/srv/git/instance.git/hooks/post-receive.d/valley-wake"
           zero = "0" * 40
           host.succeed(f"echo '{zero} {zero} refs/the-valley/knots' | sudo -u git {hook}")
+          host.succeed(f"echo '{zero} {zero} refs/the-valley/flow/data' | sudo -u git {hook}")
           host.succeed(f"echo '{zero} {zero} refs/the-valley/integration-outcomes/main/x' | sudo -u git {hook}")
           host.succeed(f"test ! -e {wake}/due")
           host.succeed(f"cd /root/instance && GIT_SSH_COMMAND={ssh} git push --quiet origin floor-probe")

@@ -55,6 +55,21 @@ operator's account, keys and secrets (**deployment choice**).
   (`integrator/records.go`). Any principal that can create a record can hold back a head by
   recording it in a change and unreadying that change. Only an `approve` holder may delete that
   record, and deleting it releases the head.
+- **Agent-run conversation storage.** The agent-run client stores conversations in project storage
+  at `refs/the-valley/flow/data`. SSH writes require a named grant (**implemented**). The project
+  names its writers in `valley.cue` (**deployment choice**).
+
+  Grant holders can create, update, force-push, or delete this ref, subject to the `protection`,
+  symbolic-ref, and lookalike rules. The grant covers only this ref. The rules for `approve`,
+  `restack`, and other refs apply independently. The host reserves every other ref under
+  `refs/the-valley/flow/`, even when a broad grant pattern matches it (**implemented**).
+
+  Publication mirrors and the web publisher omit this ref, even with a public read grant. SSH
+  fetches bypass read grants. Any key admitted for the host's `git` user can fetch the ref from any
+  repository that holds it (**implemented**).
+
+  Checked by `valleyhook-unit`, `protect-e2e`, and `cue-vet`.
+
 - **Caps.** The deployment caps the boundary's CPU, memory and I/O, so agents cannot starve the
   valley host.
 - **Egress.** The boundary reaches only what agents need, such as name resolution, ssh to the valley

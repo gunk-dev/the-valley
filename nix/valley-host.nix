@@ -865,20 +865,21 @@ let
   # The post-receive.d hook that marks the check worker due. It runs in the
   # push, after the refs moved, so it does nothing slow: it reads the moves
   # and creates one empty file, and it never fails the push. A push of
-  # nothing but knots or integration bookkeeping marks nothing, since the
-  # worker does not read those refs. Every other ref is a mark, so a ref
-  # the worker comes to read is covered without a change here. The
-  # worker's own evidence marks it too, and the pass that follows finds
-  # the evidence and builds nothing. noclobber makes the redirection
-  # O_EXCL, and a due that is there already is a mark already made. A
-  # mark that fails is logged; the worker's timer reads the push later.
+  # nothing but knots, flow's conversation ref or integration bookkeeping
+  # marks nothing, since the worker does not read those refs. Every other
+  # ref is a mark, so a ref the worker comes to read is covered without a
+  # change here. The worker's own evidence marks it too, and the pass that
+  # follows finds the evidence and builds nothing. noclobber makes the
+  # redirection O_EXCL, and a due that is there already is a mark already
+  # made. A mark that fails is logged; the worker's timer reads the push
+  # later.
   wakeHook = pkgs.writeShellScript "valley-wake" ''
     # Managed by services.valley — marks the check worker due.
     due=${lib.escapeShellArg "${workerWakeDir}/due"}
     marks=
     while read -r old new ref; do
       case "$ref" in
-        refs/the-valley/knots | refs/the-valley/knots/* | \
+        refs/the-valley/knots | refs/the-valley/knots/* | refs/the-valley/flow/data | \
           refs/the-valley/integration-outcomes/* | refs/the-valley/integration-landings/*) ;;
         *) marks=1 ;;
       esac
@@ -894,14 +895,14 @@ let
   # worker's, it runs in the push after the refs moved, reads the moves,
   # creates at most a few empty files, and exits 0 whatever happens: the
   # dispatcher stops at the first hook that fails, and the hooks after it
-  # must still run. A push of nothing but knots, integration bookkeeping or
-  # the signers publication marks nothing, since no controller decides
-  # from those refs; the compiled signers file is what it reads, and a
-  # change to it waits for the interval. Every other ref marks the
-  # project's own controller. In the instance project, a push that moves
-  # the floor's ref also marks every controller that reads the floor, and
-  # nothing else is marked across projects. A mark that fails is logged,
-  # and the controller's interval reads the push later.
+  # must still run. A push of nothing but knots, flow's conversation ref,
+  # integration bookkeeping or the signers publication marks nothing, since
+  # no controller decides from those refs; the compiled signers file is
+  # what it reads, and a change to it waits for the interval. Every other
+  # ref marks the project's own controller. In the instance project, a push
+  # that moves the floor's ref also marks every controller that reads the
+  # floor, and nothing else is marked across projects. A mark that fails is
+  # logged, and the controller's interval reads the push later.
   integratorWakeHook =
     name:
     pkgs.writeShellScript "valley-integrator-wake-${name}" ''
@@ -915,8 +916,8 @@ let
       while read -r old new ref; do
         case "$ref" in
           refs/the-valley/knots | refs/the-valley/knots/* | refs/the-valley/signers | \
-            refs/the-valley/integration-outcomes/* | refs/the-valley/integration-inputs/* | \
-            refs/the-valley/integration-landings/*) ;;
+            refs/the-valley/flow/data | refs/the-valley/integration-outcomes/* | \
+            refs/the-valley/integration-inputs/* | refs/the-valley/integration-landings/*) ;;
           ${floorRef}) own=1 floor=1 ;;
           *) own=1 ;;
         esac

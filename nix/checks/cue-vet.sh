@@ -59,6 +59,38 @@ fi
 cue export -e 'projects.released.grants' "${protected[@]}" > grants.json
 grep -q '"refs/tags/release/\*"' grants.json
 
+# The one ref under refs/the-valley/ that a grant may name is the exact
+# ref refs/the-valley/flow/data. Every neighbouring pattern stays refused.
+cat > flow-grant.cue <<'EOF'
+package valley
+
+projects: app: grants: flow: {
+	refs: ["refs/the-valley/flow/data"]
+	writers: ["agent"]
+}
+EOF
+cue vet -c "$schema" flow-grant.cue
+[ "$(cue export -e 'projects.app.grants.flow.refs[0]' "$schema" flow-grant.cue)" = '"refs/the-valley/flow/data"' ]
+for bad_ref in 'refs/the-valley/flow/*' 'refs/the-valley/flow/data/x' 'refs/the-valley/flow/data2' 'refs/the-valley/*'; do
+  cat > flow-bad.cue <<EOF
+package valley
+
+projects: app: grants: flow: {
+	refs: ["$bad_ref"]
+	writers: ["agent"]
+}
+EOF
+  if cue vet -c "$schema" flow-bad.cue > flow-bad.err 2>&1; then
+    echo "cue-vet: expected grant pattern '$bad_ref' to be rejected" >&2
+    exit 1
+  fi
+  if ! grep -qF -- 'grants.flow.refs.0' flow-bad.err; then
+    echo "cue-vet: grant pattern '$bad_ref' was rejected without naming grants.flow.refs.0" >&2
+    cat flow-bad.err >&2
+    exit 1
+  fi
+done
+
 # The event schema accepts what the publisher hook emits …
 cue vet -d '#RefUpdated' "$eventSchema" "$events/ref-updated.json"
 # … and stays closed: a field outside the git-derivable

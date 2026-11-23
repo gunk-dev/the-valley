@@ -156,9 +156,10 @@ import "strings"
 // #GrantPattern is a pattern a grant may name. The namespaces whose rule
 // is fixed are refused: branches are open already, replacement refs and
 // notes are closed to every push, and the valley's own namespace has rules
-// of its own. A declaration that tries to open one fails rather than
-// reading as a grant the hook never applies.
-#GrantPattern: #RefPattern & !~"^refs/(heads|replace|notes|the-valley)/"
+// of its own, except refs/the-valley/flow/data, which opens only through
+// a named grant. A declaration that tries to open any other fixed
+// namespace fails rather than reading as a grant the hook never applies.
+#GrantPattern: (#RefPattern & !~"^refs/(heads|replace|notes|the-valley)/") | "refs/the-valley/flow/data"
 
 // #Protection states which of a project's refs are protected: closed to
 // every push but a declared writer's. It is the declared half of the one
@@ -184,7 +185,8 @@ import "strings"
 //   - the plan graph (refs/the-valley/knots, that name exactly) takes a
 //     named principal's write of one commit on its tip that leaves the
 //     graph valid, and is never deleted;
-//   - every other ref, tags included, takes a named grant of the project
+//   - every other ref, tags and refs/the-valley/flow/data (that name
+//     exactly) included, takes a named grant of the project
 //     (#Project.grants) that opens it to the pusher;
 //   - a protected ref also takes a declared writer.
 //

@@ -28,6 +28,7 @@ const (
 	valleyPrefix      = "refs/the-valley/"
 	attestationPrefix = "refs/the-valley/attestations/"
 	requestPrefix     = "refs/the-valley/integration-requests/"
+	flowDataRef       = "refs/the-valley/flow/data"
 	branchPrefix      = "refs/heads/"
 
 	// grantApprove is the grant that opens the integration-request
@@ -118,11 +119,13 @@ type update struct {
 //  1. Some refs no push may write, whatever anything declares: replacement
 //     refs, notes, and the valley's own namespace apart from attestations,
 //     integration requests, approvals, change records, restack reports,
-//     check requests and the plan graph. The plan graph is one ref, refs/the-valley/knots, matched
-//     exactly: a ref that only begins with its name is in the closed
-//     namespace. Nor may a push create or update a ref named like another
-//     (lookalike), since git would read it in place of that ref when that
-//     ref is missing. A push may still delete one, by the rules below.
+//     check requests, the plan graph, and refs/the-valley/flow/data. The
+//     plan graph (refs/the-valley/knots) and refs/the-valley/flow/data are
+//     each one ref, matched exactly: a ref that only begins with either
+//     name is in the closed namespace. Nor may a push create or update a
+//     ref named like another (lookalike), since git would read it in place
+//     of that ref when that ref is missing. A push may still delete one, by
+//     the rules below.
 //  2. A ref that is symbolic in the repository takes no push. git would
 //     write the ref it points at, and that ref is not the one decided.
 //  3. The ref's namespace has its own rule. Topic branches are open.
@@ -139,8 +142,8 @@ type update struct {
 //     (checkCheckRequest).
 //     The plan graph takes a named principal, and moves only by the writes
 //     checkGraph allows.
-//     Every other ref, tags included, takes a named grant that opens it to
-//     the principal.
+//     Every other ref, tags and refs/the-valley/flow/data included, takes a
+//     named grant that opens it to the principal.
 //  4. A protected ref also takes a declared writer.
 //
 // Protection only ever adds a requirement. A writer of a pattern that
@@ -162,7 +165,7 @@ func (p policy) decide(principal string, u update) string {
 		return refuse("write", "refs/notes/ is closed to every push: a note attaches text to an object that every reader's git shows beside it")
 	case strings.HasPrefix(u.ref, valleyPrefix) && !strings.HasPrefix(u.ref, attestationPrefix) &&
 		!strings.HasPrefix(u.ref, requestPrefix) && !strings.HasPrefix(u.ref, approval.RefPrefix) && !strings.HasPrefix(u.ref, change.RefPrefix) &&
-		!strings.HasPrefix(u.ref, change.RestackPrefix) && !strings.HasPrefix(u.ref, change.CheckRequestPrefix) && u.ref != knot.Ref:
+		!strings.HasPrefix(u.ref, change.RestackPrefix) && !strings.HasPrefix(u.ref, change.CheckRequestPrefix) && u.ref != knot.Ref && u.ref != flowDataRef:
 		return refuse("write", fmt.Sprintf("%s is written only by the machinery on the host, and no push may write it", namespace(u.ref)))
 	}
 	if prefix, ok := lookalike(u.ref); ok && !isZero(u.new) {

@@ -248,6 +248,50 @@ refused unopened.err "a grant opened a ref outside its pattern" \
 grep -q 'no grant of released' unopened.err
 lacks_ref released refs/tags/v1
 
+# refs/the-valley/flow/data opens only through a named grant, matched
+# exactly. Without a grant, released refuses it with the named-grant
+# wording rather than the machinery wording.
+flow_ref=refs/the-valley/flow/data
+refused flow-ungranted.err "refs/the-valley/flow/data opened without a grant" \
+  as integrator git push --quiet released "HEAD:$flow_ref"
+grep -q 'refs/the-valley/flow/ opens only through a named grant' flow-ungranted.err
+grep -q 'no grant of released opens this ref' flow-ungranted.err
+lacks_ref released "$flow_ref"
+
+# With a grant naming refs/the-valley/flow/data, the granted principal
+# creates, force-updates and deletes it through the real hook, while an
+# ungranted principal is refused with the named-grant wording and
+# neighbouring refs stay refused as host machinery.
+printf '{"refs":[],"writers":[],"grants":{"flow":{"refs":["%s"],"writers":["agent"]}}}\n' \
+  "$flow_ref" > "$TMPDIR/flow-policy.json"
+git init --quiet --bare "$TMPDIR/flow.git"
+sed -e 's|--project open|--project flow|' \
+    -e "s|--policy /nix/store/[^ ]*-valley-push-policy-open\.json|--policy $TMPDIR/flow-policy.json|" \
+  "$TMPDIR/open.git/hooks/pre-receive" > "$TMPDIR/flow.git/hooks/pre-receive"
+grep -qF -- "--policy $TMPDIR/flow-policy.json" "$TMPDIR/flow.git/hooks/pre-receive"
+chmod +x "$TMPDIR/flow.git/hooks/pre-receive"
+git remote add flow "$TMPDIR/flow.git"
+
+refused flow-other.err "an ungranted principal wrote refs/the-valley/flow/data" \
+  as contributor git push --quiet flow "HEAD:$flow_ref"
+grep -q 'refs/the-valley/flow/ opens only through a named grant' flow-other.err
+grep -q 'the grant flow of flow opens this ref to agent only' flow-other.err
+lacks_ref flow "$flow_ref"
+
+as agent git push --quiet flow "HEAD:$flow_ref"
+has_ref flow "$flow_ref"
+as agent git push --quiet --force flow "HEAD~1:$flow_ref"
+[ "$(git -C "$TMPDIR/flow.git" rev-parse "$flow_ref")" = "$(git rev-parse HEAD~1)" ]
+as agent git push --quiet --delete flow "$flow_ref"
+lacks_ref flow "$flow_ref"
+
+for neighbour in refs/the-valley/flow/data/x refs/the-valley/flow/data2; do
+  refused flow-neighbour.err "a neighbour of refs/the-valley/flow/data ($neighbour) opened" \
+    as agent git push --quiet flow "HEAD:$neighbour"
+  grep -q 'refs/the-valley/flow/ is written only by the machinery on the host' flow-neighbour.err
+  lacks_ref flow "$neighbour"
+done
+
 # ----------------------------------------------------------------------
 # A ref named like another ref takes no create and no update. When a ref
 # is missing, git reads, fetches and pushes to refs/, refs/tags/,

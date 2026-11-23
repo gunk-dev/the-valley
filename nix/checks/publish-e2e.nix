@@ -157,9 +157,9 @@ in
 
       # The fetch ran no hook, so nothing marked the controller. The hook the
       # host installed is run by hand as the git user, as a push runs it:
-      # moves of the integrator's own bookkeeping mark nothing, and the
-      # request's move marks the project's controller, which lands it at
-      # once on its one-hour interval.
+      # moves of knots, flow's conversation ref and the integrator's own
+      # bookkeeping mark nothing, and the request's move marks the project's
+      # controller, which lands it at once on its one-hour interval.
       wakes = "/run/valley-integrator-wake"
       hook = "/srv/git/project.git/hooks/post-receive.d/valley-integrator-wake"
       zero = "0" * 40
@@ -172,7 +172,8 @@ in
           before = due_passes("project")
           host.succeed(
               f"printf '%s %s %s\\n' {zero} {change} refs/the-valley/integration-outcomes/main/one"
-              f" {zero} {change} refs/the-valley/knots | sudo -u git {hook}"
+              f" {zero} {change} refs/the-valley/knots"
+              f" {zero} {change} refs/the-valley/flow/data | sudo -u git {hook}"
           )
           host.sleep(2)
           assert due_passes("project") == before, "bookkeeping marked the controller"
